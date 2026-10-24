@@ -25,13 +25,18 @@ describe("rng (mulberry32 in GameState.rng)", () => {
     const n = 100_000;
     const buckets = new Array(10).fill(0);
     let sum = 0;
+    let lo = Infinity;
+    let hi = -Infinity;
     for (let i = 0; i < n; i++) {
       const x = rand(s);
-      expect(x).toBeGreaterThanOrEqual(0);
-      expect(x).toBeLessThan(1);
+      lo = Math.min(lo, x);
+      hi = Math.max(hi, x);
       sum += x;
       buckets[Math.floor(x * 10)]++;
     }
+    // one expect for the range: 200 000 expect() calls made this test slow enough to time out on a busy machine
+    expect(lo).toBeGreaterThanOrEqual(0);
+    expect(hi).toBeLessThan(1);
     expect(sum / n).toBeGreaterThan(0.49);
     expect(sum / n).toBeLessThan(0.51);
     for (const c of buckets) {

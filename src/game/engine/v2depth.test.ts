@@ -429,7 +429,7 @@ describe("living newspaper (EN-10)", () => {
       const win = texts.slice(i, i + 10);
       expect(new Set(win).size, win.join(" | ")).toBe(win.length);
     }
-  });
+  }, 30_000); // 36 000 engine steps: slow when the machine is busy
 
   it("no filler while catching up an absence", () => {
     const s = createInitialState(22, 0);

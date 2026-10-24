@@ -204,9 +204,9 @@ export const ACHIEVEMENTS: Record<AchievementId, AchievementDef> = {
 
 export const ACHIEVEMENT_ORDER = Object.keys(ACHIEVEMENTS) as AchievementId[];
 
-/** Rat Express: 10 stages, base cost × 1.5^(n−1) (v2 EN-3/EN-13: 5× the v1 base, gentler growth — no 40-second sprint through stages 1–4). */
+/** Rat Express: 10 stages, base cost × 1.55^(n−1) (v2 EN-3/EN-13: 5× the v1 base, gentler growth than v1 — no 40-second sprint through stages 1–4; 1.55 keeps run 3 ≥ ~30 min). */
 export const EXPRESS_BASE = { rails: 250, gears: 50000, brass: 5000, trinkets: 30, blueprints: 150 };
-export const EXPRESS_GROWTH = 1.5;
+export const EXPRESS_GROWTH = 1.55;
 export const EXPRESS_STAGES = [
   "Рама из вязальных спиц",
   "Колёсные пары из карманных часов",

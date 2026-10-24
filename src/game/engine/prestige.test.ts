@@ -81,7 +81,7 @@ describe("Great Migration and edicts", () => {
     expect(EDICTS.express_blueprints.effect).toContain("Первые 5 этапов");
   });
 
-  it("express stages are 5× the v1 base with ×1.5 growth (EN-13): a little above the v1 total, and stage 1 no longer costs pocket change", () => {
+  it("express stages are 5× the v1 base with ×1.55 growth (EN-13): ~1.6× the v1 total, and stage 1 no longer costs pocket change", () => {
     const s = createInitialState(1, 0);
     const v1 = { rails: 50, gears: 10000, brass: 1000, trinkets: 6, blueprints: 30 };
     const total = (f: (n: number) => Amounts) => {
@@ -91,8 +91,8 @@ describe("Great Migration and edicts", () => {
     };
     const now = total((n) => expressStageCost(s, n));
     const old = total((n) => Object.fromEntries(Object.entries(v1).map(([r, v]) => [r, Math.ceil(v * Math.pow(1.8, n - 1))])));
-    for (const [r, v] of entries(old)) expect((now[r] ?? 0) / v, r).toBeGreaterThan(1.05);
-    for (const [r, v] of entries(old)) expect((now[r] ?? 0) / v, r).toBeLessThan(1.35);
+    for (const [r, v] of entries(old)) expect((now[r] ?? 0) / v, r).toBeGreaterThan(1.45);
+    for (const [r, v] of entries(old)) expect((now[r] ?? 0) / v, r).toBeLessThan(1.75);
     expect(expressStageCost(s, 1)).toEqual({ rails: 250, gears: 50000, brass: 5000, trinkets: 30, blueprints: 150 });
     s.meta.edicts.express_blueprints = true;
     expect(expressStageCost(s, 1).rails).toBe(188);
