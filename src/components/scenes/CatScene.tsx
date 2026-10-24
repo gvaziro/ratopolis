@@ -53,6 +53,19 @@ function CatWarn({ scene }: { scene: Scene }) {
     act({ a: "choice", option });
   };
 
+  // SC-6: keys 1 / 2 pick the choices (the global hotkeys stand aside while a scene runs)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === "1") choose("hide");
+      else if (e.key === "2") choose("fight");
+      else return;
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   return (
     <div className="absolute inset-0 flex flex-col">
       <div className="relative min-h-0 flex-1 overflow-hidden">
@@ -66,19 +79,20 @@ function CatWarn({ scene }: { scene: Scene }) {
       </div>
       <div className="relative z-10 shrink-0 border-t border-line bg-gradient-to-b from-panel-2 to-soot p-2 shadow-[0_-8px_24px_rgba(0,0,0,.6)] md:p-3">
         <div className="grid gap-2 sm:grid-cols-2">
-          <ChoiceButton icon="🙈" title="Спрятаться" tone="ghost" sub="Без потерь и без награды" sub2="Подозрение 👁 −10" onClick={() => choose("hide")} />
+          <ChoiceButton icon="🙈" title="Спрятаться" tone="ghost" hotkey="1" sub={<b>Без потерь и без награды</b>} sub2="🙈 → 👁 −10" onClick={() => choose("hide")} />
           <ChoiceButton
             icon="🥊"
             title="Отбиться"
             tone="danger"
+            hotkey="2"
             sub={
-              <>
-                Лапа: {fmtInt(hp)} {plural(hp, "удар", "удара", "ударов")} за {fmtInt(fightSec)} с · победа: 📜 +{fmt(stakes.blueprints)} 🧀 +{fmt(stakes.cheese)}, 👁 −25
-              </>
+              <b>
+                {fmtInt(hp)} {plural(hp, "удар", "удара", "ударов")} лапе за {fmtInt(fightSec)} с, пока она не дотянулась
+              </b>
             }
             sub2={
               <>
-                Провал: {fmtInt(stakes.scared)} {plural(stakes.scared, "крыса", "крысы", "крыс")} в испуге на 60 с, −5% 🧀
+                🥊 📜+{fmt(stakes.blueprints)} 🧀+{fmt(stakes.cheese)} · 👁−25 | провал: 😵 {fmtInt(stakes.scared)} {plural(stakes.scared, "крыса", "крысы", "крыс")}, 🧀 −5%
               </>
             }
             onClick={() => choose("fight")}
@@ -266,7 +280,8 @@ function CatFight({ scene }: { scene: Scene }) {
   const pawRef = useRef<HTMLDivElement>(null);
   const fxRef = useRef<HTMLDivElement>(null);
   const panicRef = useRef<HTMLDivElement>(null);
-  const physRef = useRef({ knock: 0, squash: 0, tipX: 0, tipY: 0 });
+  // SC-6: reach 0 → 0.9 (the huddle); it creeps 0.85/fight per second, each hit knocks it back 1.4/hp
+  const physRef = useRef({ reach: 0.2, squash: 0, tipX: 0, tipY: 0 });
   const hitsRef = useRef(0);
   const sentRef = useRef(false);
   const limiterRef = useRef<(() => boolean) | null>(null);
@@ -305,10 +320,15 @@ function CatFight({ scene }: { scene: Scene }) {
       const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
       last = now;
       const t = clock();
-      const k = clamp(t / total);
-      phys.knock = Math.max(0, phys.knock - dt * 0.2);
       phys.squash = Math.max(0, phys.squash - dt * 5.5);
-      const reach = clamp(0.2 + 0.62 * k - phys.knock, 0.04, 0.9);
+      if (!sentRef.current) phys.reach += (0.85 / total) * dt;
+      const reach = clamp(phys.reach, 0.04, 0.9);
+      // the paw reaching the huddle is the real loss, not the clock
+      if (phys.reach >= 0.9 && !sentRef.current) {
+        sentRef.current = true;
+        sfx.meow();
+        act({ a: "taps", cleared: 0 });
+      }
       const sx0 = W * 0.86;
       const sy0 = -H * 0.14;
       const tx = W * 0.36;
@@ -347,7 +367,7 @@ function CatFight({ scene }: { scene: Scene }) {
     setHits(hitsRef.current);
     setHint(false);
     phys.squash = 1;
-    phys.knock = Math.min(0.5, phys.knock + 0.06);
+    phys.reach = Math.max(0.04, phys.reach - 1.4 / hp);
     sfx.bonk();
     shake(3, 130);
     if (root) {

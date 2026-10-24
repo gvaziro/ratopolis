@@ -1,5 +1,8 @@
 import type { UpgradeDef, UpgradeId } from "../types";
 
+/** «Гильдия жестянщиков»: T1 production multiplier (v2 EN-2: ×2 → ×1.6; EN-13 may retune within 1.6–2.0). */
+export const TINKERS_MULT = 1.75;
+
 export const UPGRADES: Record<UpgradeId, UpgradeDef> = {
   sharp_teeth: {
     id: "sharp_teeth",
@@ -218,7 +221,7 @@ export const UPGRADES: Record<UpgradeId, UpgradeDef> = {
     name: "Гильдия жестянщиков",
     icon: "🛠️",
     cost: { blueprints: 120, gears: 2000 },
-    effect: "Вся добыча 🍞🪙🔘➰ ×2",
+    effect: `Вся добыча 🍞🪙🔘➰ ×${TINKERS_MULT}`,
     unlock: { building: "library", gte: 3 },
     flavor: "Устав, взносы и тайное рукопожатие хвостами.",
   },
@@ -243,7 +246,7 @@ export const UPGRADES: Record<UpgradeId, UpgradeDef> = {
   grappling_hook: {
     id: "grappling_hook",
     name: "Крюк-кошка",
-    icon: "🪝",
+    icon: "⚓",
     cost: { brass: 30, wire: 15000 },
     effect: "Мини-игра «Крюк» в поездах: точный бросок срывает чемодан (джекпот ×5…×8 × позиция бригады: у стены ×0.5, между шпал ×1.5)",
     unlock: { stat: "trains", gte: 3 },
@@ -354,3 +357,14 @@ export const RAT_MEMORY_UPGRADES: UpgradeId[] = [
 
 /** Upgrades kept by the `inherited_foreman` edict. */
 export const FOREMAN_UPGRADES: UpgradeId[] = ["rat_relay", "windup_rat", "foreman"];
+
+/** Extra upgrades kept by `rat_memory` rank II and rank III (EN-9). */
+export const RAT_MEMORY_RANKS: UpgradeId[][] = [
+  ["deep_pockets", "gear_trains", "pneumatic_timetable"],
+  ["bunk_nests", "cheese_diet", "night_shift"],
+];
+
+/** Every upgrade `rat_memory` keeps at rank r (1..3). */
+export function ratMemoryUpgrades(rank: number): UpgradeId[] {
+  return [...RAT_MEMORY_UPGRADES, ...RAT_MEMORY_RANKS.slice(0, Math.max(0, rank - 1)).flat()];
+}

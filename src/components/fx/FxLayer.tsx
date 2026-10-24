@@ -6,6 +6,7 @@
  */
 import { useEffect, useRef } from "react";
 import { RESOURCES } from "@/game/data/resources";
+import { UPGRADES } from "@/game/data/upgrades";
 import { onFx, onUiFx } from "@/game/fx";
 import { useGame } from "@/game/store";
 import type { Fx } from "@/game/types";
@@ -24,6 +25,8 @@ export { setFxAnchor, fxBurst, fxText, markFxPoint } from "./fxBus";
 
 const FULL_RED = "#e8705f";
 const GOLD = "#ffd34d";
+/** Wind-up rat floats stop this long after the player's last input. */
+const AUTO_IDLE_MS = 8000;
 
 export default function FxLayer() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -58,15 +61,28 @@ export default function FxLayer() {
     const jitter = (p: Pt, dx: number, dy: number): Pt => ({ x: p.x + (Math.random() * 2 - 1) * dx, y: p.y + (Math.random() * 2 - 1) * dy });
 
     let lastAuto = 0;
+    let lastManual = -Infinity;
+    // the finds of a hidden wind-up click are hidden with it (they follow its click fx in the same dispatch)
+    let autoHidden = false;
     const handle = (fx: Fx) => {
       switch (fx.k) {
         case "click": {
+          const now = performance.now();
+          autoHidden = false;
           if (fx.auto) {
-            // wind-up rats and catch-up bursts: keep the float rate sane
-            const now = performance.now();
-            if (now - lastAuto < 150) break;
+            // wind-up rats: at most 2 floats a second, none over the player's own clicks, none for an idle
+            // player (nobody watches — and the particle loop may sleep) and none with reduced motion
+            const st = useGame.getState();
+            const hide = st.game.settings.reducedMotion || now - lastManual < 2000 || now - lastAuto < 500 || Date.now() - st.lastInputAt > AUTO_IDLE_MS;
+            if (hide) {
+              autoHidden = true;
+              queueMicrotask(() => {
+                autoHidden = false;
+              });
+              break;
+            }
             lastAuto = now;
-          }
+          } else lastManual = now;
           const p0 = at(fx.x, fx.y) ?? jitter(grate(), 26, 8);
           const p = fx.auto ? jitter(p0, 18, 6) : { x: p0.x, y: p0.y - 14 };
           if (fx.full) {
@@ -85,6 +101,7 @@ export default function FxLayer() {
           break;
         }
         case "drop": {
+          if (autoHidden && !fx.big) break;
           const p = at(fx.x, fx.y, fx.frac) ?? recentFxPoint() ?? jitter(grate(), 30, 10);
           const q = { x: p.x + (Math.random() * 2 - 1) * 22, y: p.y - 40 };
           const def = RESOURCES[fx.res];
@@ -123,6 +140,13 @@ export default function FxLayer() {
           sys.burst(p.x, p.y, "gold", 22, 1.2);
           break;
         }
+        case "upgrade": {
+          // CO-7: a patent stamp over the colony and a spray of brass cogs
+          const p = center();
+          sys.text({ text: `${UPGRADES[fx.upgrade]?.icon ?? "🔬"} ПАТЕНТ!`, x: p.x, y: p.y, color: "#f2d896", stamp: true, size: 26, dur: 1300 });
+          sys.burst(p.x, p.y + 10, "gear", 18, 1);
+          break;
+        }
         default:
           break;
       }
@@ -132,6 +156,31 @@ export default function FxLayer() {
     const offUi = onUiFx((fx) => {
       if (fx.k === "float") {
         sys.text({ text: fx.text, x: fx.x, y: fx.y, color: fx.color, big: fx.big });
+      } else if (fx.k === "fly") {
+        // CO-7: a card buy flies its icon to the chamber (or to the colony edge when it is off-screen)
+        if (settings().reducedMotion) return;
+        const r = getColonyRect();
+        const raw = resolveAnchor(fx.target) ?? center();
+        const to = r ? { x: Math.max(r.left + 24, Math.min(r.right - 24, raw.x)), y: Math.max(r.top + 24, Math.min(r.bottom - 36, raw.y)) } : raw;
+        const from = fx.from;
+        const ctrl = { x: (from.x + to.x) / 2, y: Math.min(from.y, to.y) - 120 };
+        const el = document.createElement("span");
+        el.textContent = fx.icon;
+        el.setAttribute("aria-hidden", "true");
+        el.style.cssText = "position:fixed;left:0;top:0;z-index:60;pointer-events:none;font-size:26px;line-height:1;will-change:transform";
+        document.body.appendChild(el);
+        const frames: Keyframe[] = [];
+        for (let i = 0; i <= 8; i++) {
+          const k = i / 8;
+          const x = (1 - k) * (1 - k) * from.x + 2 * (1 - k) * k * ctrl.x + k * k * to.x;
+          const y = (1 - k) * (1 - k) * from.y + 2 * (1 - k) * k * ctrl.y + k * k * to.y;
+          frames.push({ transform: `translate(${x - 13}px,${y - 13}px) scale(${1 - 0.4 * k})`, offset: k });
+        }
+        const anim = el.animate(frames, { duration: 450, easing: "cubic-bezier(.4,0,.6,1)" });
+        anim.onfinish = () => {
+          el.remove();
+          sys.burst(to.x, to.y, "glint", 10);
+        };
       } else if (fx.k === "flash") {
         const el = flashRef.current;
         if (!el || settings().reducedMotion) return;

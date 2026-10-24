@@ -27,7 +27,7 @@ const Purse = memo(function Purse() {
       aria-label="Оброненный кошелёк — открыть!"
       title="Оброненный кошелёк"
       className="absolute z-10 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-brass-light"
-      style={{ left: `${purse.x * 100}%`, top: `${purse.y * 100}%` }}
+      style={{ left: `${uiX(purse.x) * 100}%`, top: `${uiY(purse.y) * 100}%` }}
       onPointerDown={(e: PointerEvent<HTMLButtonElement>) => {
         e.stopPropagation();
         grab(e.clientX, e.clientY);
@@ -80,7 +80,7 @@ const Shinies = memo(function Shinies() {
           data-nodrag=""
           aria-label={`Блестяшка: ${RESOURCES[s.res].name}`}
           className="absolute z-10 flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-brass-light"
-          style={{ left: `${s.x * 100}%`, top: `${s.y * 100}%` }}
+          style={{ left: `${uiX(s.x) * 100}%`, top: `${uiY(s.y) * 100}%` }}
           onPointerDown={(e) => {
             e.stopPropagation();
             markFxPoint(e.clientX, e.clientY);
@@ -105,6 +105,15 @@ const Shinies = memo(function Shinies() {
     </>
   );
 });
+
+/** CO-8: the engine's 0..1 spot, remapped into x 0.22–0.78 × y 0.32–0.8 so a purse or shiny never hides under the
+ * goal widget, the market or the zone pips (UI only: the engine's coordinates stay as they are). */
+function uiX(x: number): number {
+  return 0.22 + 0.56 * Math.max(0, Math.min(1, x));
+}
+function uiY(y: number): number {
+  return 0.32 + 0.48 * Math.max(0, Math.min(1, y));
+}
 
 export function BgEvents() {
   return (

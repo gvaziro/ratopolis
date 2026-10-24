@@ -1,15 +1,18 @@
 "use client";
 
 /**
- * ⚙ Настройки: sound and volume, motion, train toasts, number format, save export/import,
- * «Сохранить сейчас», a doubly-confirmed hard reset, and a short «Об игре».
+ * ⚙ Настройки: sound with effects and ambience volumes, motion («как в системе»), hints, train toasts, number format,
+ * text size, the hotkey list, save export/import (string or .txt file),
+ * a rollback to the rolling backups, «Сохранить сейчас», a doubly-confirmed hard reset, and a short «Об игре».
  */
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { sfx } from "@/audio/sfx";
-import { useGame } from "@/game/store";
-import type { Settings } from "@/game/types";
+import { useGame, type BackupInfo } from "@/game/store";
+import type { Settings, TextScale } from "@/game/types";
+import { clockAt, datedSaveName, downloadText, ratsLabel } from "@/components/ui/crashKit";
 import { BrassButton, cx } from "@/components/ui/kit";
-import { SectionTitle, Switch } from "./common";
+import { fmtInt } from "@/lib/format";
+import { SectionTitle, Segmented, Switch, type SegOption } from "./common";
 
 export default function SettingsTab() {
   return (
@@ -20,6 +23,7 @@ export default function SettingsTab() {
       <p className="text-xs italic text-parchment-dim">Контора колонии. Здесь крутят ручки, а не хвосты.</p>
       <SoundSection />
       <ViewSection />
+      <KeysSection />
       <SaveSection />
       <ResetSection />
       <About />
@@ -41,30 +45,7 @@ function Card({ children, className }: { children: ReactNode; className?: string
 function SoundSection() {
   const [sound, setSound] = useSetting("sound");
   const [volume, setVolume] = useSetting("volume");
-  const [drag, setDrag] = useState<number | null>(null);
-  const pending = useRef<number | null>(null);
-  const timer = useRef(0);
-  const shown = drag ?? volume;
-
-  useEffect(() => () => window.clearTimeout(timer.current), []);
-
-  // commit at most ~8 times a second while dragging (each commit clones the game state)
-  const schedule = (v: number) => {
-    pending.current = v;
-    if (timer.current) return;
-    timer.current = window.setTimeout(() => {
-      timer.current = 0;
-      if (pending.current !== null) setVolume(pending.current);
-    }, 120);
-  };
-  const finish = () => {
-    if (drag === null) return;
-    window.clearTimeout(timer.current);
-    timer.current = 0;
-    setVolume(drag);
-    setDrag(null);
-    if (sound) sfx.tin();
-  };
+  const [ambience, setAmbience] = useSetting("ambience");
 
   return (
     <>
@@ -81,51 +62,124 @@ function SoundSection() {
           label="Звук"
           sub="Писк, звон монет, гул поездов — всё синтезировано прямо в колонии"
         />
-        <div className={cx("px-1", !sound && "opacity-50")}>
-          <div className="flex items-center justify-between text-xs">
-            <label htmlFor="rr-volume" className="font-bold text-parchment">
-              Громкость
-            </label>
-            <span className="font-mono tabular text-brass-light">{Math.round(shown * 100)}%</span>
-          </div>
-          <input
-            id="rr-volume"
-            type="range"
-            min={0}
-            max={100}
-            step={1}
-            value={Math.round(shown * 100)}
-            disabled={!sound}
-            onChange={(e) => {
-              const v = Number(e.target.value) / 100;
-              setDrag(v);
-              sfx.setVolume(v, sound);
-              schedule(v);
-            }}
-            onPointerUp={finish}
-            onKeyUp={finish}
-            onBlur={finish}
-            className="rr-range block w-full disabled:cursor-not-allowed"
-            style={{ "--pct": `${Math.round(shown * 100)}%`, accentColor: "var(--brass)" } as CSSProperties}
-          />
-        </div>
+        <Slider
+          id="rr-volume"
+          label="Эффекты"
+          value={volume}
+          disabled={!sound}
+          onLive={(v) => sfx.setVolume(v, sound)}
+          onCommit={setVolume}
+          onDone={() => sound && sfx.tin()}
+        />
+        <Slider id="rr-ambience" label="Фон" sub="Капель, гул поездов вдали, тиканье часов" value={ambience} disabled={!sound} onLive={(v) => sfx.setAmbience(v)} onCommit={setAmbience} />
       </Card>
     </>
   );
 }
 
+/**
+ * A brass 0–100% slider: plays along live (onLive), commits to the save at most ~8 times a second while dragging
+ * (each commit clones the game state) and once more on release.
+ */
+function Slider({
+  id,
+  label,
+  sub,
+  value,
+  disabled,
+  onLive,
+  onCommit,
+  onDone,
+}: {
+  id: string;
+  label: string;
+  sub?: string;
+  value: number;
+  disabled: boolean;
+  onLive: (v: number) => void;
+  onCommit: (v: number) => void;
+  onDone?: () => void;
+}) {
+  const [drag, setDrag] = useState<number | null>(null);
+  const pending = useRef<number | null>(null);
+  const timer = useRef(0);
+  const shown = drag ?? value;
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const schedule = (v: number) => {
+    pending.current = v;
+    if (timer.current) return;
+    timer.current = window.setTimeout(() => {
+      timer.current = 0;
+      if (pending.current !== null) onCommit(pending.current);
+    }, 120);
+  };
+  const finish = () => {
+    if (drag === null) return;
+    window.clearTimeout(timer.current);
+    timer.current = 0;
+    onCommit(drag);
+    setDrag(null);
+    onDone?.();
+  };
+  return (
+    <div className={cx("px-1", disabled && "opacity-50")}>
+      <div className="flex items-center justify-between text-xs">
+        <label htmlFor={id} className="font-bold text-parchment">
+          {label}
+          {sub && <span className="ml-1.5 font-normal text-parchment-dim">{sub}</span>}
+        </label>
+        <span className="font-mono tabular text-brass-light">{Math.round(shown * 100)}%</span>
+      </div>
+      <input
+        id={id}
+        type="range"
+        min={0}
+        max={100}
+        step={1}
+        value={Math.round(shown * 100)}
+        disabled={disabled}
+        onChange={(e) => {
+          const v = Number(e.target.value) / 100;
+          setDrag(v);
+          onLive(v);
+          schedule(v);
+        }}
+        onPointerUp={finish}
+        onKeyUp={finish}
+        onBlur={finish}
+        className="rr-range block w-full disabled:cursor-not-allowed"
+        style={{ "--pct": `${Math.round(shown * 100)}%`, accentColor: "var(--brass)" } as CSSProperties}
+      />
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------ view */
+
+const TEXT_SCALES: SegOption<TextScale>[] = [
+  { value: 1, label: "100%" },
+  { value: 1.15, label: "115%" },
+  { value: 1.3, label: "130%" },
+];
 
 function ViewSection() {
   const [reduced, setReduced] = useSetting("reducedMotion");
+  const fromOS = useGame((s) => s.game.settings.reducedMotionFromOS);
   const [noShake, setNoShake] = useSetting("noShake");
   const [toasts, setToasts] = useSetting("trainToasts");
   const [sci, setSci] = useSetting("sciNotation");
+  const [hints, setHints] = useSetting("hints");
+  const [scale, setScale] = useSetting("textScale");
   return (
     <>
       <SectionTitle>Экран</SectionTitle>
       <Card className="grid gap-0.5">
-        <Switch on={reduced} onToggle={() => setReduced(!reduced)} label="Меньше движения" sub="Без тряски, зума и вспышек; частиц на 70% меньше" />
+        <Switch
+          on={reduced}
+          onToggle={() => setReduced(!reduced)}
+          label="Меньше движения"
+          sub={`Без тряски, зума и вспышек; частиц на 70% меньше${fromOS ? " · как в системе" : ""}`}
+        />
         <Switch
           on={noShake || reduced}
           disabled={reduced}
@@ -133,6 +187,7 @@ function ViewSection() {
           label="Без тряски"
           sub={reduced ? "Уже включено вместе с «Меньше движения»" : "Экран не дрожит от поездов и раскопок"}
         />
+        <Switch on={hints} onToggle={() => setHints(!hints)} label="Подсказки" sub="Совет старейшины в «Целях колонии» с кнопкой «Сделать»" />
         <Switch on={toasts} onToggle={() => setToasts(!toasts)} label="Тосты «К путям!»" sub="Колокольчик и напоминание за 30 с до поезда" />
         <Switch
           on={sci}
@@ -140,11 +195,48 @@ function ViewSection() {
           label="Научный формат чисел"
           sub={sci ? "Сейчас: 1.23e45 — для учёных крыс" : "Сейчас: 1.23K, 4.5M, 6.7Qa — для простых крыс"}
         />
+        <div className="flex items-center justify-between gap-2 px-1 py-1.5">
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-parchment">Размер текста</p>
+            <p className="text-[11px] leading-tight text-parchment-dim">Панель, шапка, ресурсы и лента новостей</p>
+          </div>
+          <Segmented label="Размер текста" value={scale} options={TEXT_SCALES} onChange={setScale} />
+        </div>
       </Card>
     </>
   );
 }
 
+/* ------------------------------------------------------------ keys */
+
+const KEYS: [string, string][] = [
+  ["1–8", "вкладки панели по порядку"],
+  ["B", "покупка: ×1 → ×10 → Макс"],
+  ["G / Enter", "клик по решётке"],
+  ["M", "звук вкл/выкл"],
+  ["Esc", "закрыть подсказки, ленту и лавку"],
+  ["← → / пробел", "лапа в сцене поезда; 1 / 2 — выбор при Коте и Крысолове"],
+];
+
+function KeysSection() {
+  return (
+    <>
+      <SectionTitle>Клавиши</SectionTitle>
+      <Card>
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+          {KEYS.map(([k, what]) => (
+            <div key={k} className="contents">
+              <dt>
+                <kbd className="rounded border border-brass-dark/80 bg-soot px-1.5 py-0.5 font-mono text-[11px] text-brass-light">{k}</kbd>
+              </dt>
+              <dd className="text-parchment-dim">{what}</dd>
+            </div>
+          ))}
+        </dl>
+      </Card>
+    </>
+  );
+}
 /* ------------------------------------------------------------ saves */
 
 type Note = { ok: boolean; text: string } | null;
@@ -263,8 +355,131 @@ function SaveSection() {
           </div>
           <NoteLine note={importNote} />
         </div>
+
+        <SaveFiles />
+        <Rollback />
       </Card>
     </>
+  );
+}
+
+/** «Скачать файл» / «Загрузить файл»: the save as a plain .txt (the stored JSON) and back (JSON or «RATRO1:…»). */
+function SaveFiles() {
+  const [note, setNote] = useState<Note>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const download = () => {
+    const st = useGame.getState();
+    st.save();
+    const text = st.rawSave() ?? st.exportSave();
+    setNote(
+      downloadText(datedSaveName(), text)
+        ? { ok: true, text: "Свиток отправлен в «Загрузки». Храните в сухом месте, подальше от котов." }
+        : { ok: false, text: "Браузер не дал скачать файл. Попробуйте «Экспорт» строкой." },
+    );
+  };
+
+  const load = async (file: File | undefined) => {
+    if (!file) return;
+    if (file.size > 5_000_000) {
+      setNote({ ok: false, text: "Слишком толстый свиток — это точно летопись колонии?" });
+      return;
+    }
+    let text: string;
+    try {
+      text = await file.text();
+    } catch {
+      setNote({ ok: false, text: "Файл не открылся: свиток слипся." });
+      return;
+    }
+    const ok = useGame.getState().importSaveFile(text.trim());
+    setNote(
+      ok
+        ? { ok: true, text: `Летопись «${file.name}» прочитана! Прежняя колония спрятана в запасную копию.` }
+        : { ok: false, text: "Не похоже на крысиную летопись: файл не читается." },
+    );
+  };
+
+  return (
+    <div className="space-y-1.5 border-t border-line/70 pt-2.5">
+      <div className="text-xs font-bold text-parchment">📁 Файл сохранения</div>
+      <div className="flex flex-wrap items-center gap-2">
+        <BrassButton tone="ghost" onClick={download} className="min-h-10">
+          💾 Скачать файл
+        </BrassButton>
+        <BrassButton tone="copper" onClick={() => inputRef.current?.click()} className="min-h-10">
+          📂 Загрузить файл
+        </BrassButton>
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".txt,.json,text/plain,application/json"
+          className="hidden"
+          aria-label="Файл сохранения"
+          onChange={(e) => {
+            const file = e.currentTarget.files?.[0];
+            e.currentTarget.value = ""; // the same file can be picked again
+            void load(file);
+          }}
+        />
+      </div>
+      <NoteLine note={note} />
+    </div>
+  );
+}
+
+/** «Откатить к копии»: the rolling backups (every 5 min and before imports and resets), newest first. */
+function Rollback() {
+  // every save may have rotated the copies: re-read them then (cheap, ~every 15 s)
+  useGame((s) => s.game.lastSaved);
+  const backups = useGame.getState().backups();
+  const [confirm, setConfirm] = useState<1 | 2 | null>(null);
+  const [note, setNote] = useState<Note>(null);
+
+  const restore = (b: BackupInfo) => {
+    const when = clockAt(b.at);
+    setConfirm(null);
+    setNote(
+      useGame.getState().restoreBackup(b.slot)
+        ? { ok: true, text: `Колония откатилась к копии от ${when}. Прежняя спрятана в копию — можно вернуть.` }
+        : { ok: false, text: "Эта копия не читается. Попробуйте другую." },
+    );
+  };
+
+  return (
+    <div className="space-y-1.5 border-t border-line/70 pt-2.5">
+      <div className="text-xs font-bold text-parchment">🕰 Откатить к копии</div>
+      {backups.length === 0 ? (
+        <p className="text-[11px] leading-snug text-parchment-dim">Копий пока нет: летописец делает их каждые 5 минут игры, а ещё перед импортом и сбросом.</p>
+      ) : (
+        <ul className="space-y-1">
+          {backups.map((b) => (
+            <li key={b.slot} className="flex flex-wrap items-center gap-2 rounded-md border border-line/70 bg-soot/40 px-2 py-1">
+              <span className="min-w-0 flex-1 text-xs leading-tight text-parchment">
+                <b className="font-mono tabular text-brass-light">{clockAt(b.at)}</b> · {ratsLabel(b.rats)}
+                {b.crownsEver > 0 && <span className="text-gaslight"> · 👑 {fmtInt(b.crownsEver)}</span>}
+              </span>
+              {confirm === b.slot ? (
+                <span className="flex gap-1.5">
+                  <BrassButton tone="danger" size="sm" onClick={() => restore(b)} className="min-h-10">
+                    Да, откатить
+                  </BrassButton>
+                  <BrassButton tone="ghost" size="sm" onClick={() => setConfirm(null)} className="min-h-10">
+                    Нет
+                  </BrassButton>
+                </span>
+              ) : (
+                <BrassButton tone="verdigris" size="sm" onClick={() => setConfirm(b.slot)} className="min-h-10">
+                  Откатить
+                </BrassButton>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {backups.length > 0 && <p className="text-[11px] leading-snug text-parchment-dim">Нынешняя колония перед откатом сама уйдёт в копию — передумать можно.</p>}
+      <NoteLine note={note} />
+    </div>
   );
 }
 
@@ -366,7 +581,7 @@ function About() {
       <SectionTitle right={<span className="font-mono text-[11px] text-parchment-dim">v1.0</span>}>Об игре</SectionTitle>
       <Card>
         <p className="font-display text-base font-bold leading-tight text-brass-light">Ratropolis Underground</p>
-        <p className="text-xs italic text-parchment-dim">«Для людей это один вторник. Для крыс — целая история».</p>
+        <p className="text-xs italic text-parchment-dim">«Для людей это один день. Для крыс — целая история».</p>
         <ul className="mt-2 space-y-1">
           {controls.map(([icon, text]) => (
             <li key={text} className="flex items-start gap-2 text-xs leading-snug text-parchment">

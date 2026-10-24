@@ -2,14 +2,16 @@
 
 /**
  * One horizontal band of the underground per open zone: rock, floors, and zone-specific ambient life
- * (candles, drips, mushrooms, gas jets, steam, glass arches, the golden clock…).
+ * (candles, drips, mushrooms, gas jets, steam, glass arches, the golden clock…), plus giant buried human
+ * things in the earth of the flanks (a horseshoe, a clay pipe, a gin bottle, a pocket watch, an umbrella, a ticket).
  */
-import { memo, useState, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import { ZONES } from "@/game/data/zones";
 import { useGame } from "@/game/store";
 import type { ZoneId } from "@/game/types";
 import { BAND_H, bandTop, COLS, DECOR_SLOTS, ROW_FLOOR, seeded, shade, SHAFT_X, W } from "./geometry";
 import { Barrel, BarrelEnd, Candle, CheeseWheel, Glow, Lantern, Sign, Steam, Suitcase } from "./parts";
+import { registerCull } from "./registry";
 
 const X0 = -2000;
 const XW = W + 4000;
@@ -322,7 +324,8 @@ function TerminalDecor() {
   );
 }
 
-const DECOR: Record<ZoneId, () => ReactNode> = {
+/** Each zone's background decor (LockedBand shows the next one as a silhouette, CO-8). */
+export const DECOR: Record<ZoneId, () => ReactNode> = {
   burrow: BurrowDecor,
   sewers: SewersDecor,
   cellars: CellarsDecor,
@@ -330,15 +333,164 @@ const DECOR: Record<ZoneId, () => ReactNode> = {
   terminal: TerminalDecor,
 };
 
+/* ------------------------------------------------------------ giant buried human things (the flanks) */
+
+/** A horseshoe the size of a chamber row, nails and all (burrow, left flank). */
+function Horseshoe() {
+  const d = "M-64 112V-6A64 64 0 0 1 64 -6V112";
+  return (
+    <g transform="translate(-150 196) rotate(-17)">
+      <path d={d} fill="none" stroke="#5e5248" strokeWidth="38" />
+      <path d={d} fill="none" stroke="#a09080" strokeWidth="30" />
+      <path d="M-50 108V-6A50 50 0 0 1 50 -6V108" fill="none" stroke="#d8cab8" strokeWidth="3" opacity=".7" />
+      {[-0.9, -0.55, -0.2, 0.2, 0.55, 0.9].map((t) => {
+        const a = (t * Math.PI) / 2;
+        return <rect key={t} x={Math.sin(a) * 64 - 5} y={-6 - Math.cos(a) * 64 - 3} width="10" height="6" rx="1" fill="#231d18" transform={`rotate(${(t * 90).toFixed(0)} ${(Math.sin(a) * 64).toFixed(1)} ${(-6 - Math.cos(a) * 64).toFixed(1)})`} />;
+      })}
+      {[-64, 64].map((x) => (
+        <g key={x}>
+          <rect x={x - 5} y="34" width="10" height="6" rx="1" fill="#231d18" />
+          <rect x={x - 5} y="72" width="10" height="6" rx="1" fill="#231d18" />
+          <rect x={x - 21} y="108" width="42" height="14" rx="3" fill="#6e6258" />
+        </g>
+      ))}
+      <ellipse cx="-58" cy="-30" rx="12" ry="20" fill="#8a4a26" opacity=".55" />
+      <ellipse cx="44" cy="60" rx="9" ry="16" fill="#8a4a26" opacity=".45" />
+    </g>
+  );
+}
+
+/** The bowl of a clay pipe with a snapped stem (burrow, right flank). */
+function PipeBowl() {
+  return (
+    <g transform={`translate(${W + 118} 214) rotate(14)`}>
+      <path d="M28 46L190 6" stroke="#b8a888" strokeWidth="17" strokeLinecap="round" />
+      <path d="M28 46L190 6" stroke="#d9ccb0" strokeWidth="12" strokeLinecap="round" />
+      <path d="M186 -2l10 6-4 4 8 4-8 6" fill="none" stroke="#8a7a5e" strokeWidth="2" />
+      <path d="M-48 -64Q-54 34 -4 60Q34 70 46 34L50 -64Z" fill="#d9ccb0" stroke="#8a7a5e" strokeWidth="2.5" />
+      <path d="M-34 -50Q-38 24 -4 46" fill="none" stroke="#fff6e0" strokeWidth="6" opacity=".35" />
+      <path d="M8 62q4 10 14 12" fill="none" stroke="#8a7a5e" strokeWidth="5" strokeLinecap="round" />
+      <ellipse cx="1" cy="-64" rx="49" ry="11" fill="#2a1c12" stroke="#8a7a5e" strokeWidth="3" />
+      <ellipse cx="-6" cy="-62" rx="30" ry="5" fill="#4a3424" />
+      <text x="-2" y="10" fontSize="12" textAnchor="middle" fill="#8a7a5e" className="font-display" fontWeight="700">
+        J.B.
+      </text>
+    </g>
+  );
+}
+
+/** A green gin bottle lying in the silt (sewers, right flank). */
+function GreenBottle() {
+  return (
+    <g transform={`translate(${W + 138} 176) rotate(58)`}>
+      <rect x="-42" y="-74" width="84" height="170" rx="16" fill="#2f6b3e" stroke="#163a22" strokeWidth="3" />
+      <path d="M-42 -50Q-42 -96 -14 -104V-150H14V-104Q42 -96 42 -50" fill="#2f6b3e" stroke="#163a22" strokeWidth="3" />
+      <rect x="-18" y="-164" width="36" height="16" rx="4" fill="#a8743f" stroke="#5c3a1a" strokeWidth="2" />
+      <rect x="-30" y="-20" width="60" height="62" rx="4" fill="#e8d9a8" opacity=".85" />
+      <text x="0" y="8" fontSize="13" textAnchor="middle" fill="#5c3320" className="font-display" fontWeight="700">
+        ДЖИНЪ
+      </text>
+      <text x="0" y="26" fontSize="8" textAnchor="middle" fill="#5c3320" className="font-display">
+        ЛОНДОНЪ
+      </text>
+      <path d="M-30 -66V80" stroke="#a8e0b0" strokeWidth="7" strokeLinecap="round" opacity=".35" />
+      <ellipse cx="0" cy="92" rx="34" ry="5" fill="#163a22" opacity=".5" />
+    </g>
+  );
+}
+
+/** A broken pocket watch: cracked glass, stopped hands, a few chain links (cellars, left flank). */
+function PocketWatch() {
+  return (
+    <g transform="translate(-140 196) rotate(-12)">
+      {[0, 1, 2, 3].map((i) => (
+        <ellipse key={i} cx={58 + i * 22} cy={-96 - i * 14} rx="12" ry="7" fill="none" stroke="#b8963e" strokeWidth="4" transform={`rotate(${-30 + i * 25} ${58 + i * 22} ${-96 - i * 14})`} />
+      ))}
+      <rect x="-10" y="-106" width="20" height="18" rx="4" fill="url(#cv-brass)" stroke="#5c4520" strokeWidth="1.5" />
+      <circle cx="0" cy="-112" r="12" fill="none" stroke="url(#cv-brass)" strokeWidth="5" />
+      <circle r="86" fill="url(#cv-brass)" stroke="#5c4520" strokeWidth="3" />
+      <circle r="72" fill="#efe5cc" stroke="#7d5f2c" strokeWidth="2" />
+      {Array.from({ length: 12 }, (_, k) => (
+        <rect key={k} x="-2" y="-66" width="4" height={k % 3 === 0 ? 12 : 7} fill="#2a1a0c" transform={`rotate(${k * 30})`} />
+      ))}
+      <path d="M0 4L-4 -46L4 -46z" fill="#2a1a0c" transform="rotate(-38)" />
+      <path d="M0 4L-3 -30L3 -30z" fill="#2a1a0c" transform="rotate(64)" />
+      <circle r="5" fill="#2a1a0c" />
+      <path d="M-56 -30L-12 -6L-30 30M-12 -6L40 -40M-12 -6L26 44L58 34" fill="none" stroke="#fff" strokeWidth="2" opacity=".7" />
+      <path d="M40 -40L62 -20M26 44L8 70" fill="none" stroke="#fff" strokeWidth="1.4" opacity=".55" />
+    </g>
+  );
+}
+
+/** The crook of a gentleman's umbrella with torn canopy ribs (metro, right flank). */
+function UmbrellaHandle() {
+  return (
+    <g transform={`translate(${W + 150} 236) rotate(16)`}>
+      <path d="M-20 -170L-90 -60M-20 -170L50 -64M-20 -170L-30 -50" stroke="#3b3f42" strokeWidth="3" />
+      <path d="M-20 -170L-90 -60Q-60 -74 -30 -50Q10 -70 50 -64Z" fill="#1d1a1f" opacity=".85" />
+      <path d="M-56 -100l14 6-6 10 12 2" fill="none" stroke="#3b3f42" strokeWidth="2" />
+      <path d="M-20 -170V40A42 42 0 0 1 -104 40V24" fill="none" stroke="#5c3a1a" strokeWidth="24" strokeLinecap="round" />
+      <path d="M-24 -150V38A36 36 0 0 1 -96 38" fill="none" stroke="#8a5a2a" strokeWidth="5" opacity=".6" />
+      <rect x="-36" y="-34" width="32" height="18" rx="3" fill="url(#cv-brass)" stroke="#5c4520" strokeWidth="1.5" />
+    </g>
+  );
+}
+
+/** A torn third-class ticket stub (terminal, left flank). */
+function TicketStub() {
+  return (
+    <g transform="translate(-142 192) rotate(-13)">
+      <path d="M-104 -56H96L84 -42L96 -28L84 -14L96 0L84 14L96 28L84 42L96 56H-104Z" fill="#e8d9a8" stroke="#7a5a2a" strokeWidth="2.5" />
+      <rect x="-94" y="-46" width="170" height="92" fill="none" stroke="#a8743f" strokeWidth="1.4" strokeDasharray="5 3" />
+      <text x="-10" y="-22" fontSize="13" textAnchor="middle" fill="#5c3320" className="font-display" fontWeight="700">
+        ПОДЗЕМНАЯ ЖЕЛ. ДОР.
+      </text>
+      <text x="-10" y="6" fontSize="22" textAnchor="middle" fill="#7a2a24" className="font-display" fontWeight="700">
+        3-й КЛАССЪ
+      </text>
+      <text x="-10" y="30" fontSize="11" textAnchor="middle" fill="#5c3320" className="font-mono">
+        № 018870 · 1 пенни
+      </text>
+      {[-40, -20, 0, 20, 40].map((y) => (
+        <circle key={y} cx="70" cy={y} r="2.4" fill="#7a5a2a" opacity=".6" />
+      ))}
+    </g>
+  );
+}
+
+const RELICS: Record<ZoneId, () => ReactNode> = {
+  burrow: () => (
+    <>
+      <Horseshoe />
+      <PipeBowl />
+    </>
+  ),
+  sewers: GreenBottle,
+  cellars: PocketWatch,
+  metro: UmbrellaHandle,
+  terminal: TicketStub,
+};
+
 /** Background band of an open zone. */
 export const ZoneBand = memo(function ZoneBand({ zone }: { zone: ZoneId }) {
   const open = useGame((s) => !!s.game.zones[zone]);
+  const ref = useRef<SVGGElement>(null);
+  // drips, waves, gas jets and steam pause while the band is far off-screen
+  useEffect(() => {
+    const el = ref.current;
+    if (!open || !el) return;
+    return registerCull(el, bandTop(zone), bandTop(zone) + BAND_H);
+  }, [open, zone]);
   if (!open) return null;
   const Decor = DECOR[zone];
+  const Relic = RELICS[zone];
   return (
-    <g transform={`translate(0 ${bandTop(zone)})`}>
+    <g ref={ref} transform={`translate(0 ${bandTop(zone)})`}>
       <Rock zone={zone} />
       <Decor />
+      <g opacity=".5" pointerEvents="none">
+        <Relic />
+      </g>
       <Floors zone={zone} />
       <ZoneLabel zone={zone} />
     </g>

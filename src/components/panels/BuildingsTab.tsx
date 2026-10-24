@@ -3,17 +3,22 @@
 /**
  * "Постройки": buy-mode toggle, foreman switches, cards grouped by open zone (collapsible),
  * and up to two "скоро" silhouettes per zone for buildings whose unlock is not met yet.
+ * The layout (and the «выгодно» payback pick) is sampled twice a second (PA-1, PA-3).
  */
-import { useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { BUILDING_ORDER, BUILDINGS } from "@/game/data/buildings";
 import { ZONE_ORDER, ZONES } from "@/game/data/zones";
 import { buildingVisible } from "@/game/engine/actions";
-import { useGame } from "@/game/store";
+import { paybackSeconds } from "@/game/engine/economy";
+import { maxAffordable } from "@/game/engine/formulas";
+import { onUiFx } from "@/game/fx";
+import { derivedOf, useGame } from "@/game/store";
 import type { BuildingId, BuyMode, GameState, ZoneId } from "@/game/types";
+import { useSampled } from "@/game/useSampled";
 import { cx } from "@/components/ui/kit";
 import BuildingCard from "./BuildingCard";
-import { Segmented, Switch, Toolbar, condHint } from "./common";
+import { Segmented, Switch, Toolbar, condHint, type SegOption } from "./common";
 
 interface ZoneGroup {
   zone: ZoneId;
@@ -22,27 +27,43 @@ interface ZoneGroup {
   levels: number;
 }
 
-function layoutOf(s: GameState): ZoneGroup[] {
-  return ZONE_ORDER.filter((z) => s.zones[z]).map((zone) => {
+interface Layout {
+  groups: ZoneGroup[];
+  /** Visible producer whose next level pays for itself soonest («выгодно»). */
+  best: BuildingId | null;
+  /** Most levels «Макс» could buy on any one card. */
+  maxN: number;
+}
+
+function layoutOf(s: GameState): Layout {
+  const d = derivedOf(s);
+  let best: BuildingId | null = null;
+  let bestT = Infinity;
+  let maxN = 0;
+  const groups = ZONE_ORDER.filter((z) => s.zones[z]).map((zone) => {
     const ids: BuildingId[] = [];
     const soon: ZoneGroup["soon"] = [];
     let levels = 0;
     for (const id of BUILDING_ORDER) {
-      if (BUILDINGS[id].zone !== zone) continue;
+      const def = BUILDINGS[id];
+      if (def.zone !== zone) continue;
       if (buildingVisible(s, id)) {
         ids.push(id);
         levels += s.buildings[id];
-      } else if (soon.length < 2) soon.push({ id, hint: condHint(s, BUILDINGS[id].unlock) });
+        maxN = Math.max(maxN, maxAffordable(s, id));
+        if (def.effects.some((e) => e.t === "produce") && s.buildings[id] < (def.maxLevel ?? Infinity)) {
+          const t = paybackSeconds(s, d, id, 1);
+          if (t < bestT) {
+            bestT = t;
+            best = id;
+          }
+        }
+      } else if (soon.length < 2) soon.push({ id, hint: condHint(s, def.unlock) });
     }
     return { zone, ids, soon, levels };
   });
+  return { groups, best, maxN };
 }
-
-const MODES: { value: BuyMode; label: string }[] = [
-  { value: 1, label: "×1" },
-  { value: 10, label: "×10" },
-  { value: "max", label: "Макс" },
-];
 
 const COLLAPSE_KEY = "ratropolis.ui.collapsedZones";
 
@@ -54,30 +75,57 @@ function readCollapsed(): Partial<Record<ZoneId, boolean>> {
   }
 }
 
+function saveCollapsed(c: Partial<Record<ZoneId, boolean>>): void {
+  try {
+    localStorage.setItem(COLLAPSE_KEY, JSON.stringify(c));
+  } catch {
+    /* storage blocked: keep it in memory */
+  }
+}
+
 export default function BuildingsTab() {
   const mode = useGame((s) => s.buyMode);
-  const layoutKey = useGame((s) => JSON.stringify(layoutOf(s.game)));
-  const groups = useMemo(() => JSON.parse(layoutKey) as ZoneGroup[], [layoutKey]);
+  const layoutKey = useSampled((s) => JSON.stringify(layoutOf(s.game)), 2, Object.is);
+  const { groups, best, maxN } = useMemo(() => JSON.parse(layoutKey) as Layout, [layoutKey]);
   const [collapsed, setCollapsed] = useState<Partial<Record<ZoneId, boolean>>>(readCollapsed);
 
   const toggle = (z: ZoneId) => {
     setCollapsed((c) => {
       const next = { ...c, [z]: !c[z] };
-      try {
-        localStorage.setItem(COLLAPSE_KEY, JSON.stringify(next));
-      } catch {
-        /* storage blocked: keep it in memory */
-      }
+      saveCollapsed(next);
       return next;
     });
   };
+
+  // a focus on a card inside a folded zone unfolds it (SidePanel retries the scroll until the card is there)
+  useEffect(
+    () =>
+      onUiFx((fx) => {
+        if (fx.k !== "focus" || !fx.target?.startsWith("b_")) return;
+        const def = BUILDINGS[fx.target.slice(2) as BuildingId];
+        if (!def) return;
+        setCollapsed((c) => {
+          if (!c[def.zone]) return c;
+          const next = { ...c, [def.zone]: false };
+          saveCollapsed(next);
+          return next;
+        });
+      }),
+    [],
+  );
+
+  const modes: SegOption<BuyMode>[] = [
+    { value: 1, label: "×1" },
+    { value: 10, label: "×10", title: "Ровно 10 уровней — или ничего" },
+    { value: "max", label: maxN > 0 ? `Макс(${maxN})` : "Макс", title: "Сколько хватит денег" },
+  ];
 
   return (
     <>
       <Toolbar
         icon="🏗️"
         title="Постройки"
-        right={<Segmented label="Сколько строить" value={mode} options={MODES} onChange={(v) => useGame.getState().setBuyMode(v)} />}
+        right={<Segmented label="Сколько строить" dense value={mode} options={modes} onChange={(v) => useGame.getState().setBuyMode(v)} />}
       >
         <ForemanBar />
       </Toolbar>
@@ -85,9 +133,9 @@ export default function BuildingsTab() {
       {groups.length === 0 || groups.every((g) => g.ids.length === 0 && g.soon.length === 0) ? (
         <p className="py-8 text-center text-sm italic text-parchment-dim">Подрядчики ещё не прибыли. Наберите крошек на первое гнездо.</p>
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-3 md:space-y-4">
           {groups.map((g) => (
-            <ZoneSection key={g.zone} group={g} collapsed={!!collapsed[g.zone]} onToggle={() => toggle(g.zone)} />
+            <ZoneSection key={g.zone} group={g} best={best} collapsed={!!collapsed[g.zone]} onToggle={() => toggle(g.zone)} />
           ))}
         </div>
       )}
@@ -95,7 +143,15 @@ export default function BuildingsTab() {
   );
 }
 
-function ZoneSection({ group, collapsed, onToggle }: { group: ZoneGroup; collapsed: boolean; onToggle: () => void }) {
+interface ZoneProps {
+  group: ZoneGroup;
+  best: BuildingId | null;
+  collapsed: boolean;
+  onToggle: () => void;
+}
+
+/** Re-renders only when its own zone's layout changes (onToggle is a fresh closure with the same effect). */
+const ZoneSection = memo(function ZoneSection({ group, best, collapsed, onToggle }: ZoneProps) {
   const z = ZONES[group.zone];
   return (
     <section>
@@ -103,24 +159,25 @@ function ZoneSection({ group, collapsed, onToggle }: { group: ZoneGroup; collaps
         type="button"
         onClick={onToggle}
         aria-expanded={!collapsed}
-        className="group mb-2 flex min-h-10 w-full items-center gap-2 rounded-md border-l-4 px-2 py-1 text-left transition hover:brightness-110"
+        className="group mb-1 flex min-h-8 w-full items-center gap-2 rounded-md border-l-4 px-2 py-0.5 text-left transition hover:brightness-110 md:mb-2 md:min-h-10 md:py-1"
         style={{ borderColor: z.palette.accent, background: `linear-gradient(90deg, ${z.palette.bg}, transparent 85%)` }}
       >
-        <span className="text-xl leading-none">{z.icon}</span>
+        <span className="text-lg leading-none md:text-xl">{z.icon}</span>
         <span className="min-w-0 flex-1">
-          <span className="block font-display text-base font-bold leading-tight text-parchment">{z.name}</span>
-          <span className="block text-[10px] uppercase tracking-wider text-parchment-dim">
+          <span className="block truncate font-display text-base font-bold leading-tight text-parchment">{z.name}</span>
+          <span className="block text-[10px] uppercase tracking-wider text-parchment-dim max-md:hidden">
             построек: {group.ids.length} · уровней: {group.levels}
           </span>
         </span>
+        <span className="shrink-0 font-mono text-[11px] tabular text-parchment-dim md:hidden">{group.levels} ур.</span>
         <span className={cx("text-brass transition-transform duration-200", collapsed ? "-rotate-90" : "rotate-0")} aria-hidden>
           ▾
         </span>
       </button>
       {!collapsed && (
-        <div className="space-y-2">
+        <div className="space-y-1.5 md:space-y-2">
           {group.ids.map((id) => (
-            <BuildingCard key={id} id={id} />
+            <BuildingCard key={id} id={id} best={id === best} />
           ))}
           {group.soon.map((s) => (
             <Silhouette key={s.id} id={s.id} hint={s.hint} />
@@ -129,12 +186,16 @@ function ZoneSection({ group, collapsed, onToggle }: { group: ZoneGroup; collaps
       )}
     </section>
   );
+}, sameZone);
+
+function sameZone(a: ZoneProps, b: ZoneProps): boolean {
+  return a.best === b.best && a.collapsed === b.collapsed && JSON.stringify(a.group) === JSON.stringify(b.group);
 }
 
 function Silhouette({ id, hint }: { id: BuildingId; hint: string }) {
   return (
-    <div className="flex items-center gap-2.5 rounded-lg border border-dashed border-line/90 bg-black/20 p-2">
-      <span className="grid h-12 w-12 shrink-0 place-items-center rounded-md border border-black/40 bg-black/40 text-[26px] shadow-[inset_0_2px_6px_rgba(0,0,0,.6)]">
+    <div className="flex items-center gap-2.5 rounded-lg border border-dashed border-line/90 bg-black/20 p-1.5 md:p-2">
+      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-black/40 bg-black/40 text-[22px] shadow-[inset_0_2px_6px_rgba(0,0,0,.6)] md:h-12 md:w-12 md:text-[26px]">
         <span className="rr-silhouette">{BUILDINGS[id].icon}</span>
       </span>
       <div className="min-w-0">

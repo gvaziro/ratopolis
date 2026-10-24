@@ -1,16 +1,19 @@
 "use client";
 
 /**
- * The masthead: title, the human clock, district, rats, suspicion, crowns, sound and settings.
- * One compact row (~44 px); on phones the title shrinks to a crest and the date hides.
+ * The masthead: title, the human clock with the district chip (md+), rats, suspicion, crowns, sound and settings.
+ * One compact row (~44 px); on phones the title shrinks to a crest, the date and the chip hide (the clock's tooltip
+ * still names the district and its trait).
  */
 import { memo } from "react";
 import { sfx } from "@/audio/sfx";
-import { districtName } from "@/game/data/zones";
+import { districtName, districtTrait } from "@/game/data/zones";
 import { humanClock } from "@/game/engine/formulas";
+import { suspicionInfo } from "@/game/engine/hints";
 import { derivedOf, useGame } from "@/game/store";
+import { useSampled } from "@/game/useSampled";
 import { cx } from "@/components/ui/kit";
-import { fmtInt, fmtRate } from "@/lib/format";
+import { fmt, fmtInt, fmtRate, fmtTime } from "@/lib/format";
 import { humanActivity, humanDate, pad } from "./clock";
 import FloatTip from "./FloatTip";
 import HudStyles from "./HudStyles";
@@ -105,22 +108,52 @@ function Clock() {
       <span className="mt-1 block text-parchment-dim">
         Наша секунда — пять человеческих. Для людей это один день. Для крыс — целая история.
       </span>
-      <span className="mt-1 block text-parchment-dim">Район колонии: {districtName(district)}</span>
+      <span className="mt-1 block text-parchment-dim">
+        Район колонии: {districtName(district)} · {districtTrait(district).icon} {districtTrait(district).name}
+      </span>
     </span>
   );
   return (
-    <FloatTip tip={tip} className="min-w-0 shrink" width={260}>
-      <span className="flex min-h-10 min-w-0 cursor-default flex-col justify-center leading-none">
-        <span className="whitespace-nowrap font-mono text-[12px] tabular text-parchment sm:text-[13px]">
+    <div className="flex min-h-10 min-w-0 shrink flex-col justify-center leading-none">
+      <FloatTip tip={tip} className="min-w-0" width={260}>
+        <span className="flex min-h-5 min-w-0 cursor-default items-center whitespace-nowrap font-mono text-[12px] tabular text-parchment max-md:min-h-10 sm:text-[13px]">
           <span className="text-brass-light">{d.wd}</span>
           <span className="hidden sm:inline">
             , {d.date} {d.month} {d.year}
           </span>
-          <span className="text-brass-dark"> · </span>
+          <span className="text-brass-dark">&nbsp;·&nbsp;</span>
           <span className="font-bold">{time}</span>
         </span>
-        <span className="mt-0.5 hidden truncate font-display text-[11px] font-semibold tracking-wide text-parchment-dim md:block">
-          ⌂ {districtName(district)}
+      </FloatTip>
+      <DistrictChip district={district} className="min-w-0 max-md:hidden" />
+    </div>
+  );
+}
+
+/** «🧺 Саутварк · Боро-маркет»: the district this run lives in and its trait; the perk and the quirk in the tooltip. */
+function DistrictChip({ district, className }: { district: number; className?: string }) {
+  const trait = districtTrait(district);
+  const name = districtName(district);
+  const tip = (
+    <span className="block">
+      <span className="block font-display text-sm font-bold text-brass-light">
+        {trait.icon} {name}: «{trait.name}»
+      </span>
+      <span className="mt-0.5 block">
+        <span className="font-bold text-good">Выгода:</span> {trait.perk}
+      </span>
+      <span className="block">
+        <span className="font-bold text-danger-light">Причуда:</span> {trait.quirk}
+      </span>
+      <span className="mt-1 block text-parchment-dim">Каждое Великое Переселение уводит колонию в новый район — со своим нравом.</span>
+    </span>
+  );
+  return (
+    <FloatTip tip={tip} width={270} className={className}>
+      <span className="mt-0.5 inline-flex min-w-0 max-w-full cursor-default items-center gap-1 rounded-full border border-brass-dark/60 bg-soot/50 px-1.5 py-px font-display text-[11px] font-semibold leading-tight tracking-wide text-parchment-dim">
+        <span aria-hidden>{trait.icon}</span>
+        <span className="truncate">
+          {name} · {trait.name}
         </span>
       </span>
     </FloatTip>
@@ -178,15 +211,8 @@ function Suspicion() {
   if (!shown) return null;
   const color = suspicionColor(pct);
   const alarm = pct >= 80;
-  const tip = (
-    <span className="block">
-      <span className="block font-bold text-brass-light">👁 Подозрение людей: {pct}%</span>
-      <span className="block">Растёт, пока колония шумит. Кот приходит чаще, а на 100% является Крысолов с дудочкой.</span>
-      {alarm && <span className="block text-danger-light">Наверху уже шепчутся о крысолове!</span>}
-    </span>
-  );
   return (
-    <FloatTip tip={tip}>
+    <FloatTip tip={<SuspicionTip />} width={270}>
       <span className="flex min-h-10 cursor-default items-center gap-1 whitespace-nowrap font-mono text-[12px] tabular sm:text-[13px]">
         <span aria-hidden className={cx(alarm && "hud-throb inline-block")}>
           👁
@@ -202,6 +228,43 @@ function Suspicion() {
         </span>
       </span>
     </FloatTip>
+  );
+}
+
+/** Concrete numbers from suspicionInfo: the rate, the time left until the Ratcatcher, what brings it down. Mounted only while open. */
+function SuspicionTip() {
+  const info = useSampled((s) => {
+    const i = suspicionInfo(s.game, derivedOf(s.game));
+    return {
+      pct: Math.floor(i.pct),
+      perMin: i.perMin,
+      eta: i.etaSec === null ? -1 : Math.round(i.etaSec),
+      reducers: i.reducers.map((r) => `${r.label} ${r.amount}`).join(", "),
+    };
+  }, 2);
+  return (
+    <span className="block">
+      <span className="block font-bold text-brass-light">👁 Подозрение людей: {info.pct}%</span>
+      {info.perMin > 0 ? (
+        <span className="block">
+          <b className="font-mono tabular text-gaslight">+{fmt(info.perMin)}%/мин</b>, пока вы играете <span className="text-good">(в офлайне не растёт)</span>
+        </span>
+      ) : (
+        <span className="block">Пока не растёт: наверху колонию ещё не замечают.</span>
+      )}
+      {info.pct >= 100 ? (
+        <span className="block font-bold text-danger-light">Крысолов уже на пороге!</span>
+      ) : (
+        info.eta > 0 && (
+          <span className="block">
+            <b className="font-mono tabular">≈ {fmtTime(info.eta)}</b> до Крысолова
+          </span>
+        )
+      )}
+      <span className="mt-1 block text-parchment-dim">Снижают: {info.reducers}.</span>
+      <span className="mt-1 block text-parchment-dim">Чем выше, тем чаще заглядывает Кот, а на 100% является Крысолов с дудочкой.</span>
+      {info.pct >= 80 && info.pct < 100 && <span className="block text-danger-light">Наверху уже шепчутся о крысолове!</span>}
+    </span>
   );
 }
 

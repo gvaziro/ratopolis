@@ -4,7 +4,7 @@ import { EXPRESS_BASE, EXPRESS_GROWTH } from "../data/meta";
 import { BUILDING_IDS, type Amounts, type EngineCtx } from "../types";
 import { buyBuilding } from "./actions";
 import { derive } from "./derive";
-import { buildingCost, canAfford, crownsForRun, entries, expressStageCost, humanActivity, humanClock, maxAffordable, nextCrownAt } from "./formulas";
+import { buildingCost, canAfford, crownThreshold, crownsForRun, entries, expressStageCost, humanActivity, humanClock, maxAffordable, nextCrownAt, prevCrownAt } from "./formulas";
 import { rand } from "./rng";
 import { createInitialState } from "./state";
 
@@ -88,29 +88,85 @@ describe("projects and prestige", () => {
     expect(expressStageCost(s, 1).rails).toBe(Math.ceil(EXPRESS_BASE.rails * 0.75));
   });
 
-  it("crowns = floor(10·√(E/1e6)·1.25^[coronation]) and the next-crown threshold", () => {
+  it("crowns: 10·√(E/1e6) up to 1e8, then the soft cap 100·(E/1e8)^0.1; ×1.25 after the coronation", () => {
     const s = createInitialState(1, 0);
     const table: [number, number][] = [
       [5e5, 0],
       [1e6, 10],
       [4e6, 20],
       [1e7, 31],
+      [6.4e7, 80],
       [1e8, 100],
-      [1e9, 316],
+      [1.21e8, 101],
+      [1e9, 125],
+      [1.5e9, 131],
     ];
     for (const [e, c] of table) {
       s.eRun = e;
-      expect(crownsForRun(s)).toBe(c);
+      expect(crownsForRun(s), String(e)).toBe(c);
     }
-    s.eRun = 4e6;
     s.coronatedThisRun = true;
-    expect(crownsForRun(s)).toBe(25);
+    for (const [e, c] of [
+      [4e6, 25],
+      [1.5e9, 163], // GDD: «1.5B → ≈164»
+      [7.6e9, 192],
+    ] as const) {
+      s.eRun = e;
+      expect(crownsForRun(s), String(e)).toBe(c);
+    }
     s.coronatedThisRun = false;
     s.eRun = 1e6;
     const next = nextCrownAt(s);
     expect(next).toBeGreaterThan(1e6);
     s.eRun = next * 1.000001;
     expect(crownsForRun(s)).toBe(11);
+  });
+
+  it("crowns are continuous at E = 1e8 and never decrease", () => {
+    const s = createInitialState(1, 0);
+    s.eRun = 1e8 * (1 - 1e-9);
+    expect(crownsForRun(s)).toBe(99);
+    s.eRun = 1e8;
+    expect(crownsForRun(s)).toBe(100);
+    s.eRun = 1e8 * (1 + 1e-9);
+    expect(crownsForRun(s)).toBe(100);
+    for (const bonus of [false, true]) {
+      s.coronatedThisRun = bonus;
+      let prev = 0;
+      for (let lg = 5; lg <= 12; lg += 0.01) {
+        s.eRun = Math.pow(10, lg);
+        const c = crownsForRun(s);
+        expect(c).toBeGreaterThanOrEqual(prev);
+        prev = c;
+      }
+    }
+  });
+
+  it("nextCrownAt / prevCrownAt are the exact inverse of crownsForRun for k = 0…300", () => {
+    const s = createInitialState(1, 0);
+    for (const bonus of [false, true]) {
+      s.coronatedThisRun = bonus;
+      const b = bonus ? 1.25 : 1;
+      s.eRun = 0;
+      expect(nextCrownAt(s)).toBe(1e6);
+      s.eRun = 1e6;
+      const first = crownsForRun(s);
+      expect(first).toBe(bonus ? 12 : 10);
+      s.eRun = 1e6 * (1 - 1e-12);
+      expect(crownsForRun(s)).toBe(0);
+      for (let k = first; k <= 300; k++) {
+        s.eRun = crownThreshold(k / b);
+        if (s.eRun < 1e6) s.eRun = 1e6;
+        expect(crownsForRun(s), `k ${k} bonus ${bonus}`).toBe(k);
+        expect(prevCrownAt(s)).toBeLessThanOrEqual(s.eRun);
+        const next = nextCrownAt(s);
+        expect(next).toBe(crownThreshold((k + 1) / b));
+        s.eRun = next;
+        expect(crownsForRun(s)).toBe(k + 1);
+        s.eRun = next * (1 - 1e-12);
+        expect(crownsForRun(s)).toBe(k);
+      }
+    }
   });
 });
 

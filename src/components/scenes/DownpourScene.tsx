@@ -4,16 +4,21 @@
  * «Ливень» close-up. Phase `taps`: rain drums through the street grate, murky water rises (faster for every
  * gushing outlet) and the player spins three valve wheels shut → {a:"taps", cleared: valves closed by hand}.
  * Phase `catch`: the water settles into a current and flotsam drifts right→left (CatchCanvas, float mode).
+ * SC-6: the wheels are rotary — drag around a wheel and every 72° clockwise is one turn (a tap or a key still counts
+ * one); the three outlets gush at 1.6 / 1.0 / 0.6 of the flood rate (shuffled per downpour, stream width shows it), so
+ * shutting the widest first visibly slows the water; past 55% the scene dims and bubbles; «до затопления N с» comes
+ * from the water integrator. The result carries fastMs (first to last valve shut by hand).
  */
 import { memo, useCallback, useEffect, useId, useRef, useState, type RefObject } from "react";
 import { sfx } from "@/audio/sfx";
 import { cx, Stamp } from "@/components/ui/kit";
+import { sfxCue } from "@/game/fx";
 import { useGame } from "@/game/store";
 import type { CatchResult, Scene } from "@/game/types";
 import { fmtInt } from "@/lib/format";
 import CatchCanvas from "./CatchCanvas";
 import { Countdown, HazardStyles, makeTapLimiter, useReduced, useTimeUp } from "./HazardKit";
-import { act, shake, WATER_FRAC } from "./sceneUtils";
+import { act, hash01, shake, WATER_FRAC } from "./sceneUtils";
 
 /* Geometry, as fractions of the scene body (shared by the DOM valves and the water canvas). */
 const VALVE_X = [0.2, 0.5, 0.8];
@@ -28,11 +33,23 @@ const CALM_LEVEL = 1 - WATER_FRAC;
 const FLOOD_RATE = 0.0175;
 const TURN_DEG = 72;
 
+/** Outlet strengths (× FLOOD_RATE), dealt to the three valves in a shuffled order each downpour. */
+const GUSH = [1.6, 1, 0.6];
+/** Above this water level the scene dims and the drowned outlets bubble. */
+const DIM_LEVEL = 0.55;
+
 /** Mutable channel between the React layer and the water canvas (no re-renders). */
 interface Shared {
   open: number[]; // 0..1 per valve: how hard its outlet gushes
+  /** Outlet strength per valve (GUSH, shuffled). */
+  mul: number[];
   catching: boolean;
   splash: ((nx: number, ny: number, n: number) => void) | null;
+  /** The canvas writes «до затопления N с» here and dims the scene through `dim`. */
+  eta: HTMLSpanElement | null;
+  dim: HTMLDivElement | null;
+  /** Phase end (run time) and the game clock offset, for the shown seconds. */
+  endsAt: number;
 }
 
 function closedBy(hits: number[], pre: number, hp: number): number {
@@ -48,8 +65,16 @@ export default function DownpourScene({ scene }: { scene: Scene }) {
   const hp = Math.max(1, scene.taps?.hp ?? 6);
   const total = Math.max(0.1, scene.taps?.duration ?? scene.phaseEnds - scene.phaseStart);
 
-  const shared = useRef<Shared>({ open: [1, 1, 1], catching: !taps, splash: null });
+  const [mul] = useState(() => {
+    // a fixed shuffle per downpour (the scene seq), so a remount keeps the same outlets
+    const order = [0, 1, 2].sort((a, b) => hash01(scene.seq, a + 1) - hash01(scene.seq, b + 1));
+    const m = [0, 0, 0];
+    order.forEach((v, k) => (m[v] = GUSH[k]));
+    return m;
+  });
+  const shared = useRef<Shared>({ open: [1, 1, 1], mul, catching: !taps, splash: null, eta: null, dim: null, endsAt: scene.phaseEnds });
   const hitsRef = useRef<number[]>([0, 0, 0]);
+  const shutAt = useRef<number[]>([]);
   const sentRef = useRef(false);
   const limiter = useRef<(() => boolean) | null>(null);
   const [hits, setHits] = useState<number[]>([0, 0, 0]);
@@ -58,7 +83,9 @@ export default function DownpourScene({ scene }: { scene: Scene }) {
   const send = useCallback(() => {
     if (sentRef.current) return;
     sentRef.current = true;
-    act({ a: "taps", cleared: closedBy(hitsRef.current, pre, hp) });
+    const at = shutAt.current;
+    const fastMs = at.length >= 2 ? Math.round(at[at.length - 1] - at[0]) : at.length === 1 && pre >= 2 ? 0 : undefined;
+    act(fastMs === undefined ? { a: "taps", cleared: closedBy(hitsRef.current, pre, hp) } : { a: "taps", cleared: closedBy(hitsRef.current, pre, hp), fastMs });
   }, [pre, hp]);
 
   // time is up: report whatever got closed (the engine waits a short grace for us)
@@ -86,10 +113,12 @@ export default function DownpourScene({ scene }: { scene: Scene }) {
     h[i] += 1;
     setHits([...h]);
     sfx.splash();
+    sfxCue("valveCreak", { intensity: 0.7, pitch: 0.9 + 0.05 * h[i] });
     shared.current.splash?.(VALVE_X[i], OUTLET_Y, 12);
     if (h[i] >= hp) {
       sfx.clack();
       shake(2, 160);
+      shutAt.current.push(performance.now());
     }
     if (closedBy(h, pre, hp) >= 3 - pre) send();
   };
@@ -106,16 +135,22 @@ export default function DownpourScene({ scene }: { scene: Scene }) {
       />
       <Pipes />
       <WaterCanvas sharedRef={shared} reduced={reduced} />
+      <div ref={(el) => void (shared.current.dim = el)} className="pointer-events-none absolute inset-0 bg-[#020606] opacity-0 transition-opacity duration-500" />
       {!reduced && taps && <div className="pointer-events-none absolute inset-0 bg-[#dfe9ff] opacity-0" style={{ animation: "rh-lightning 1.7s ease-out 1.15s both" }} />}
 
       {[0, 1, 2].map((i) => (
-        <Valve key={i} i={i} turns={i < pre ? 0 : hits[i]} hp={hp} closed={closed[i]} preClosed={i < pre} active={taps} reduced={reduced} onTurn={turn} />
+        <Valve key={i} i={i} turns={i < pre ? 0 : hits[i]} hp={hp} closed={closed[i]} preClosed={i < pre} active={taps} reduced={reduced} onTurn={turn} gush={mul[i]} />
       ))}
 
       {taps ? (
         <>
           <div className="pointer-events-none absolute inset-x-2 top-[calc(9%_+_6px)] z-20 flex items-start justify-between gap-2">
-            <Countdown endsAt={scene.phaseEnds} total={total} label="Шлюзы!" />
+            <div className="flex items-center gap-2">
+              <Countdown endsAt={scene.phaseEnds} total={total} label="Шлюзы!" warnAt={3} />
+              <span className="rounded-full border border-[#4f9d8a] bg-soot/85 px-2.5 py-1 text-xs font-bold text-verdigris-light shadow-[0_4px_14px_rgba(0,0,0,.6)]">
+                до затопления <span ref={(el) => void (shared.current.eta = el)} className="font-mono tabular">…</span>
+              </span>
+            </div>
             <div className="rounded-full border border-brass-dark bg-soot/85 px-3 py-1.5 text-xs font-bold text-parchment shadow-[0_4px_14px_rgba(0,0,0,.6)]">
               Задраено <span className="font-mono text-brass-light tabular">{fmtInt(localClosed)}/3</span>
             </div>
@@ -150,6 +185,7 @@ function Valve({
   active,
   reduced,
   onTurn,
+  gush,
 }: {
   i: number;
   turns: number;
@@ -159,8 +195,17 @@ function Valve({
   active: boolean;
   reduced: boolean;
   onTurn: (i: number) => void;
+  /** Outlet strength of this valve (×FLOOD_RATE). */
+  gush: number;
 }) {
   const progress = closed ? 1 : Math.min(1, turns / hp);
+  // rotary drag: the swept angle around the wheel's centre; every 72° clockwise is a turn, a tap is one turn
+  const wheelRef = useRef<HTMLSpanElement>(null);
+  const drag = useRef<{ id: number; cx: number; cy: number; a: number; sweep: number; credited: number } | null>(null);
+  const setSpin = (extra: number) => {
+    const el = wheelRef.current;
+    if (el) el.style.transform = `rotate(${turns * TURN_DEG + extra}deg)`;
+  };
   const C = 2 * Math.PI * 46;
   const label = preClosed ? "Вентиль задраен водяным колесом" : closed ? "Вентиль задраен" : `Вентиль ${i + 1}: ещё ${hp - turns} оборотов`;
   return (
@@ -171,7 +216,43 @@ function Valve({
       onPointerDown={(e) => {
         if (e.pointerType === "mouse" && e.button !== 0) return;
         e.preventDefault();
-        onTurn(i);
+        const r = e.currentTarget.getBoundingClientRect();
+        const cx = r.left + r.width / 2;
+        const cy = r.top + r.height / 2;
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+        drag.current = { id: e.pointerId, cx, cy, a: Math.atan2(e.clientY - cy, e.clientX - cx), sweep: 0, credited: 0 };
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!d || d.id !== e.pointerId) return;
+        const a = Math.atan2(e.clientY - d.cy, e.clientX - d.cx);
+        let da = ((a - d.a) * 180) / Math.PI;
+        if (da > 180) da -= 360;
+        else if (da < -180) da += 360;
+        d.a = a;
+        if (da >= 0) {
+          d.sweep += da;
+          while (d.sweep - d.credited * TURN_DEG >= TURN_DEG) {
+            d.credited++;
+            onTurn(i);
+          }
+          setSpin(reduced ? 0 : d.sweep - d.credited * TURN_DEG);
+        } else {
+          // against the thread: the wheel only shudders
+          setSpin(reduced ? 0 : Math.max(-6, da));
+        }
+      }}
+      onPointerUp={(e) => {
+        const d = drag.current;
+        if (!d || d.id !== e.pointerId) return;
+        drag.current = null;
+        // a plain tap still turns once
+        if (d.credited === 0 && d.sweep < TURN_DEG / 2) onTurn(i);
+        setSpin(0);
+      }}
+      onPointerCancel={() => {
+        drag.current = null;
+        setSpin(0);
       }}
       onKeyDown={(e) => {
         if ((e.key === "Enter" || e.key === " ") && !e.repeat) {
@@ -201,8 +282,9 @@ function Valve({
         />
       </svg>
       <span
+        ref={wheelRef}
         className="absolute inset-[10%] block"
-        style={{ transform: `rotate(${turns * TURN_DEG}deg)`, transition: reduced ? "transform .12s linear" : "transform .26s cubic-bezier(.2,1.7,.45,1)" }}
+        style={{ transform: `rotate(${turns * TURN_DEG}deg)`, transition: reduced ? "transform .12s linear" : "transform .2s cubic-bezier(.2,1.4,.45,1)" }}
       >
         <ValveWheel shut={closed} />
       </span>
@@ -210,7 +292,7 @@ function Valve({
       <span className="pointer-events-none absolute inset-[14%] rounded-full shadow-[inset_6px_8px_10px_-6px_rgba(255,255,255,.25)]" />
       {active && !closed && (
         <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 translate-y-full whitespace-nowrap rounded-full border border-brass-dark bg-soot/90 px-2 py-0.5 font-mono text-xs font-bold text-brass-light tabular shadow">
-          ×{fmtInt(hp - turns)}
+          ×{fmtInt(hp - turns)} <span className="text-verdigris-light">{gush >= 1.5 ? "💦💦" : gush >= 1 ? "💦" : "·"}</span>
         </span>
       )}
       {closed && (
@@ -398,6 +480,7 @@ function WaterCanvas({ sharedRef, reduced }: { sharedRef: RefObject<Shared>; red
       calm ? Math.sin(x * 0.022 + t * 2.3) * 4 + Math.sin(x * 0.053 + t * 3.6) * 2 : Math.sin(x * 0.02 + t * 2.7) * 5 + Math.sin(x * 0.047 - t * 3.4) * 3;
 
     let t = 0;
+    let wasDeep = false;
     let last = performance.now();
     let raf = 0;
     const loop = (now: number) => {
@@ -408,8 +491,22 @@ function WaterCanvas({ sharedRef, reduced }: { sharedRef: RefObject<Shared>; red
       const sh = sharedRef.current;
       const calm = sh.catching;
       let gush = 0;
-      for (const o of sh.open) gush += o;
+      sh.open.forEach((o, i) => (gush += o * (sh.mul[i] ?? 1)));
       level = calm ? level + (CALM_LEVEL - level) * Math.min(1, dt * 1.2) : Math.min(LEVEL_MAX, level + FLOOD_RATE * gush * dt);
+      // «до затопления N с»: the level integrator's own forecast, never longer than the time left
+      if (sh.eta && !calm) {
+        const left = Math.max(0, sh.endsAt - useGame.getState().game.time);
+        const flood = gush > 0.01 ? (LEVEL_MAX - level) / (FLOOD_RATE * gush) : Infinity;
+        const n = Math.ceil(Math.max(0, Math.min(left, flood)));
+        const txt = level >= LEVEL_MAX - 1e-3 ? "затопило!" : `${n} с`;
+        if (sh.eta.textContent !== txt) sh.eta.textContent = txt;
+      }
+      const deep = !calm && level > DIM_LEVEL;
+      if (deep !== wasDeep) {
+        wasDeep = deep;
+        if (sh.dim) sh.dim.style.opacity = deep ? "0.35" : "0";
+        if (deep) sfxCue("bubbles");
+      }
       const sy = H * (1 - level);
       const top = H * GRATE_Y;
 
@@ -455,7 +552,7 @@ function WaterCanvas({ sharedRef, reduced }: { sharedRef: RefObject<Shared>; red
           }
           continue;
         }
-        const w = 4 + 13 * o;
+        const w = (4 + 13 * o) * (0.55 + 0.45 * (sh.mul[i] ?? 1));
         const wob = Math.sin(t * 19 + i) * 1.4;
         const yb = sy + wave(x, t, calm);
         const grd = g.createLinearGradient(x - w, 0, x + w, 0);

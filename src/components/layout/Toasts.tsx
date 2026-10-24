@@ -1,20 +1,29 @@
 "use client";
 
 /**
- * Toast stack (top-right on desktop, top-centre on phones) and the big one-at-a-time banners:
- * medal coat of arms, «ЭКСТРЕННЫЙ ВЫПУСК» newspaper plate, «АВРАЛ!». Fed by the engine fx bus.
+ * Toast stack and the big one-at-a-time banners: medal coat of arms, «ЭКСТРЕННЫЙ ВЫПУСК» newspaper plate, «АВРАЛ!».
+ * Placement: desktop — the colony's bottom-right corner above the ticker, clear of the side panel (≤ 3 toasts);
+ * phones — right above the bottom sheet, measured from the panel's top edge (≤ 2; 1 with the sheet full; none
+ * while a full-screen close-up runs). Both stand clear of Benedict's docked stall. The stack never takes clicks:
+ * only ✕ and the action buttons do, so the grate and the colony stay playable underneath.
+ * Fed by the engine fx bus (toast, vagrants, express stages, trains, scouts, records, commissions, medals, zones,
+ * frenzy) and the UI bus (batched unlocks with «Открыть», generic toasts).
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
+import { COMMISSIONS } from "@/game/data/commissions";
 import { HEADLINES } from "@/game/data/headlines";
 import { ACHIEVEMENTS, EXPRESS_STAGES } from "@/game/data/meta";
+import { RESOURCES } from "@/game/data/resources";
 import { ZONES } from "@/game/data/zones";
-import { onFx } from "@/game/fx";
-import { useGame } from "@/game/store";
-import type { AchievementId, Fx, SceneEventId, ZoneId } from "@/game/types";
+import { onFx, onUiFx, type UiFx } from "@/game/fx";
+import { useGame, type TabId } from "@/game/store";
+import type { AchievementId, Fx, RecordKey, SceneEventId, ZoneId } from "@/game/types";
 import { cx } from "@/components/ui/kit";
+import { fmt, plural } from "@/lib/format";
 import HudStyles from "./HudStyles";
 
 type Tone = "info" | "good" | "bad" | "gold";
+type UnlockItem = Extract<UiFx, { k: "unlock" }>["items"][number];
 
 interface ToastItem {
   id: number;
@@ -22,7 +31,14 @@ interface ToastItem {
   text: string;
   tone: Tone;
   ms: number;
+  /** performance.now() of the last content change: an unlock batch within MERGE_MS joins the previous toast */
+  at: number;
+  /** bumps when merged content arrives: restarts the life fuse */
+  rev: number;
   train?: { id: SceneEventId; inSec: number; at: number };
+  unlock?: UnlockItem[];
+  /** «Открыть»: store.focus(tab, target) */
+  go?: { tab: TabId; target?: string };
   leaving?: boolean;
 }
 
@@ -31,21 +47,85 @@ type Banner =
   | { id: number; k: "zone"; zone: ZoneId }
   | { id: number; k: "frenzy" };
 
-const MAX_TOASTS = 4;
+/** Visible toasts: phones keep the colony clear, desktop has the corner to itself. */
+const MAX_TOASTS = { phone: 2, desk: 3 } as const;
 const TOAST_MS = 4000;
+const UNLOCK_MS = 7000;
+/** Unlock batches arriving this close together become one toast. */
+const MERGE_MS = 3000;
+/** Two «К путям!» for the same train (re-sent warning, a whistle that barely moved it) are one toast. */
+const TRAIN_SAME_MS = 2000;
+/** Phones: room left for the market's folded pill (46 px + a gap) under the stack. */
+const STALL_PX = 52;
 const BANNER_MS = { medal: 2500, zone: 2600, frenzy: 1500 } as const;
 const OUT_MS = 260;
 
+const RECORD_WHAT: Record<RecordKey, string> = {
+  sewers: "Канализация открыта",
+  cellars: "Подвалы открыты",
+  metro: "Станция подземки открыта",
+  terminal: "Большой вокзал открыт",
+  coronation: "Коронация",
+};
+
 let seq = 0;
+
+const DESK_MQ = "(min-width: 768px)";
+
+/** Phones with the full sheet have only a sliver of colony above it: one toast at a time there. */
+function maxToasts(): number {
+  if (window.matchMedia(DESK_MQ).matches) return MAX_TOASTS.desk;
+  return useGame.getState().sheet === "full" ? 1 : MAX_TOASTS.phone;
+}
+
+function subscribeDesk(cb: () => void): () => void {
+  const mq = window.matchMedia(DESK_MQ);
+  mq.addEventListener("change", cb);
+  return () => mq.removeEventListener("change", cb);
+}
+
+/** Run time as «12:34» or «1:02:03». */
+function runClock(sec: number): string {
+  const s = Math.max(0, Math.round(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = String(s % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
 
 export default function Toasts() {
   const calm = useGame((s) => s.game.settings.reducedMotion);
+  const sheet = useGame((s) => s.sheet);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [banners, setBanners] = useState<Banner[]>([]);
+  const stackRef = useRef<HTMLDivElement>(null);
+  // Benedict's docked stall sits in the colony's bottom-left corner: stand on top of it, not over it
+  const stall = useGame((s) => !!s.game.market && !s.game.scene);
+  useSheetAnchor(stackRef, stall);
 
   useEffect(() => {
-    const push = (t: Omit<ToastItem, "id">) => setToasts((list) => [...list.filter((x) => !x.leaving), { ...t, id: ++seq }].slice(-MAX_TOASTS));
+    const add = (list: ToastItem[], t: ToastItem) => [...list.filter((x) => !x.leaving), t].slice(-maxToasts());
+    const push = (t: Omit<ToastItem, "id" | "at" | "rev">) => {
+      const item: ToastItem = { ...t, id: ++seq, at: performance.now(), rev: 0 };
+      setToasts((list) => add(list, item));
+    };
     const banner = (b: Banner) => setBanners((list) => (list.length > 6 ? list : [...list, b]));
+
+    const unlock = (items: UnlockItem[]) => {
+      if (items.length === 0) return;
+      const now = performance.now();
+      const fresh: ToastItem = { id: ++seq, icon: "🔓", text: "", tone: "good", ms: UNLOCK_MS, at: now, rev: 0, unlock: items, go: { tab: items[0].tab, target: items[0].key } };
+      setToasts((list) => {
+        let last: ToastItem | undefined;
+        for (const x of list) if (x.unlock && !x.leaving) last = x;
+        if (!last?.unlock || now - last.at >= MERGE_MS) return add(list, fresh);
+        const known = new Set(last.unlock.map((u) => u.key));
+        const merged = [...last.unlock, ...items.filter((it) => !known.has(it.key))];
+        const target = last;
+        return list.map((x) => (x === target ? { ...x, unlock: merged, at: now, rev: x.rev + 1 } : x));
+      });
+    };
+
     const handle = (fx: Fx) => {
       switch (fx.k) {
         case "toast":
@@ -63,9 +143,39 @@ export default function Toasts() {
           if (!useGame.getState().game.settings.trainToasts) break;
           const at = performance.now() + fx.inSec * 1000;
           const icon = fx.id === "capsule" ? "📯" : fx.id === "royal_express" ? "👑" : "🚂";
-          const item: ToastItem = { id: ++seq, icon, text: "", tone: "gold", ms: 8000, train: { id: fx.id, inSec: fx.inSec, at } };
-          // the new countdown replaces the old one (the whistle moved the train: two clocks would disagree)
-          setToasts((list) => [...list.filter((x) => !x.leaving && !x.train), item].slice(-MAX_TOASTS));
+          const item: ToastItem = { id: ++seq, icon, text: "", tone: "gold", ms: 8000, at: performance.now(), rev: 0, train: { id: fx.id, inSec: fx.inSec, at } };
+          setToasts((list) => {
+            // the same train announced twice: keep the toast already on screen
+            if (list.some((x) => !x.leaving && x.train?.id === fx.id && Math.abs(x.train.at - at) < TRAIN_SAME_MS)) return list;
+            // a moved train (the whistle) replaces the old countdown: two clocks would disagree
+            return add(
+              list.filter((x) => !x.train),
+              item,
+            );
+          });
+          break;
+        }
+        case "scout": {
+          const map = !!useGame.getState().game.revealed.tab_map;
+          push({
+            icon: "🧭",
+            text: `Разведчики вернулись: +${fmt(fx.amount)} ${RESOURCES[fx.res].icon} и кусок карты`,
+            tone: "good",
+            ms: TOAST_MS + 1500,
+            go: map ? { tab: "map", target: `z_${fx.zone}` } : undefined,
+          });
+          break;
+        }
+        case "record": {
+          const was = Number.isFinite(fx.prev) && fx.prev > 0 ? ` (было ${runClock(fx.prev)})` : "";
+          push({ icon: "⏱️", text: `РЕКОРД: ${RECORD_WHAT[fx.what] ?? fx.what} за ${runClock(fx.time)}${was}`, tone: "gold", ms: TOAST_MS + 1500 });
+          break;
+        }
+        case "commission": {
+          if (!fx.done) break;
+          const c = COMMISSIONS[fx.id];
+          if (!c) break;
+          push({ icon: c.icon, text: `Поручение Короля исполнено: «${c.name}». Грамота уже в казне!`, tone: "gold", ms: TOAST_MS + 1500, go: { tab: "map", target: "x_express" } });
           break;
         }
         case "medal":
@@ -81,7 +191,26 @@ export default function Toasts() {
           break;
       }
     };
-    return onFx(handle);
+
+    const handleUi = (fx: UiFx) => {
+      switch (fx.k) {
+        case "unlock":
+          unlock(fx.items);
+          break;
+        case "toast":
+          push({ icon: fx.icon ?? "📣", text: fx.text, tone: "info", ms: fx.tab ? TOAST_MS + 2000 : TOAST_MS, go: fx.tab ? { tab: fx.tab, target: fx.target } : undefined });
+          break;
+        default:
+          break;
+      }
+    };
+
+    const offFx = onFx(handle);
+    const offUi = onUiFx(handleUi);
+    return () => {
+      offFx();
+      offUi();
+    };
   }, []);
 
   const dismiss = (id: number) => {
@@ -91,26 +220,90 @@ export default function Toasts() {
 
   const current = banners[0] ?? null;
   const nextBanner = () => setBanners((list) => list.slice(1));
+  // phones: a close-up takes the whole screen — toasts wait for it to end (their fuses paused) instead of floating
+  // over the falling loot; with the sheet full only the newest one fits
+  const desk = useSyncExternalStore(
+    subscribeDesk,
+    () => window.matchMedia(DESK_MQ).matches,
+    () => true,
+  );
+  const sceneUp = useGame((s) => !!s.game.scene);
+  const shown = desk ? toasts : sceneUp ? [] : sheet === "full" ? toasts.slice(-1) : toasts;
 
   return (
     <div className={cx(calm && "hud-calm")}>
       <HudStyles />
       <div
+        ref={stackRef}
         className={cx(
-          "pointer-events-none fixed inset-x-2 z-40 flex flex-col items-center gap-1.5 transition-[top] duration-300 md:inset-x-auto md:right-[412px] md:items-end xl:right-[472px]",
-          // make room under a banner instead of hiding behind it
-          current ? "top-[146px] md:top-[236px]" : "top-[52px] md:top-[192px]",
+          "pointer-events-none fixed inset-x-2 z-40 flex flex-col items-center gap-1.5 md:inset-x-auto md:bottom-14 md:right-[408px] md:items-end xl:right-[468px]",
+          // fallback until the panel edge is measured (useSheetAnchor writes the exact bottom on phones)
+          sheet === "full" ? "bottom-[calc(74dvh+8px)]" : "bottom-[calc(45dvh+8px)]",
         )}
         aria-live="polite"
         role="status"
       >
-        {toasts.map((t) => (
+        {shown.map((t) => (
           <Toast key={t.id} t={t} onDismiss={() => dismiss(t.id)} />
         ))}
       </div>
       {current && <BannerView key={current.id} b={current} onDone={nextBanner} />}
     </div>
   );
+}
+
+const STALL_SELECTOR = 'main > section [role="region"][aria-label="Лавка Барыги Бенедикта"]';
+/** md+: the stack's width (md:w-[340px]) and its bottom-14 resting line. */
+const DESK_W = 340;
+const DESK_BOTTOM = 56;
+
+/**
+ * Writes the stack's `bottom` directly (no re-render), re-measured by ResizeObservers on the panel and the stall:
+ * - phones: 8 px above the panel sheet's top edge, following the half/full transition, plus room for the market's
+ *   folded pill (an expanded stall is the player's choice: the toasts then overlap its top instead of the grate);
+ * - md+: the bottom-14 line, or just above Benedict's docked stall when the colony is too narrow for both side by side.
+ */
+function useSheetAnchor(ref: RefObject<HTMLDivElement | null>, stall: boolean) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const mq = window.matchMedia(DESK_MQ);
+    const aside = document.querySelector("main > aside");
+    let stallEl: HTMLElement | null = null;
+    const place = () => {
+      const vh = window.innerHeight;
+      // the stall may mount a moment later (or remount): pick it up and watch its size (fold / unfold)
+      if (stall && !stallEl?.isConnected) {
+        stallEl = document.querySelector<HTMLElement>(STALL_SELECTOR);
+        if (stallEl) ro.observe(stallEl);
+      }
+      const sr = stallEl?.isConnected ? stallEl.getBoundingClientRect() : null;
+      const hasStall = !!sr && sr.height > 0;
+      if (!mq.matches) {
+        const top = aside?.getBoundingClientRect().top ?? 0;
+        el.style.bottom = top > 0 ? `${Math.round(vh - top + 8 + (hasStall ? STALL_PX : 0))}px` : "";
+        return;
+      }
+      if (!sr || !hasStall) {
+        el.style.bottom = "";
+        return;
+      }
+      const right = (aside?.getBoundingClientRect().left ?? window.innerWidth) - 8;
+      const sideBySide = sr.right + 8 <= right - DESK_W;
+      el.style.bottom = sideBySide ? "" : `${Math.round(Math.max(DESK_BOTTOM, vh - sr.top + 8))}px`;
+    };
+    const ro = new ResizeObserver(place);
+    if (aside) ro.observe(aside);
+    place();
+    window.addEventListener("resize", place);
+    mq.addEventListener("change", place);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", place);
+      mq.removeEventListener("change", place);
+      el.style.bottom = "";
+    };
+  }, [ref, stall]);
 }
 
 /* ------------------------------------------------------------ toast */
@@ -123,45 +316,65 @@ const TONE: Record<Tone, string> = {
 };
 
 function Toast({ t, onDismiss }: { t: ToastItem; onDismiss: () => void }) {
-  const timer = useRef(0);
   const dismissRef = useRef(onDismiss);
   useEffect(() => {
     dismissRef.current = onDismiss;
   });
 
+  // a merge (rev) restarts the countdown
   useEffect(() => {
-    timer.current = window.setTimeout(() => dismissRef.current(), t.ms);
-    return () => window.clearTimeout(timer.current);
-  }, [t.ms]);
+    const timer = window.setTimeout(() => dismissRef.current(), t.ms);
+    return () => window.clearTimeout(timer);
+  }, [t.ms, t.rev]);
+
+  const go = t.go;
+  // the action sits in its own column beside ✕, so a toast stays one text block tall (keeps the colony clear on phones)
+  const action = t.train ? (
+    <ActionButton
+      onClick={() => {
+        focusColony();
+        onDismiss();
+      }}
+    >
+      К перрону
+    </ActionButton>
+  ) : go ? (
+    <ActionButton
+      onClick={() => {
+        useGame.getState().focus(go.tab, go.target);
+        onDismiss();
+      }}
+    >
+      Открыть
+    </ActionButton>
+  ) : null;
 
   return (
     <div
       className={cx(
-        "pointer-events-auto relative flex w-full max-w-[360px] items-start gap-2 overflow-hidden rounded-md border px-2.5 py-2 text-[13px] leading-snug shadow-[0_6px_18px_rgba(0,0,0,.55)] md:w-[340px]",
+        "pointer-events-none relative flex w-full max-w-[360px] items-start gap-2 overflow-hidden rounded-md border py-1.5 pl-2.5 pr-1 text-[13px] leading-snug shadow-[0_6px_18px_rgba(0,0,0,.55)] md:w-[340px]",
         TONE[t.tone],
         t.leaving ? "hud-toast-out" : "hud-toast-in",
       )}
-      onPointerEnter={(e) => {
-        if (e.pointerType === "mouse") window.clearTimeout(timer.current);
-      }}
-      onPointerLeave={(e) => {
-        if (e.pointerType === "mouse") timer.current = window.setTimeout(() => dismissRef.current(), 1500);
-      }}
     >
-      <span className="mt-px shrink-0 text-lg leading-none" aria-hidden>
+      <span className="mt-2 shrink-0 text-lg leading-none" aria-hidden>
         {t.icon}
       </span>
-      <div className="min-w-0 flex-1">{t.train ? <TrainToastBody train={t.train} onGo={onDismiss} /> : <span>{t.text}</span>}</div>
+      <div className="flex min-h-10 min-w-0 flex-1 flex-col justify-center py-0.5">
+        {t.train ? <TrainToastBody train={t.train} /> : t.unlock ? <UnlockBody items={t.unlock} /> : <span>{t.text}</span>}
+      </div>
+      {action && <div className="shrink-0 self-start pt-0.5">{action}</div>}
       <button
         type="button"
         onClick={onDismiss}
         aria-label="Закрыть"
-        className="-mr-1.5 -mt-1.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded text-parchment-dim hover:bg-black/20 hover:text-parchment"
+        className="pointer-events-auto -my-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded text-parchment-dim hover:bg-black/20 hover:text-parchment"
       >
         ✕
       </button>
       {/* life fuse */}
       <span
+        key={t.rev}
         className="absolute inset-x-0 bottom-0 h-[2px] origin-left bg-current opacity-30"
         style={{ animation: t.leaving ? undefined : `hud-fuse ${t.ms}ms linear both` }}
       />
@@ -169,30 +382,61 @@ function Toast({ t, onDismiss }: { t: ToastItem; onDismiss: () => void }) {
   );
 }
 
-function TrainToastBody({ train, onGo }: { train: NonNullable<ToastItem["train"]>; onGo: () => void }) {
-  const [left, setLeft] = useState(train.inSec);
+function ActionButton({ onClick, children }: { onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="pointer-events-auto inline-flex min-h-10 items-center rounded border border-brass-dark bg-gradient-to-b from-brass-light via-brass to-brass-dark px-2.5 text-xs font-bold text-soot shadow-[inset_0_1px_0_rgba(255,255,255,.45),0_2px_0_#4a3a1a] active:translate-y-px md:min-h-8"
+    >
+      {children}
+    </button>
+  );
+}
+
+/** «Открыто!» for one item, «Открыто: 3 новинки» with the list for a batch; «Открыть» goes to the first. */
+function UnlockBody({ items }: { items: UnlockItem[] }) {
+  const n = items.length;
+  const shown = items.slice(0, 4);
+  return (
+    <div>
+      <b className="font-display text-[15px] leading-tight tracking-wide text-verdigris-light">
+        {n > 1 ? `Открыто: ${n} ${plural(n, "новинка", "новинки", "новинок")}` : "Открыто!"}
+      </b>
+      <ul className="mt-0.5 space-y-0.5">
+        {shown.map((it) => (
+          <li key={it.key} className="leading-snug">
+            {it.text}
+          </li>
+        ))}
+        {n > shown.length && <li className="italic text-parchment-dim">…и ещё {n - shown.length}</li>}
+      </ul>
+    </div>
+  );
+}
+
+function TrainToastBody({ train }: { train: NonNullable<ToastItem["train"]> }) {
+  // the seconds are written straight into the <b> (4×/s), the toast itself never re-renders for them
+  const secRef = useRef<HTMLElement>(null);
   useEffect(() => {
-    const iv = window.setInterval(() => setLeft(Math.max(0, Math.ceil((train.at - performance.now()) / 1000))), 250);
+    const put = () => {
+      const el = secRef.current;
+      const v = String(Math.max(0, Math.ceil((train.at - performance.now()) / 1000)));
+      if (el && el.textContent !== v) el.textContent = v;
+    };
+    put();
+    const iv = window.setInterval(put, 250);
     return () => window.clearInterval(iv);
   }, [train.at]);
   const what = train.id === "capsule" ? "капсула" : train.id === "royal_express" ? "Королевский экспресс" : "поезд";
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-      <span>
-        <b className="font-display text-[15px] tracking-wide text-gaslight">К путям!</b>{" "}
-        {what} через <b className="font-mono tabular">{left}</b> с
-      </span>
-      <button
-        type="button"
-        onClick={() => {
-          focusColony();
-          onGo();
-        }}
-        className="inline-flex min-h-10 items-center rounded border border-brass-dark bg-gradient-to-b from-brass-light via-brass to-brass-dark px-2.5 text-xs font-bold text-soot shadow-[inset_0_1px_0_rgba(255,255,255,.45),0_2px_0_#4a3a1a] active:translate-y-px md:min-h-8"
-      >
-        К перрону
-      </button>
-    </div>
+    <span>
+      <b className="font-display text-[15px] tracking-wide text-gaslight">К путям!</b> {what} через{" "}
+      <b ref={secRef} className="font-mono tabular">
+        {train.inSec}
+      </b>
+      &nbsp;с
+    </span>
   );
 }
 

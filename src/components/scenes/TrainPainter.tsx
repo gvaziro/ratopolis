@@ -18,6 +18,12 @@ export interface TrainPainterOpts {
   /** Car index the grappling hook aims at (-1 none). */
   hookCar: number;
   reduced: boolean;
+  /** SC-4: the variant's body tint (mixed in at 35%), null for the plain train. */
+  tint?: string | null;
+  /** SC-4: special cars by index ('cheese' = the Cheddar dining car). */
+  specials?: (string | undefined)[];
+  /** SC-5: called once when the engine's front crosses the middle of the screen (the doppler). */
+  onCentre?: () => void;
 }
 
 export interface TrainPainter {
@@ -51,6 +57,14 @@ const ACCENT: Record<TrainCarKind, string> = {
 
 const TAU = Math.PI * 2;
 
+/** Mix two #rrggbb colours: k = share of b. */
+function mix(a: string, b: string, k: number): string {
+  const pa = parseInt(a.slice(1), 16);
+  const pb = parseInt(b.slice(1), 16);
+  const ch = (s: number) => Math.round(((pa >> s) & 255) * (1 - k) + ((pb >> s) & 255) * k);
+  return `#${((1 << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).slice(1)}`;
+}
+
 function rrect(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
   const rr = Math.max(0, Math.min(r, w / 2, h / 2));
   g.beginPath();
@@ -73,7 +87,9 @@ export function createTrainPainter(o: TrainPainterOpts): TrainPainter {
   const n = o.kinds.length;
   const passDur = Math.max(1, n) * o.perCar;
   let chuffPhase = 0;
+  let centred = false;
   const F = fonts();
+  const streaks = Array.from({ length: 8 + Math.floor(Math.random() * 7) }, () => ({ x: Math.random(), y: 0.1 + Math.random() * 0.85, len: 0.08 + Math.random() * 0.18, a: 0.05 + Math.random() * 0.07 }));
 
   const add = (p: Fx) => {
     if (fx.length < cap) fx.push(p);
@@ -112,9 +128,17 @@ export function createTrainPainter(o: TrainPainterOpts): TrainPainter {
         g.fill();
       }
     }
+    const cheese = o.specials?.[i] === "cheese";
+    // SC-4: the variant tint washes over the body; the Cheddar car glows cheese-yellow
+    if (cheese || o.tint) {
+      g.globalAlpha = cheese ? 0.3 : 0.2;
+      g.fillStyle = cheese ? "#e8b43a" : (o.tint as string);
+      g.fillRect(x0, 0, x1 - x0, bot);
+      g.globalAlpha = 1;
+    }
     // accent band (which car is this)
     g.globalAlpha = 0.75;
-    g.fillStyle = ACCENT[kind];
+    g.fillStyle = cheese ? "#f2c54b" : o.tint ? mix(ACCENT[kind], o.tint, 0.35) : ACCENT[kind];
     g.fillRect(x0, bot - h * 0.05, x1 - x0, Math.max(2, h * 0.01));
     g.globalAlpha = 1;
     // sill
@@ -157,6 +181,18 @@ export function createTrainPainter(o: TrainPainterOpts): TrainPainter {
       g.restore();
       if (fxX > -40 && fxX < G.w + 40 && Math.random() < 14 * rate * dt) {
         add({ x: fxX + (Math.random() - 0.5) * h * 0.2, y: bot + 2, vx: (Math.random() - 0.5) * 30, vy: 40 + Math.random() * 80, age: 0, life: 0.6 + Math.random() * 0.5, size: 1.5 + Math.random() * 1.5, kind: 2 });
+      }
+    }
+    if (cheese) {
+      const cx = (xa + xb) / 2;
+      if (cx > -80 && cx < G.w + 80) {
+        g.textAlign = "center";
+        g.textBaseline = "middle";
+        g.font = `${Math.round(h * 0.08)}px ${EMOJI_FONT}`;
+        g.fillText("🧀", cx, bot * 0.42);
+        g.font = `700 ${Math.max(11, Math.round(h * 0.03))}px ${F.display}`;
+        g.fillStyle = "#f2c54b";
+        g.fillText("Чеддер", cx, bot * 0.42 + h * 0.07);
       }
     }
     if (kind === "royal") {
@@ -379,6 +415,10 @@ export function createTrainPainter(o: TrainPainterOpts): TrainPainter {
     const front = carLeft(G, 0, t, o.perCar);
     const rear = carLeft(G, n, t, o.perCar);
     const th = -(t * G.speed) / G.wheelR;
+    if (!centred && front <= w / 2) {
+      centred = true;
+      o.onCentre?.();
+    }
 
     // shade under the train
     const sa = Math.max(0, front);
@@ -414,6 +454,20 @@ export function createTrainPainter(o: TrainPainterOpts): TrainPainter {
       const left = carLeft(G, i, t, o.perCar);
       if (left > w || left + L < 0) continue;
       body(g, G, i, left + G.gap / 2, left + L - G.gap / 2, t, dt);
+    }
+    // SC-5: speed streaks over the underside and the gap light, 1.5× the train's speed
+    if (!o.reduced && sb > sa) {
+      g.save();
+      g.beginPath();
+      g.rect(sa, 0, sb - sa, G.railY);
+      g.clip();
+      for (const s of streaks) {
+        const len = s.len * w;
+        const x = w - ((s.x * (w + len) + t * G.speed * 1.5) % (w + len));
+        g.fillStyle = `rgba(255,240,210,${s.a})`;
+        g.fillRect(x, s.y * G.railY, len, 1.5);
+      }
+      g.restore();
     }
     for (let j = 1; j < n; j++) {
       const xj = carLeft(G, j, t, o.perCar);

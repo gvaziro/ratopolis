@@ -2,7 +2,7 @@
 
 /** Small cute SVG rats (facing right, feet at y = 0) with tiny Victorian accessories by job. */
 import { memo, type ReactNode } from "react";
-import type { JobId } from "@/game/types";
+import type { JobId, UpgradeId, ZoneId } from "@/game/types";
 
 const INK = "#1a120c";
 export const FURS = ["#8a7f78", "#6f6560", "#9b8c80", "#5f5752", "#a39a92"];
@@ -90,8 +90,70 @@ const FOREMAN = (
   </g>
 );
 
-/** Rat body + job accessory. */
-export const RatBody = memo(function RatBody({ job, fur, foreman = false }: { job: JobId; fur: string; foreman?: boolean }) {
+/**
+ * CO-6: upgrades change the look — every rat (no job) or the rats of one job. Drawn under the job accessory.
+ */
+export const UPGRADE_LOOKS: Partial<Record<UpgradeId, { job?: JobId; accessory: ReactNode }>> = {
+  sharp_teeth: { accessory: <path d="M20.3 -9.6v2.2M21.4 -9.8v2" stroke="#fff" strokeWidth="1" /> },
+  long_whiskers: { accessory: <path d="M20 -11l11 -4M20 -10.4l11 0M20 -9.8l10 3.5" stroke="#efe8e0" strokeWidth=".5" /> },
+  forager_sacks: {
+    job: "forager",
+    accessory: (
+      <g>
+        <path d="M-15 -14q-3 -10 4 -12l6 1q2 7 -3 11z" fill="#c4453a" stroke={INK} strokeWidth=".6" />
+        <path d="M-14.5 -21h8M-14 -18h8" stroke="#f4efe4" strokeWidth="1.2" />
+      </g>
+    ),
+  },
+  nimble_tails: { job: "pickpocket", accessory: <path d="M-31 -8.5l-3 -2.5m3 2.5l-4 1" stroke="#7a2a24" strokeWidth="1.6" strokeLinecap="round" /> },
+  candle_stubs: {
+    job: "scavenger",
+    accessory: (
+      <g>
+        <rect x="-3" y="-25" width="3" height="6" fill="#f4efe4" stroke={INK} strokeWidth=".4" />
+        <path d="M-1.5 -25q-1.5 -2 0 -4q1.5 2 0 4z" fill="#ffb03a" />
+      </g>
+    ),
+  },
+  gear_trains: {
+    job: "mechanic",
+    accessory: <circle cx="-6" cy="-17" r="3.6" fill="none" stroke="#c9a25a" strokeWidth="2" strokeDasharray="1.4 1.1" />,
+  },
+};
+
+/** CO-6: the zone accessory of a resident rat (sewers: a tiny lantern; metro: a stoker's cap; terminal: a porter's cap). */
+export const ZONE_LOOK: Partial<Record<ZoneId, ReactNode>> = {
+  sewers: (
+    <g>
+      <line x1="16" y1="-6" x2="16" y2="-1" stroke="#3a2a1a" strokeWidth=".8" />
+      <rect x="14" y="-1" width="4" height="5" rx="1" fill="#ffd98a" stroke={INK} strokeWidth=".5" />
+    </g>
+  ),
+  metro: <path d="M4 -19q7 -6 14 0v2h-14z" fill="#26232a" stroke={INK} strokeWidth=".5" />,
+  terminal: (
+    <g>
+      <rect x="4" y="-23" width="13" height="5" rx="1" fill="#7a2a24" stroke={INK} strokeWidth=".5" />
+      <rect x="3" y="-19" width="16" height="1.6" fill="#d4af37" />
+    </g>
+  ),
+};
+
+/** Rat body + job accessory (+ upgrade looks, CO-6). */
+export const RatBody = memo(function RatBody({
+  job,
+  fur,
+  foreman = false,
+  looks,
+  zoneLook,
+}: {
+  job: JobId;
+  fur: string;
+  foreman?: boolean;
+  /** Owned upgrades that change the look (UPGRADE_LOOKS keys). */
+  looks?: readonly UpgradeId[];
+  /** A resident's zone accessory instead of the job one. */
+  zoneLook?: ZoneId;
+}) {
   return (
     <g>
       <path d="M-12 -6Q-24 -1 -31 -8Q-35 -13 -29 -16" stroke="#c98b8b" strokeWidth="1.8" fill="none" strokeLinecap="round" />
@@ -106,7 +168,11 @@ export const RatBody = memo(function RatBody({ job, fur, foreman = false }: { jo
       <path d="M19 -10.5l6 -1.5M19 -9.8l6 1" stroke="#e8e0d8" strokeWidth=".4" />
       <rect x="-9" y="-2" width="3.4" height="2" rx="1" fill={INK} />
       <rect x="4" y="-2" width="3.4" height="2" rx="1" fill={INK} />
-      {foreman ? FOREMAN : ACCESSORY[job]}
+      {looks?.map((u) => {
+        const l = UPGRADE_LOOKS[u];
+        return l && (!l.job || l.job === job) ? <g key={u}>{l.accessory}</g> : null;
+      })}
+      {foreman ? FOREMAN : zoneLook ? ZONE_LOOK[zoneLook] : ACCESSORY[job]}
     </g>
   );
 });

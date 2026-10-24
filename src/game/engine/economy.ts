@@ -1,10 +1,11 @@
+import { MILESTONES, MILESTONE_JOB_BOOST } from "../data/buildings";
 import { CONVERTERS, JOBS } from "../data/jobs";
 import { RESOURCES } from "../data/resources";
-import { BUILDING_IDS, JOB_IDS, RES_IDS, type EngineCtx, type GameState, type ResId, type TickInput } from "../types";
+import { BUILDING_IDS, JOB_IDS, RES_IDS, type Amounts, type BuildingId, type EngineCtx, type GameState, type ResId, type ResMap, type TickInput } from "../types";
 import { autoContributeUncapped } from "./actions";
 import { award, gain, newbornJob, news, normalizeJobs, toast } from "./core";
-import { resMult, stunnedRats, type Derived } from "./derive";
-import { entries } from "./formulas";
+import { derive, resMult, stunnedRats, type Derived } from "./derive";
+import { buildingCost, entries } from "./formulas";
 import { zeroRes } from "./state";
 
 /**
@@ -159,3 +160,84 @@ export function crumbBalance(s: GameState, d: Derived): number {
   return s.gross.crumbs - d.food;
 }
 
+/* ------------------------------------------------------------ purchase legibility (v2) */
+
+/**
+ * Passive gross production per second implied by the state (with temporary multipliers), the same model as
+ * tickEconomy: producers × workforce × multipliers, converters at their current efficiency EMA.
+ */
+export function grossRates(s: GameState, d: Derived): ResMap {
+  const workforce = s.rats > 0 ? 1 - stunnedRats(s) / s.rats : 1;
+  const base = zeroRes();
+  for (const j of JOB_IDS) {
+    const def = JOBS[j];
+    const n = s.jobs[j];
+    if (n <= 0 || Object.keys(def.consumes).length > 0) continue;
+    const k = n * d.jobSpeed[j] * d.jobYield[j] * workforce;
+    for (const [r, v] of entries(def.produces)) base[r] += v * k;
+  }
+  for (const id of BUILDING_IDS) {
+    if (s.buildings[id] <= 0) continue;
+    for (const [r, v] of entries(d.buildingOut[id])) base[r] += v;
+  }
+  const gross = zeroRes();
+  for (const r of RES_IDS) if (base[r] > 0) gross[r] = base[r] * resMult(s, d, r, true);
+  for (const j of CONVERTERS) {
+    const n = s.jobs[j];
+    if (n <= 0) continue;
+    const e = Math.max(0, Math.min(1, s.convEff[j] ?? 1));
+    for (const [r, v] of entries(JOBS[j].produces)) gross[r] += n * d.jobSpeed[j] * workforce * v * d.jobYield[j] * resMult(s, d, r, true) * e;
+  }
+  return gross;
+}
+
+/** Cost of the next k levels of a building from its current level. */
+export function buildingCostFor(s: GameState, id: BuildingId, k: number): Amounts {
+  return buildingCost(id, s.buildings[id], Math.max(1, Math.floor(k)));
+}
+
+/**
+ * Per-second gross gain of buying k more levels of a building: produce effects × multipliers × milestone change,
+ * job bonuses on current workers, tier/global multipliers. Exact by construction: derive the state with the
+ * extra levels and diff grossRates(). Only non-zero entries are returned.
+ */
+export function levelGain(s: GameState, d: Derived, id: BuildingId, k: number): Partial<Record<ResId, number>> {
+  const s2: GameState = { ...s, buildings: { ...s.buildings, [id]: s.buildings[id] + Math.max(1, Math.floor(k)) } };
+  const before = grossRates(s, d);
+  const after = grossRates(s2, derive(s2));
+  const out: Partial<Record<ResId, number>> = {};
+  for (const r of RES_IDS) {
+    const diff = after[r] - before[r];
+    if (Math.abs(diff) > 1e-12) out[r] = diff;
+  }
+  return out;
+}
+
+/** Market value of one unit for payback maths (📜💍 have no market price: 50, like marketValue; 💨 counts as 0). */
+export function unitValue(r: ResId): number {
+  return RESOURCES[r].market ?? (r === "steam" ? 0 : 50);
+}
+
+/** Seconds of the extra production needed to pay back k levels (Infinity when the levels produce nothing). */
+export function paybackSeconds(s: GameState, d: Derived, id: BuildingId, k: number): number {
+  const cost = buildingCostFor(s, id, k);
+  let price = 0;
+  for (const [r, v] of entries(cost)) price += v * unitValue(r);
+  let perSec = 0;
+  for (const [r, v] of entries(levelGain(s, d, id, k))) if (v > 0) perSec += v * unitValue(r);
+  return perSec > 0 ? price / perSec : Infinity;
+}
+
+/**
+ * Milestones around a level: prev = the last one reached (0 = none), next = the next one (Infinity past the last),
+ * jobBoost = the linked job's yield factor each milestone adds (EN-4).
+ */
+export function milestoneInfo(level: number): { prev: number; next: number; jobBoost: number } {
+  let prev = 0;
+  let next = Infinity;
+  for (const m of MILESTONES) {
+    if (level >= m) prev = m;
+    else if (next === Infinity) next = m;
+  }
+  return { prev, next, jobBoost: MILESTONE_JOB_BOOST };
+}

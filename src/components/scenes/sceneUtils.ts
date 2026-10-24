@@ -35,6 +35,25 @@ export function reducedNow(): boolean {
   return useGame.getState().game.settings.reducedMotion;
 }
 
+/** A short haptic tick on phones (skipped for reduced motion; desktop browsers ignore it). */
+export function buzz(ms: number): void {
+  if (reducedNow()) return;
+  try {
+    navigator.vibrate?.(ms);
+  } catch {
+    /* not allowed here */
+  }
+}
+
+/* Whether the player's last input in a close-up came from the keyboard (shows the ⌨ hints, survives phase changes). */
+let keyboardLast = false;
+export function noteKeyboard(on: boolean): void {
+  keyboardLast = on;
+}
+export function keyboardUsed(): boolean {
+  return keyboardLast;
+}
+
 /**
  * Seconds since `phaseStart`, anchored to the game clock when created and then advanced in real time
  * (the game clock only ticks at 10 Hz).

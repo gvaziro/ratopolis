@@ -8,6 +8,8 @@ import { isActive, useGame } from "./store";
  * Fixed-step loop: requestAnimationFrame + accumulator, 10 Hz, at most 10 steps per frame.
  * Hidden tab > 60 s is treated as offline (catch-up simulation), and so is a wall-clock gap between frames
  * while the tab stayed "visible" (system sleep without visibilitychange, long freeze). Autosaves every 15 s.
+ * While the store is crashed or has a save issue (corrupt / newer / another tab) nothing ticks and nothing saves;
+ * the frame re-arms in `finally`, so a throw anywhere in it cannot silently stop the loop.
  */
 export function useGameLoop(): void {
   useEffect(() => {
@@ -15,15 +17,27 @@ export function useGameLoop(): void {
     store.init();
 
     let raf = 0;
+    let stopped = false;
     let last = performance.now();
     let lastWall = Date.now(); // performance.now() may stand still during system sleep: gaps use the wall clock
     let acc = 0;
     let hiddenAt: number | null = null;
 
-    const frame = (now: number) => {
+    const halted = () => {
+      const st = useGame.getState();
+      return st.crashed || st.saveIssue !== null;
+    };
+
+    const tick = (now: number) => {
       const wall = Date.now();
       const gap = (wall - lastWall) / 1000;
       lastWall = wall;
+      if (halted()) {
+        // frozen: resume from "now" once the issue is resolved instead of replaying the pause
+        last = now;
+        acc = 0;
+        return;
+      }
       // a hidden period is caught up by onVis instead; a negative gap (clock change) is ignored
       if (gap > 2 && hiddenAt === null && document.visibilityState === "visible") {
         const st = useGame.getState();
@@ -31,7 +45,6 @@ export function useGameLoop(): void {
         else st.advance(Math.min(600, Math.floor(gap / TICK)), false);
         last = now;
         acc = 0;
-        raf = requestAnimationFrame(frame);
         return;
       }
       const dt = Math.min(5, (now - last) / 1000);
@@ -47,7 +60,14 @@ export function useGameLoop(): void {
         const st = useGame.getState();
         st.advance(steps, isActive(st.lastInputAt));
       }
-      raf = requestAnimationFrame(frame);
+    };
+
+    const frame = (now: number) => {
+      try {
+        tick(now);
+      } finally {
+        if (!stopped) raf = requestAnimationFrame(frame);
+      }
     };
     raf = requestAnimationFrame(frame);
 
@@ -57,7 +77,7 @@ export function useGameLoop(): void {
         hiddenAt = Date.now();
         st.save();
       } else {
-        if (hiddenAt !== null) {
+        if (hiddenAt !== null && !halted()) {
           const away = (Date.now() - hiddenAt) / 1000;
           if (away > 60) st.catchUp(away);
           else if (away > 0.5) st.advance(Math.min(600, Math.floor(away / TICK)), false);
@@ -70,6 +90,7 @@ export function useGameLoop(): void {
     };
     const onInput = () => useGame.getState().noteInput();
     const onUnload = () => useGame.getState().save();
+    // save() itself is a no-op while crashed or blocked by a save issue
     const saver = window.setInterval(() => useGame.getState().save(), 15_000);
 
     document.addEventListener("visibilitychange", onVis);
@@ -77,6 +98,7 @@ export function useGameLoop(): void {
     window.addEventListener("keydown", onInput);
     window.addEventListener("beforeunload", onUnload);
     return () => {
+      stopped = true;
       cancelAnimationFrame(raf);
       window.clearInterval(saver);
       document.removeEventListener("visibilitychange", onVis);

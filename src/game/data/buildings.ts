@@ -1,5 +1,11 @@
 import type { BuildingDef, BuildingId } from "../types";
 
+/** Each ×2 milestone also boosts the linked job's yield by this factor (EN-4; tuned in EN-13 within 1.15–1.25). */
+export const MILESTONE_JOB_BOOST = 1.2;
+/** Milestone levels where `produce` effects double. */
+export const MILESTONES = [10, 25, 50, 100];
+const MS_TEXT = `на каждой вехе (${MILESTONES.join(", ")} ур.)`;
+
 export const BUILDINGS: Record<BuildingId, BuildingDef> = {
   /* ------------------------------------------------------------ burrow */
   nest: {
@@ -63,10 +69,10 @@ export const BUILDINGS: Record<BuildingId, BuildingDef> = {
     growth: 1.4,
     effects: [
       { t: "produce", res: "coins", amt: 0.2 },
-      { t: "jobPct", job: "pickpocket", pct: 15 },
+      { t: "jobPct", job: "pickpocket", pct: 10 },
     ],
     unlock: { job: "pickpocket", gte: 3 },
-    desc: "+0.2 🪙/с; карманники +15% за уровень.",
+    desc: `+0.2 🪙/с; карманники +10% за уровень и ×${MILESTONE_JOB_BOOST} ${MS_TEXT}.`,
     flavor: "Урок первый: никогда не тяни за цепочку часов.",
   },
   sorting_den: {
@@ -79,10 +85,10 @@ export const BUILDINGS: Record<BuildingId, BuildingDef> = {
     effects: [
       { t: "produce", res: "buttons", amt: 0.1 },
       { t: "produce", res: "wire", amt: 0.1 },
-      { t: "jobPct", job: "scavenger", pct: 15 },
+      { t: "jobPct", job: "scavenger", pct: 10 },
     ],
     unlock: { all: [{ resEver: "buttons", gte: 0.01 }, { resEver: "wire", gte: 0.01 }] },
-    desc: "+0.1 🔘/с и +0.1 ➰/с; барахольщики +15% за уровень.",
+    desc: `+0.1 🔘/с и +0.1 ➰/с; барахольщики +10% за уровень и ×${MILESTONE_JOB_BOOST} ${MS_TEXT}.`,
     flavor: "Пуговицы — налево, проволока — направо, фантики — на стены.",
   },
 
@@ -193,7 +199,7 @@ export const BUILDINGS: Record<BuildingId, BuildingDef> = {
       { t: "cap", res: "cheese", amt: 200 },
     ],
     unlock: { zone: "cellars" },
-    desc: "+0.3 🧀/с; +2 места воришки; лимит 🧀 +200 за уровень.",
+    desc: `+0.3 🧀/с; +2 места воришки; лимит 🧀 +200 за уровень. Воришки ×${MILESTONE_JOB_BOOST} ${MS_TEXT}.`,
     flavor: "Дыра в стенке бочки с чеддером. Сторож ничего не замечает.",
   },
   nursery: {
@@ -223,7 +229,7 @@ export const BUILDINGS: Record<BuildingId, BuildingDef> = {
       { t: "slots", job: "scholar", amt: 2 },
     ],
     unlock: { all: [{ zone: "cellars" }, { resEver: "cheese", gte: 100 }] },
-    desc: "+0.05 📜/с; +2 места книжника за уровень.",
+    desc: `+0.05 📜/с; +2 места книжника за уровень. Книжники ×${MILESTONE_JOB_BOOST} ${MS_TEXT}.`,
     flavor: "Полное собрание сочинений Диккенса. Изнутри.",
   },
   cellar_vault: {
@@ -252,7 +258,7 @@ export const BUILDINGS: Record<BuildingId, BuildingDef> = {
       { t: "slots", job: "coal_miner", amt: 2 },
     ],
     unlock: { zone: "metro" },
-    desc: "+0.5 🪨/с; +2 места угольщика за уровень.",
+    desc: `+0.5 🪨/с; +2 места угольщика за уровень. Угольщики ×${MILESTONE_JOB_BOOST} ${MS_TEXT}.`,
     flavor: "Желоб под тендером. Уголь сыплется сам, только успевай.",
   },
   boiler: {
@@ -338,7 +344,7 @@ export const BUILDINGS: Record<BuildingId, BuildingDef> = {
       { t: "slots", job: "appraiser", amt: 2 },
     ],
     unlock: { zone: "terminal" },
-    desc: "+0.05 💍/с; +2 места оценщика за уровень.",
+    desc: `+0.05 💍/с; +2 места оценщика за уровень. Оценщики ×${MILESTONE_JOB_BOOST} ${MS_TEXT}.`,
     flavor: "Склад потерянных чемоданов. Люди сюда не заглядывают годами.",
   },
   clocktower: {
@@ -372,7 +378,5 @@ export const BUILDINGS: Record<BuildingId, BuildingDef> = {
 
 export const BUILDING_ORDER = Object.keys(BUILDINGS) as BuildingId[];
 
-/** Milestone levels where `produce` effects double. */
-export const MILESTONES = [10, 25, 50, 100];
 /** Levels where a chamber visually upgrades. */
 export const VISUAL_TIERS = [1, 5, 10, 25, 50];

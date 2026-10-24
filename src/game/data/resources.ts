@@ -122,10 +122,12 @@ export const RESOURCES: Record<ResId, ResourceDef> = {
     capGroup: "steam",
     market: null,
     floor: 0,
-    excludeGlobal: false,
+    // v2 (EN-1): steam feeds the press and the clocktower, which raise the global multiplier — multiplying steam
+    // by it again was a runaway loop (run 2 reached ×1700). One stoker = 3 × jobYield 💨/s, nothing more.
+    excludeGlobal: true,
     color: "#dfe7ea",
     reveal: { building: "boiler", gte: 1 },
-    desc: "Буфер давления. Кочегары делают его из угля, плавильни и кузни тратят.",
+    desc: "Буфер давления. Кочегары делают его из угля, плавильни и кузни тратят. Не получает глобальных множителей.",
   },
   brass: {
     id: "brass",
@@ -138,7 +140,8 @@ export const RESOURCES: Record<ResId, ResourceDef> = {
     floor: 0.02,
     excludeGlobal: false,
     color: "#d4af37",
-    reveal: { any: [{ building: "brass_foundry", gte: 1 }, { resEver: "brass", gte: 0.01 }] },
+    // from the Metro on baggage cars drop 🔔 (EN-2), before the first foundry
+    reveal: { any: [{ zone: "metro" }, { building: "brass_foundry", gte: 1 }, { resEver: "brass", gte: 0.01 }] },
     desc: "Сплав монет, пуговиц и пара. Блестит как корона.",
   },
   rails: {
@@ -166,7 +169,8 @@ export const RESOURCES: Record<ResId, ResourceDef> = {
     floor: 0,
     excludeGlobal: true,
     color: "#f5a3ff",
-    // from the Metro on: 1st-class and baggage cars must be able to drop the first 💍 (the Terminal costs 💍 5)
+    // from the Metro on (EN-2): 1st-class and baggage cars must be able to drop the first 💍 (the Terminal costs 💍 5);
+    // the resEver branch only keeps a 💍 found some other way visible
     reveal: { any: [{ zone: "metro" }, { resEver: "trinkets", gte: 0.01 }] },
     desc: "Карманные часы, кольца, запонки. Сокровища аристократии. Не получают глобальных множителей.",
   },

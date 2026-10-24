@@ -10,11 +10,13 @@ import { useShallow } from "zustand/react/shallow";
 import { stunnedRats } from "@/game/engine/derive";
 import { onFx } from "@/game/fx";
 import { derivedOf, useGame } from "@/game/store";
-import { JOB_IDS, type BuildingId, type JobId } from "@/game/types";
-import { fxBurst } from "../fx/fxBus";
-import { toScreen } from "./camera";
+import { JOBS } from "@/game/data/jobs";
+import { RESOURCES } from "@/game/data/resources";
+import { JOB_IDS, UPGRADE_IDS, type BuildingId, type JobId, type UpgradeId, type ZoneId } from "@/game/types";
+import { camView } from "./camera";
 import { BUILDING_SLOT, bandTop, floorY, jobRoute, ROUTE_BUILDINGS, routeBetween, type Pt } from "./geometry";
-import { FURS, RatBody } from "./ratArt";
+import { FURS, RatBody, UPGRADE_LOOKS } from "./ratArt";
+import { colonyPaused, pokeChamber } from "./registry";
 
 type Route = ReturnType<typeof jobRoute>;
 
@@ -84,6 +86,46 @@ interface Sprite {
   phase: number;
   stunned: boolean;
   tr: string;
+  /** The last written position was inside the view (a sprite that left it is not rewritten). */
+  shown: boolean;
+  /** CO-6: heading home with the job's output on its back. */
+  carry: boolean;
+  /** Index among the sprites of the same job and their count (spreads the waiting spots, no clumps). */
+  slot: number;
+  of: number;
+}
+
+/** CO-6: chambers with no job route get one resident each (at most 10, on top of the 40 sprites). */
+const RESIDENT_BUILDINGS: BuildingId[] = [
+  "nursery",
+  "cellar_vault",
+  "capsule_tap",
+  "sewer_warehouse",
+  "drain_sieve",
+  "water_wheel",
+  "rat_rail",
+  "steam_press",
+  "platform_post",
+  "clocktower",
+  "express_depot",
+];
+
+interface Resident {
+  b: BuildingId;
+  x: number;
+  y: number;
+  home: number;
+  target: number;
+  wait: number;
+  dir: 1 | -1;
+  hop: number;
+  shown: boolean;
+}
+
+/** The icon of a job's main output (the cargo a rat carries home). */
+function cargoIcon(job: JobId): string {
+  const r = Object.keys(JOBS[job]?.produces ?? {})[0] as keyof typeof RESOURCES | undefined;
+  return r ? RESOURCES[r].icon : "🎒";
 }
 
 interface Guest {
@@ -105,6 +147,7 @@ interface GuestState {
 
 const NEST: Pt = { x: BUILDING_SLOT.nest.cx, y: BUILDING_SLOT.nest.floor };
 const LIE_Y = floorY("burrow", 1);
+const HEART_POOL = 3;
 
 function newSprite(job: JobId, r: Route): Sprite {
   const atWork = Math.random() < 0.5;
@@ -122,18 +165,33 @@ function newSprite(job: JobId, r: Route): Sprite {
     phase: Math.random() * 10,
     stunned: false,
     tr: "",
+    shown: true,
+    carry: false,
+    slot: 0,
+    of: 1,
   };
+}
+
+/** A spot near a base: spread by the sprite's index among its job (≥ 12 units apart), plus a little jitter. */
+function spotNear(base: Pt, spread: number, s: Sprite): number {
+  const k = Math.max(1, s.of);
+  const span = Math.max(spread, 70);
+  const u = k > 1 ? ((s.slot % k) / (k - 1)) * 2 - 1 : (Math.random() * 2 - 1) * 0.5;
+  return base.x + span * u + (Math.random() * 2 - 1) * 6;
 }
 
 function nextLeg(s: Sprite, r: Route): void {
   if (s.job === "idle") {
-    s.path = routeBetween(s, { x: r.work.x + (Math.random() * 2 - 1) * r.spread, y: r.work.y });
+    s.path = routeBetween(s, { x: spotNear(r.work, r.spread, s), y: r.work.y });
     s.atWork = true;
+    s.carry = false;
     return;
   }
   s.atWork = !s.atWork;
+  // producers walk home loaded (CO-6)
+  s.carry = !s.atWork;
   const base = s.atWork ? r.work : r.home;
-  s.path = routeBetween(s, { x: base.x + (Math.random() * 2 - 1) * r.spread, y: base.y });
+  s.path = routeBetween(s, { x: spotNear(base, r.spread, s), y: base.y });
 }
 
 /** Move along waypoints; returns true while walking. */
@@ -167,12 +225,33 @@ function walk(s: { x: number; y: number; path: Pt[]; dir: 1 | -1 }, speed: numbe
   return climb;
 }
 
+/** The chamber at a route's home end (for the cargo poke), if any. */
+function homeBuilding(r: Route): BuildingId | null {
+  for (const b of ["pantry", "stash", "pickpocket_school", "nest"] as BuildingId[]) {
+    const slot = BUILDING_SLOT[b];
+    if (slot && Math.abs(slot.cx - r.home.x) < 1 && Math.abs(slot.floor - r.home.y) < 1) return b;
+  }
+  return null;
+}
+
 export const RatsLayer = memo(function RatsLayer() {
   const rats = useGame((s) => s.game.rats);
   const jobs = useGame(useShallow((s) => s.game.jobs));
   const stunned = useGame((s) => stunnedRats(s.game));
   const hungry = useGame((s) => s.game.hungry);
   const builtKey = useGame((s) => ROUTE_BUILDINGS.filter((b) => s.game.buildings[b] > 0).join(","));
+  // CO-6: the upgrades that change the look, and the chambers that get a resident
+  const looksKey = useGame((s) => UPGRADE_IDS.filter((u) => s.game.upgrades[u] && UPGRADE_LOOKS[u]).join(","));
+  const looks = useMemo(() => (looksKey ? (looksKey.split(",") as UpgradeId[]) : []), [looksKey]);
+  const residentKey = useGame((s) =>
+    RESIDENT_BUILDINGS.filter((b) => s.game.buildings[b] > 0 && s.game.zones[BUILDING_SLOT[b].zone])
+      .slice(0, 10)
+      .join(","),
+  );
+  const residentList = useMemo(() => (residentKey ? (residentKey.split(",") as BuildingId[]) : []), [residentKey]);
+  const residentEls = useRef<(SVGGElement | null)[]>([]);
+  const residents = useRef<Resident[]>([]);
+  const cargoEls = useRef<(SVGTextElement | null)[]>([]);
 
   const n = spriteCount(rats);
   const key = `${n}|${JOB_IDS.map((j) => jobs[j]).join(",")}`;
@@ -193,6 +272,7 @@ export const RatsLayer = memo(function RatsLayer() {
   const guestsRef = useRef<Guest[]>([]);
   const guestEls = useRef(new Map<number, SVGGElement>());
   const guestState = useRef(new Map<number, GuestState>());
+  const heartEls = useRef<(SVGTextElement | null)[]>([]);
 
   // reconcile sprite state with the job assignment / routes
   useEffect(() => {
@@ -215,6 +295,16 @@ export const RatsLayer = memo(function RatsLayer() {
         s.speed = job === "idle" ? 26 + Math.random() * 10 : 58 + Math.random() * 22;
       }
     }
+    // index among the same job, for the de-clumped waiting spots
+    const seen = new Map<JobId, number>();
+    const totals = new Map<JobId, number>();
+    for (const s of sp) totals.set(s.job, (totals.get(s.job) ?? 0) + 1);
+    for (const s of sp) {
+      const k = seen.get(s.job) ?? 0;
+      seen.set(s.job, k + 1);
+      s.slot = k;
+      s.of = totals.get(s.job) ?? 1;
+    }
     for (let i = 0; i < sp.length; i++) {
       const st = i >= sp.length - stunnedN;
       if (st && !sp[i].stunned) {
@@ -230,11 +320,42 @@ export const RatsLayer = memo(function RatsLayer() {
     guestsRef.current = guests;
   }, [guests]);
 
+  // residents: one per chamber without a job route, pacing in front of its machine
+  useEffect(() => {
+    const prev = new Map(residents.current.map((r) => [r.b, r]));
+    residents.current = residentList.map((b) => {
+      const old = prev.get(b);
+      if (old) return old;
+      const slot = BUILDING_SLOT[b];
+      return { b, x: slot.cx, y: slot.floor, home: slot.cx, target: slot.cx, wait: Math.random() * 2, dir: 1, hop: 0, shown: true };
+    });
+  }, [residentList]);
+
   // births and vagrants
   useEffect(() => {
     let seq = 0;
     let lastBirth = 0;
     let lastForeman = 0;
+    let heartSeq = 0;
+    // ♥ over the nest: pooled SVG nodes animated with WAAPI (kept off the particle canvas, so births
+    // do not keep its loop awake; they also stay glued to the nest while the camera moves)
+    const popHeart = () => {
+      if (colonyPaused()) return;
+      const el = heartEls.current[heartSeq++ % HEART_POOL];
+      if (!el) return;
+      const rm = useGame.getState().game.settings.reducedMotion;
+      const dx = (Math.random() * 2 - 1) * 14;
+      el.animate(
+        rm
+          ? [{ opacity: 0 }, { opacity: 1, offset: 0.25 }, { opacity: 0 }]
+          : [
+              { transform: `translate(${dx.toFixed(0)}px, 0) scale(.6)`, opacity: 0 },
+              { transform: `translate(${dx.toFixed(0)}px, -14px) scale(1.15)`, opacity: 1, offset: 0.25 },
+              { transform: `translate(${(dx * 1.5).toFixed(0)}px, -46px) scale(1)`, opacity: 0 },
+            ],
+        { duration: 1100, easing: "ease-out" },
+      );
+    };
     return onFx((fx) => {
       if (fx.k === "buy") {
         // the foreman in his hard hat runs to every construction site
@@ -249,8 +370,7 @@ export const RatsLayer = memo(function RatsLayer() {
         const now = performance.now();
         if (now - lastBirth < 600) return;
         lastBirth = now;
-        const p = toScreen(NEST.x, NEST.y - 60);
-        fxBurst(p.x, p.y, "heart", 1);
+        popHeart();
         const r = cfg.current.routes?.[fx.job];
         const to = r ? { x: r.work.x, y: r.work.y } : { x: NEST.x + 140, y: NEST.y };
         if (Math.abs(to.x - NEST.x) < 30 && to.y === NEST.y) to.x += 120;
@@ -267,12 +387,22 @@ export const RatsLayer = memo(function RatsLayer() {
     let raf = 0;
     let last = performance.now();
     const frame = (now: number) => {
+      raf = requestAnimationFrame(frame);
+      // under a scene / in a hidden tab the colony is not drawn: the rats wait where they are
+      if (colonyPaused()) {
+        last = now;
+        return;
+      }
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
       const t = now / 1000;
       const routesNow = cfg.current.routes;
       const hungryNow = cfg.current.hungry;
       const sp = sprites.current;
+      const v = camView();
+      const hy = v.ch / 2 / v.s + 50;
+      const vy0 = v.cy - hy;
+      const vy1 = v.cy + hy;
       for (let i = 0; i < sp.length; i++) {
         const s = sp[i];
         const el = els.current[i];
@@ -290,18 +420,66 @@ export const RatsLayer = memo(function RatsLayer() {
           if (s.path.length === 0) {
             s.climb = 0;
             s.wait = s.job === "idle" ? 1.5 + Math.random() * 3 : s.atWork ? 2.5 + Math.random() * 3.5 : 0.6 + Math.random() * 1;
+            // home with the cargo: drop it, the chamber gives a little squash
+            if (s.carry && !s.atWork) {
+              s.carry = false;
+              const home = homeBuilding(routesNow[s.job]);
+              if (home) pokeChamber(home, 0.15);
+            }
           }
         }
         let tx = s.x;
         let ty = s.y;
         if (walking && s.climb === 0) ty -= Math.abs(Math.sin(t * 15 + s.phase)) * 1.8;
         if (hungryNow && !s.stunned) tx += Math.sin(t * 52 + s.phase) * 0.6;
+        // off-screen sprites keep walking but are not rewritten (one last write moves them out of sight)
+        const inView = ty > vy0 && ty < vy1;
+        if (!inView && !s.shown) continue;
+        s.shown = inView;
         el.setAttribute("transform", `translate(${tx.toFixed(1)} ${ty.toFixed(1)})`);
+        const cargo = cargoEls.current[i];
+        if (cargo) {
+          const want = s.carry && walking && !s.stunned ? "1" : "0";
+          if (cargo.getAttribute("opacity") !== want) cargo.setAttribute("opacity", want);
+        }
         const tr = s.stunned ? "translate(0 -20) rotate(180)" : s.climb !== 0 ? `rotate(${s.climb < 0 ? -90 : 90})` : s.dir < 0 ? "scale(-1 1)" : "scale(1 1)";
         if (tr !== s.tr) {
           s.tr = tr;
           el.firstElementChild?.setAttribute("transform", tr);
         }
+      }
+
+      // residents: pace ±28 units, pause 1.5–4 s, face the machine, now and then a little hop
+      const rs = residents.current;
+      for (let i = 0; i < rs.length; i++) {
+        const r = rs[i];
+        const el = residentEls.current[i];
+        if (!el) continue;
+        if (r.wait > 0) {
+          r.wait -= dt;
+          if (r.wait <= 0) {
+            r.target = r.home + (Math.random() * 2 - 1) * 28;
+            if (Math.random() < 0.25) r.hop = 0.3;
+          }
+        } else {
+          const dx = r.target - r.x;
+          const step = 22 * dt;
+          if (Math.abs(dx) <= step) {
+            r.x = r.target;
+            r.wait = 1.5 + Math.random() * 2.5;
+            r.dir = r.home >= r.x ? 1 : -1;
+          } else {
+            r.x += Math.sign(dx) * step;
+            r.dir = dx > 0 ? 1 : -1;
+          }
+        }
+        if (r.hop > 0) r.hop = Math.max(0, r.hop - dt);
+        const ry = r.y - (r.hop > 0 ? Math.sin((r.hop / 0.3) * Math.PI) * 3 : 0);
+        const inView = ry > vy0 && ry < vy1;
+        if (!inView && !r.shown) continue;
+        r.shown = inView;
+        el.setAttribute("transform", `translate(${r.x.toFixed(1)} ${ry.toFixed(1)})`);
+        el.firstElementChild?.setAttribute("transform", r.dir < 0 ? "scale(-1 1)" : "scale(1 1)");
       }
 
       // guests: newborns running out of the nest, the first vagrants
@@ -333,7 +511,6 @@ export const RatsLayer = memo(function RatsLayer() {
       if (guestState.current.size > guestEls.current.size + 8) {
         for (const id of [...guestState.current.keys()]) if (!guestEls.current.has(id)) guestState.current.delete(id);
       }
-      raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
     const gs = guestState.current;
@@ -354,8 +531,22 @@ export const RatsLayer = memo(function RatsLayer() {
           }}
         >
           <g>
-            <RatBody job={job} fur={FURS[i % FURS.length]} />
+            <RatBody job={job} fur={FURS[i % FURS.length]} looks={looks} />
           </g>
+          {job !== "idle" && (
+            <text
+              ref={(el) => {
+                cargoEls.current[i] = el;
+              }}
+              x="-9"
+              y="-17"
+              fontSize="8"
+              textAnchor="middle"
+              opacity="0"
+            >
+              {cargoIcon(job)}
+            </text>
+          )}
           {i >= list.length - stunnedN ? (
             <text y="-26" fontSize="12" textAnchor="middle" className="cv-sparkle">
               ✨
@@ -369,6 +560,19 @@ export const RatsLayer = memo(function RatsLayer() {
               💤
             </text>
           ) : null}
+        </g>
+      ))}
+      {residentList.map((b, i) => (
+        <g
+          key={`r${b}`}
+          transform={`translate(${BUILDING_SLOT[b].cx} ${BUILDING_SLOT[b].floor})`}
+          ref={(el) => {
+            residentEls.current[i] = el;
+          }}
+        >
+          <g>
+            <RatBody job="idle" fur={FURS[(i + 2) % FURS.length]} looks={looks} zoneLook={BUILDING_SLOT[b].zone as ZoneId} />
+          </g>
         </g>
       ))}
       {guests.map((g) => (
@@ -385,6 +589,25 @@ export const RatsLayer = memo(function RatsLayer() {
           </g>
         </g>
       ))}
+      <g transform={`translate(${NEST.x} ${NEST.y - 60})`}>
+        {Array.from({ length: HEART_POOL }, (_, i) => (
+          <text
+            key={i}
+            ref={(el) => {
+              heartEls.current[i] = el;
+            }}
+            className="cv-fb"
+            opacity="0"
+            fontSize="17"
+            textAnchor="middle"
+            fill="#ff7a9a"
+            stroke="#2a1a0c"
+            strokeWidth=".8"
+          >
+            ♥
+          </text>
+        ))}
+      </g>
     </g>
   );
 });

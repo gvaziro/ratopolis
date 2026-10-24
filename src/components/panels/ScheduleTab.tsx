@@ -3,13 +3,16 @@
 /**
  * "Расписание": a station arrivals board with live countdowns, the switchman's whistle,
  * the default crew position (GDD 8.2.3), auto-collect shares and the haul log.
+ * Each block samples its own pre-formatted model three times a second (PA-1).
  */
+import { useMemo } from "react";
 import { CREW_POSITIONS, EVENT_LINES, RATING_TABLE } from "@/game/data/events";
 import type { Derived } from "@/game/engine/derive";
 import { netCost, nextTrain, trainActive } from "@/game/engine/events";
 import { humanClock } from "@/game/engine/formulas";
 import { derivedOf, useGame } from "@/game/store";
-import type { CrewPosition, GameState, SceneEventId } from "@/game/types";
+import type { CrewPosition, GameState, HaulSummary } from "@/game/types";
+import { useSampled } from "@/game/useSampled";
 import { fmt, fmtPct, fmtTime } from "@/lib/format";
 import { AmountList, Badge, BrassButton, cx } from "@/components/ui/kit";
 import { SectionTitle, Toolbar } from "./common";
@@ -42,71 +45,87 @@ function boardRows(s: GameState, d: Derived): BoardRow[] {
 }
 
 export default function ScheduleTab() {
-  const game = useGame((s) => s.game);
-  const d = derivedOf(game);
-  const rows = boardRows(game, d);
-  const nt = nextTrain(game);
-  const clock = humanClock(game);
-
   return (
     <>
       <Toolbar icon="🚂" title="Расписание" />
-      <Board s={game} rows={rows} nextId={nt?.id ?? null} clock={`${String(clock.hh).padStart(2, "0")}:${String(clock.mm).padStart(2, "0")}`} />
-      <Whistle s={game} />
+      <Board />
+      <Whistle />
 
       <SectionTitle>Бригада на перроне</SectionTitle>
-      <Crew s={game} d={d} />
+      <Crew />
 
       <SectionTitle>Журнал уловов</SectionTitle>
-      <HaulLog s={game} />
+      <HaulLog />
     </>
   );
 }
 
 /* ------------------------------------------------------------ board */
 
-function Board({ s, rows, nextId, clock }: { s: GameState; rows: BoardRow[]; nextId: SceneEventId | null; clock: string }) {
+interface BoardModel {
+  clock: string;
+  rows: { id: BoardId; at: string; cars: string; left: string; live: boolean; soon: boolean; next: boolean }[];
+}
+
+function boardModel(s: GameState): BoardModel {
+  const clock = humanClock(s);
+  const nextId = nextTrain(s)?.id ?? null;
+  return {
+    clock: `${String(clock.hh).padStart(2, "0")}:${String(clock.mm).padStart(2, "0")}`,
+    rows: boardRows(s, derivedOf(s)).map((r) => {
+      const left = r.at - s.time;
+      const live = s.scene?.id === r.id;
+      return {
+        id: r.id,
+        at: Number.isFinite(r.at) ? clockAt(r.at) : "--:--",
+        cars: r.cars,
+        left: live ? "СЕЙЧАС" : Number.isFinite(left) ? fmtTime(Math.max(0, left)) : "—",
+        live,
+        soon: !live && left <= 30,
+        next: r.id === nextId,
+      };
+    }),
+  };
+}
+
+function Board() {
+  const json = useSampled((s) => JSON.stringify(boardModel(s.game)), 3, Object.is);
+  const m = useMemo(() => JSON.parse(json) as BoardModel, [json]);
   return (
     <div className="overflow-hidden rounded-md border-2 border-[#3b2f22] bg-[#0f0d0b] shadow-[inset_0_2px_14px_rgba(0,0,0,.9),0_3px_0_#000,0_6px_16px_rgba(0,0,0,.5)]">
       <div className="flex items-center justify-between border-b border-[#2a2219] bg-gradient-to-b from-[#211b15] to-[#120f0c] px-2.5 py-1.5">
         <span className="font-display text-sm font-bold tracking-[0.25em] text-brass">ПРИБЫТИЯ</span>
         <span className="rr-board-glow font-mono text-sm tabular text-gaslight">
-          <span className="rr-tick">🕰</span> {clock}
+          <span className="rr-tick">🕰</span> {m.clock}
         </span>
       </div>
-      {rows.length === 0 ? (
+      {m.rows.length === 0 ? (
         <p className="px-3 py-4 text-center font-mono text-xs text-parchment-dim">Табло молчит. Над решёткой пока не ходят даже кэбы.</p>
       ) : (
         <ul className="divide-y divide-[#2a2219]">
-          {rows.map((r) => {
-            const left = r.at - s.time;
-            const live = s.scene?.id === r.id;
-            const soon = !live && left <= 30;
-            const isNext = r.id === nextId;
+          {m.rows.map((r) => {
             const lines = EVENT_LINES[r.id];
             return (
-              <li key={r.id} className={cx("grid grid-cols-[3.2rem_minmax(0,1fr)_auto] items-center gap-x-2 px-2.5 py-1.5", isNext && "bg-gaslight/[.06]")}>
-                <span className="rr-board-glow font-mono text-sm tabular text-gaslight">{Number.isFinite(r.at) ? clockAt(r.at) : "--:--"}</span>
+              <li key={r.id} className={cx("grid grid-cols-[3.2rem_minmax(0,1fr)_auto] items-center gap-x-2 px-2.5 py-1.5", r.next && "bg-gaslight/[.06]")}>
+                <span className="rr-board-glow font-mono text-sm tabular text-gaslight">{r.at}</span>
                 <span className="min-w-0">
                   <span className="block truncate text-xs font-bold text-parchment">
                     {lines.icon} {lines.name}
                   </span>
                   <span className="block truncate font-mono text-[10px] uppercase tracking-wider text-parchment-dim">
                     {r.cars}
-                    {isNext && <span className="ml-1.5 text-brass">· следующий</span>}
+                    {r.next && <span className="ml-1.5 text-brass">· следующий</span>}
                   </span>
                 </span>
                 <span className="text-right">
-                  <span className={cx("rr-board-glow block font-mono text-base leading-none tabular", live || soon ? "text-gaslight" : "text-brass-light")}>
-                    {live ? "СЕЙЧАС" : Number.isFinite(left) ? fmtTime(Math.max(0, left)) : "—"}
-                  </span>
+                  <span className={cx("rr-board-glow block font-mono text-base leading-none tabular", r.live || r.soon ? "text-gaslight" : "text-brass-light")}>{r.left}</span>
                   <span
                     className={cx(
                       "block text-[9px] font-bold uppercase tracking-widest",
-                      live ? "rr-blink text-danger-light" : soon ? "rr-blink text-gaslight" : "text-parchment-dim",
+                      r.live ? "rr-blink text-danger-light" : r.soon ? "rr-blink text-gaslight" : "text-parchment-dim",
                     )}
                   >
-                    {live ? "на путях" : soon ? "прибывает" : "по расписанию"}
+                    {r.live ? "на путях" : r.soon ? "прибывает" : "по расписанию"}
                   </span>
                 </span>
               </li>
@@ -118,11 +137,12 @@ function Board({ s, rows, nextId, clock }: { s: GameState; rows: BoardRow[]; nex
   );
 }
 
-function Whistle({ s }: { s: GameState }) {
+/* ------------------------------------------------------------ whistle */
+
+function whistleKey(s: GameState): string {
   const nt = nextTrain(s);
   const busy = !!s.scene;
   const used = !!nt && s.timers.whistleUsedFor === nt.at;
-  const cost = Math.floor(s.res.coins * 0.1);
   const disabled = !nt || busy || used;
   const note = !nt
     ? "Поездов пока нет — свистеть некому."
@@ -131,25 +151,56 @@ function Whistle({ s }: { s: GameState }) {
       : used
         ? "Стрелочник уже подмазан в этом интервале."
         : `${EVENT_LINES[nt.id].name} придёт на минуту раньше. Плата — 10% монеток.`;
+  return JSON.stringify({ disabled, cost: fmt(Math.floor(s.res.coins * 0.1)), note });
+}
+
+function Whistle() {
+  const json = useSampled((s) => whistleKey(s.game), 3, Object.is);
+  const m = useMemo(() => JSON.parse(json) as { disabled: boolean; cost: string; note: string }, [json]);
   return (
     <div className="mt-2 rounded-md border border-line bg-black/20 p-2">
-      <BrassButton tone="verdigris" className="min-h-10 w-full" disabled={disabled} onClick={() => useGame.getState().whistle()}>
+      <BrassButton tone="verdigris" className="min-h-10 w-full" disabled={m.disabled} onClick={() => useGame.getState().whistle()}>
         🎺 Свистнуть стрелочнику
-        {!disabled && <span className="ml-1.5 font-mono text-xs opacity-80">−{fmt(cost)} 🪙</span>}
+        {!m.disabled && <span className="ml-1.5 font-mono text-xs opacity-80">−{m.cost} 🪙</span>}
       </BrassButton>
-      <p className="mt-1 text-[11px] leading-snug text-parchment-dim">{note}</p>
+      <p className="mt-1 text-[11px] leading-snug text-parchment-dim">{m.note}</p>
     </div>
   );
 }
 
 /* ------------------------------------------------------------ crew */
 
-function Crew({ s, d }: { s: GameState; d: Derived }) {
-  const pos = s.trainPrefs.position;
-  const half = s.meta.edicts.timetable_in_head ? 0.5 : 1;
-  const metro = !!s.zones.metro;
-  const trainAuto = Math.min(0.9, d.trainAutoBase * CREW_POSITIONS[pos].auto);
-  const readyAuto = Math.min(0.9, (d.trainAutoBase + 0.15) * CREW_POSITIONS[pos].auto);
+interface CrewModel {
+  half: number;
+  metro: boolean;
+  /** Auto-collect share per position (and with «По местам!»). */
+  auto: string;
+  ready: string;
+  capsuleAuto: string;
+  capsules: number;
+  nets: { slots: number; cost: string; last: string } | null;
+}
+
+function crewModel(s: GameState): CrewModel {
+  const d = derivedOf(s);
+  const c = CREW_POSITIONS[s.trainPrefs.position];
+  return {
+    half: s.meta.edicts.timetable_in_head ? 0.5 : 1,
+    metro: !!s.zones.metro,
+    auto: fmtPct(Math.min(0.9, d.trainAutoBase * c.auto)),
+    ready: fmtPct(Math.min(0.9, (d.trainAutoBase + 0.15) * c.auto)),
+    capsuleAuto: fmtPct(d.capsuleAuto),
+    capsules: d.capsuleCount,
+    nets: s.upgrades.wire_nets
+      ? { slots: d.netSlots, cost: fmt(netCost(s, d)), last: s.trainPrefs.lastNets.map((n) => ["левая", "центр", "правая"][n] ?? n).join(", ") }
+      : null,
+  };
+}
+
+function Crew() {
+  const pos = useGame((s) => s.game.trainPrefs.position);
+  const json = useSampled((s) => JSON.stringify(crewModel(s.game)), 3, Object.is);
+  const m = useMemo(() => JSON.parse(json) as CrewModel, [json]);
 
   return (
     <>
@@ -190,7 +241,7 @@ function Crew({ s, d }: { s: GameState; d: Derived }) {
         <tbody className="font-mono tabular">
           {POSITIONS.map((p) => {
             const c = CREW_POSITIONS[p];
-            const crash = c.crash * half;
+            const crash = c.crash * m.half;
             return (
               <tr key={p} className={cx(p === pos ? "bg-brass/10 text-brass-light" : "text-parchment")}>
                 <td className="border-t border-line/60 px-2 py-1 font-sans">
@@ -206,29 +257,28 @@ function Crew({ s, d }: { s: GameState; d: Derived }) {
       </table>
       <p className="mt-1 text-[10px] leading-snug text-parchment-dim">
         Авария: 3% крыс (минимум одна) напуганы на 90 с. Насовсем никто не пропадает.
-        {!metro && " Позиция пригодится, когда откроется Станция подземки."}
+        {!m.metro && " Позиция пригодится, когда откроется Станция подземки."}
       </p>
 
-      <div className={cx("mt-2 grid gap-2", metro ? "grid-cols-1" : "grid-cols-2")}>
-        <div className={cx("rounded-md border border-line bg-black/25 px-2.5 py-2", !metro && "opacity-60")}>
+      <div className={cx("mt-2 grid gap-2", m.metro ? "grid-cols-1" : "grid-cols-2")}>
+        <div className={cx("rounded-md border border-line bg-black/25 px-2.5 py-2", !m.metro && "opacity-60")}>
           <p className="text-[10px] font-bold uppercase tracking-wider text-parchment-dim">🚂 Автосбор поездов</p>
-          <p className="font-mono text-lg leading-tight tabular text-parchment">{fmtPct(trainAuto)}</p>
-          <p className="text-[10px] leading-tight text-parchment-dim">с «По местам!» — {fmtPct(readyAuto)}</p>
+          <p className="font-mono text-lg leading-tight tabular text-parchment">{m.auto}</p>
+          <p className="text-[10px] leading-tight text-parchment-dim">с «По местам!» — {m.ready}</p>
         </div>
-        {!metro && (
+        {!m.metro && (
           <div className="rounded-md border border-line bg-black/25 px-2.5 py-2">
             <p className="text-[10px] font-bold uppercase tracking-wider text-parchment-dim">📯 Автосбор капсул</p>
-            <p className="font-mono text-lg leading-tight tabular text-parchment">{fmtPct(d.capsuleAuto)}</p>
-            <p className="text-[10px] leading-tight text-parchment-dim">капсул в составе: {d.capsuleCount}</p>
+            <p className="font-mono text-lg leading-tight tabular text-parchment">{m.capsuleAuto}</p>
+            <p className="text-[10px] leading-tight text-parchment-dim">капсул в составе: {m.capsules}</p>
           </div>
         )}
       </div>
 
-      {s.upgrades.wire_nets && (
+      {m.nets && (
         <p className="mt-2 rounded-md border border-line bg-black/20 px-2.5 py-1.5 text-[11px] leading-snug text-parchment-dim">
-          🕸️ Сети: слотов <b className="text-parchment">{d.netSlots}</b>, цена{" "}
-          <b className="font-mono text-parchment">{fmt(netCost(s, d))} ➰</b> за штуку.
-          {s.trainPrefs.lastNets.length > 0 && <> В прошлый раз: {s.trainPrefs.lastNets.map((n) => ["левая", "центр", "правая"][n] ?? n).join(", ")}.</>}
+          🕸️ Сети: слотов <b className="text-parchment">{m.nets.slots}</b>, цена <b className="font-mono text-parchment">{m.nets.cost} ➰</b> за штуку.
+          {m.nets.last && <> В прошлый раз: {m.nets.last}.</>}
         </p>
       )}
     </>
@@ -237,8 +287,10 @@ function Crew({ s, d }: { s: GameState; d: Derived }) {
 
 /* ------------------------------------------------------------ haul log */
 
-function HaulLog({ s }: { s: GameState }) {
-  if (s.haulLog.length === 0) {
+function HaulLog() {
+  const json = useSampled((s) => JSON.stringify(s.game.haulLog), 3, Object.is);
+  const log = useMemo(() => JSON.parse(json) as HaulSummary[], [json]);
+  if (log.length === 0) {
     return (
       <p className="rounded-md border border-dashed border-line px-3 py-4 text-center text-xs italic text-parchment-dim">
         Журнал пуст. Первый улов впишут каллиграфическим почерком и обведут вензелем.
@@ -247,7 +299,7 @@ function HaulLog({ s }: { s: GameState }) {
   }
   return (
     <ul className="space-y-1.5">
-      {s.haulLog.map((h, i) => {
+      {log.map((h, i) => {
         const rating = RATING_TABLE.find((r) => r.id === h.rating);
         return (
           <li key={`${i}-${h.title}-${h.caughtCount}`} className="rounded-md border border-line bg-gradient-to-b from-panel-2/70 to-panel/70 px-2.5 py-1.5">

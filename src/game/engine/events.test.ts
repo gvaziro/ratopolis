@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { TRAIN_CARS } from "../data/events";
-import type { CatchResult, EngineCtx, GameState, Scene, SceneEventId } from "../types";
+import { HOOK_JACKPOT_CAP_SEC, METRO_BASE_CARS, RANDOM_CAR_WEIGHTS, TRAIN_CARS } from "../data/events";
+import { RESOURCES } from "../data/resources";
+import type { CatchResult, EngineCtx, GameState, ResId, Scene, SceneEventId } from "../types";
 import { openZone } from "./actions";
+import { check } from "./conditions";
 import { stun } from "./core";
 import { derive, eventValue, stunnedRats } from "./derive";
-import { buildTrain, clickPurse, onZoneOpen, sceneAction } from "./events";
+import { buildTrain, clickPurse, incomeValue, onZoneOpen, sceneAction, trainDropRes } from "./events";
 import { createInitialState } from "./state";
 import { step, TICK } from "./step";
 
@@ -134,6 +136,171 @@ describe("train drops", () => {
     }
     expect(fromCars).toBeGreaterThan(0);
     expect(firstCars).toBeGreaterThan(0);
+  });
+});
+
+describe("v2 trains (EN-1, EN-2)", () => {
+  it("from the Metro on trains carry 💍 and 🔔 before the first one is owned", () => {
+    const s = metroState(21);
+    expect(s.resEver.trinkets).toBe(0);
+    expect(s.resEver.brass).toBe(0);
+    const d = derive(s);
+    const seen = new Set<string>();
+    for (let i = 0; i < 50; i++) for (const it of buildTrain(s, d, "metro_train").items) if (!it.spark) seen.add(it.res);
+    expect(seen.has("trinkets")).toBe(true);
+    expect(seen.has("brass")).toBe(true);
+    // and the resource bar shows them
+    expect(check(s, RESOURCES.trinkets.reveal)).toBe(true);
+    expect(check(s, RESOURCES.brass.reveal)).toBe(true);
+    // before the Metro a capsule-era state never sees them (nothing drops them there anyway): the gate swaps them
+    const early = createInitialState(3, 0);
+    expect(trainDropRes(early, "trinkets")).toBe("coins");
+    expect(trainDropRes(early, "brass")).toBe("coins"); // ⚙️ is not revealed before the sewers either
+  });
+
+  it("a base metro train is 4 cars", () => {
+    const s = metroState(4);
+    const d = derive(s);
+    expect(d.trainExtraCars).toBe(0);
+    expect(METRO_BASE_CARS).toBe(4);
+    for (let i = 0; i < 50; i++) expect(buildTrain(s, d, "metro_train").cars).toHaveLength(4);
+    s.buildings.platform_post = 5;
+    s.upgrades.stolen_timetable = true;
+    s.meta.edicts.timetable_in_head = true;
+    for (let i = 0; i < 20; i++) expect(buildTrain(s, derive(s), "metro_train").cars).toHaveLength(11);
+  });
+
+  it("with the grappling hook every metro train of 3–11 cars has a hook target", () => {
+    const s = metroState(31);
+    s.upgrades.grappling_hook = true;
+    const d = derive(s);
+    let replaced = 0;
+    for (let i = 0; i < 1000; i++) {
+      const n = 3 + (i % 9);
+      const sc = buildTrain(s, { ...d, trainExtraCars: n - METRO_BASE_CARS }, "metro_train");
+      expect(sc.cars).toHaveLength(n);
+      expect(sc.hookCar, `train ${i} (${sc.cars.map((c) => c.kind).join(",")})`).toBeGreaterThanOrEqual(0);
+      expect(["first", "baggage"]).toContain(sc.cars[sc.hookCar].kind);
+      if (sc.cars.filter((c) => c.kind === "first" || c.kind === "baggage").length === 1 && sc.cars[sc.cars.length - 1].kind === "baggage") replaced++;
+    }
+    expect(replaced).toBeGreaterThan(0);
+  });
+
+  it("without the hook the random cars follow the weights (χ², p > 0.01)", () => {
+    const s = metroState(41);
+    const d = derive(s);
+    const counts: Record<string, number> = { third: 0, dining: 0, mail: 0, first: 0, baggage: 0 };
+    let n = 0;
+    for (let i = 0; i < 2600; i++) {
+      // EN-6 variants (rush hour, mail, freight) have their own car tables: count plain trains only
+      const sc = buildTrain(s, { ...d, trainExtraCars: i % 8 }, "metro_train");
+      if (sc.variant !== "normal" || sc.announce) continue;
+      for (const car of sc.cars) {
+        if (car.kind === "engine" || car.kind === "tender") continue;
+        counts[car.kind]++;
+        n++;
+      }
+    }
+    const wsum = Object.values(RANDOM_CAR_WEIGHTS).reduce((a, w) => a + w, 0);
+    let chi2 = 0;
+    for (const [k, w] of Object.entries(RANDOM_CAR_WEIGHTS)) {
+      const exp = (n * w) / wsum;
+      chi2 += (counts[k] - exp) ** 2 / exp;
+    }
+    expect(n).toBeGreaterThan(5000);
+    expect(chi2).toBeLessThan(13.277); // χ²(4 dof) at p = 0.01
+  });
+
+  /** A metro scene with the hook, nothing caught by hand: everything the catch pays is the jackpot. */
+  function hookOnly(s: GameState, id: "metro_train" | "royal_express", hook: CatchResult["hook"]) {
+    s.upgrades.grappling_hook = true;
+    const d = derive(s);
+    // a plain train (no EN-6 variant or Cheddar car): the car values are the base ones
+    let sc = buildTrain(s, d, id);
+    while ((sc.variant ?? "normal") !== "normal" || sc.announce) sc = buildTrain(s, d, id);
+    sc.position = "rails";
+    sc.multiplier = 1;
+    s.scene = sc;
+    const ctx: EngineCtx = { fx: [] };
+    sceneAction(s, d, { a: "ready" }, ctx);
+    const before = { ...s.res };
+    sceneAction(s, d, { a: "catch", result: { caught: [], netted: [], sparksHit: 0, hook, maxCombo: 0 } }, ctx);
+    const got: Partial<Record<ResId, number>> = {};
+    for (const r of Object.keys(before) as ResId[]) if (s.res[r] - before[r] > 1e-9) got[r] = s.res[r] - before[r];
+    const car: Partial<Record<ResId, number>> = {};
+    for (const itId of sc.cars[sc.hookCar].itemIds) {
+      const it = sc.items[itId];
+      if (!it.spark && it.res !== "trinkets") car[it.res] = (car[it.res] ?? 0) + it.value;
+    }
+    return { sc, got, car };
+  }
+  const value = (a: Partial<Record<ResId, number>>) => Object.entries(a).reduce((v, [r, x]) => v + (r === "trinkets" ? 0 : (x ?? 0) * (RESOURCES[r as ResId].market ?? 0)), 0);
+
+  it("hook jackpot: ×4 perfect / ×2.5 hit of the car while under the cap, +2 💍", () => {
+    for (const [hook, k] of [
+      ["perfect", 4],
+      ["hit", 2.5],
+    ] as const) {
+      const s = metroState(51);
+      s.ema.coins = 10; // the car's coins are valued at the floor (0.5 × 4³ = 32)
+      s.ema.rails = 1e4; // a big passive income elsewhere (🛤️ never drops from cars): the cap does not bind
+      const { sc, got, car } = hookOnly(s, "metro_train", hook);
+      expect(sc.jackpot).toBe(true);
+      for (const [r, v] of Object.entries(car)) expect(got[r as ResId], r).toBeCloseTo((v ?? 0) * k, 6);
+      expect(got.trinkets).toBeCloseTo(2, 9);
+      expect(sc.haul?.jackpotSeconds).toBeCloseTo(value(car) * k / incomeValue(s), 9);
+    }
+  });
+
+  it("a jackpot never pays more than 180 s of market-value income (+2 💍)", () => {
+    for (let seed = 1; seed <= 12; seed++) {
+      const s = metroState(60 + seed);
+      s.ema.coins = 2 + seed; // a modest income: the car alone is worth far more
+      s.ema.crumbs = 50;
+      const income = incomeValue(s);
+      const hook = seed % 2 ? "perfect" : "hit";
+      const { sc, got, car } = hookOnly(s, "metro_train", hook);
+      expect(value(car) * 2.5).toBeGreaterThan(HOOK_JACKPOT_CAP_SEC * income);
+      expect(value(got)).toBeLessThanOrEqual(HOOK_JACKPOT_CAP_SEC * income * (1 + 1e-9));
+      expect(value(got)).toBeCloseTo(HOOK_JACKPOT_CAP_SEC * income, 6);
+      expect(sc.haul?.jackpotSeconds).toBeCloseTo(HOOK_JACKPOT_CAP_SEC, 6);
+      expect(got.trinkets).toBeCloseTo(2, 9);
+    }
+  });
+
+  it("the royal car of the Royal Express pays ×6 / ×4", () => {
+    const s = metroState(71);
+    openZone(s, "terminal", { fx: [] });
+    s.buildings.express_depot = 1;
+    s.ema.coins = 10;
+    s.ema.rails = 1e4;
+    const { sc, got, car } = hookOnly(s, "royal_express", "perfect");
+    expect(sc.cars[sc.hookCar].kind).toBe("royal");
+    for (const [r, v] of Object.entries(car)) expect(got[r as ResId], r).toBeCloseTo((v ?? 0) * 6, 6);
+    const t = metroState(71);
+    openZone(t, "terminal", { fx: [] });
+    t.buildings.express_depot = 1;
+    t.ema.coins = 10;
+    t.ema.rails = 1e4;
+    const hit = hookOnly(t, "royal_express", "hit");
+    for (const [r, v] of Object.entries(hit.car)) expect(hit.got[r as ResId], r).toBeCloseTo((v ?? 0) * 4, 6);
+  });
+
+  it("one stoker makes exactly 3 × jobYield 💨/s, whatever the global multiplier", () => {
+    const s = metroState(81);
+    s.buildings.boiler = 1;
+    s.meta.crownsEver = 300; // +600% from crowns
+    s.res.coal = 1e6;
+    s.resEver.coal = 1e6;
+    s.jobs.forager = 199;
+    s.jobs.stoker = 1;
+    s.convEff.stoker = 1;
+    const ctx: EngineCtx = { fx: [] };
+    step(s, TICK, { active: false }, ctx);
+    const d = derive(s);
+    expect(d.global).toBeGreaterThanOrEqual(5);
+    expect(s.gross.steam).toBeCloseTo(3 * d.jobYield.stoker, 12);
+    expect(RESOURCES.steam.excludeGlobal).toBe(true);
   });
 });
 
@@ -304,7 +471,8 @@ describe("rats are never lost for good", () => {
     expect(stunnedRats(s)).toBeGreaterThan(0);
     expect(s.suspicion).toBe(40);
     for (let i = 0; i < 950; i++) step(s, TICK, { active: false }, ctx);
-    expect(stunnedRats(s)).toBe(0);
+    // (a passing metro train may have scared a few rats on its own in the meantime: only the piper's group matters)
+    expect(s.stunned.filter((g) => g.reason === "piper")).toEqual([]);
     expect(s.rats).toBeGreaterThanOrEqual(rats);
   });
 });

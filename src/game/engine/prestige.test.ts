@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { EDICTS, EXPRESS_STAGE_LINES, EXPRESS_STAGES } from "../data/meta";
 import { FOREMAN_UPGRADES, RAT_MEMORY_UPGRADES } from "../data/upgrades";
-import type { EngineCtx, GameState } from "../types";
-import { buyEdict, migrate, openZone } from "./actions";
+import type { Amounts, EngineCtx, Fx, GameState } from "../types";
+import { buyEdict, contributeExpress, migrate, openZone } from "./actions";
 import { derive } from "./derive";
-import { canMigrate, crownsForRun, expeditionCost } from "./formulas";
-import { createInitialState } from "./state";
+import { canMigrate, crownsForRun, entries, expeditionCost, expressStageCost } from "./formulas";
+import { createInitialState, KEPT_STAGES_MAX } from "./state";
 
 function readyToMigrate(): GameState {
   const s = createInitialState(1, 0);
@@ -59,23 +60,62 @@ describe("Great Migration and edicts", () => {
     expect(buyEdict(s, "express_blueprints", ctx)).toBe(false); // once only
   });
 
-  it("after a coronation run the blueprints keep 9 stages, so the coronation can happen again", () => {
+  it("after a coronation run the blueprints keep only the first 5 stages, so stages 6–10 and the coronation replay", () => {
     const s = readyToMigrate();
     s.express.stage = 10;
     s.coronatedThisRun = true;
     const ctx: EngineCtx = { fx: [] };
     const next = migrate(s, 0, ctx)!;
-    expect(next.meta.expressKept).toBe(9);
+    expect(KEPT_STAGES_MAX).toBe(5);
+    expect(next.meta.expressKept).toBe(5);
     next.meta.crowns = 100;
     expect(buyEdict(next, "express_blueprints", ctx)).toBe(true);
-    expect(next.express.stage).toBe(9);
-    // and at the start of the run after that (an old save may still remember 10)
+    expect(next.express.stage).toBe(5);
+    // and at the start of the run after that (an old v1 save may still remember 9 or 10)
     next.meta.expressKept = 10;
     next.zones.metro = true;
     next.eRun = 2e6;
     const third = migrate(next, 0, ctx)!;
-    expect(third.meta.expressKept).toBe(9);
-    expect(third.express.stage).toBe(9);
+    expect(third.meta.expressKept).toBe(5);
+    expect(third.express.stage).toBe(5);
+    expect(EDICTS.express_blueprints.effect).toContain("Первые 5 этапов");
+  });
+
+  it("express stages are 4.5× the v1 base with ×1.5 growth (EN-13): a little above the v1 total, and stage 1 no longer costs pocket change", () => {
+    const s = createInitialState(1, 0);
+    const v1 = { rails: 50, gears: 10000, brass: 1000, trinkets: 6, blueprints: 30 };
+    const total = (f: (n: number) => Amounts) => {
+      const out: Amounts = {};
+      for (let n = 1; n <= 10; n++) for (const [r, v] of entries(f(n))) out[r] = (out[r] ?? 0) + v;
+      return out;
+    };
+    const now = total((n) => expressStageCost(s, n));
+    const old = total((n) => Object.fromEntries(Object.entries(v1).map(([r, v]) => [r, Math.ceil(v * Math.pow(1.8, n - 1))])));
+    for (const [r, v] of entries(old)) expect((now[r] ?? 0) / v, r).toBeGreaterThan(1.05);
+    for (const [r, v] of entries(old)) expect((now[r] ?? 0) / v, r).toBeLessThan(1.25);
+    expect(expressStageCost(s, 1)).toEqual({ rails: 225, gears: 45000, brass: 4500, trinkets: 27, blueprints: 135 });
+    s.meta.edicts.express_blueprints = true;
+    expect(expressStageCost(s, 1).rails).toBe(169);
+  });
+
+  it("a finished express stage reads «Этап «…»: <human line>»; the coronation headline uses coronationLine", () => {
+    const s = readyToMigrate();
+    const ctx: EngineCtx = { fx: [] };
+    openZone(s, "terminal", ctx);
+    s.upgrades.express_plan = true;
+    s.express.stage = 0;
+    s.res.rails = s.res.gears = s.res.brass = s.res.trinkets = s.res.blueprints = 1e12;
+    contributeExpress(s, null, ctx);
+    expect(s.express.stage).toBe(1);
+    const stageNews = ctx.fx.filter((f): f is Extract<Fx, { k: "news" }> => f.k === "news").map((f) => f.text);
+    expect(stageNews).toContain(`Этап «${EXPRESS_STAGES[0]}»: ${EXPRESS_STAGE_LINES[0].human}`);
+    s.express.stage = 9;
+    s.meta.migrations = 1; // the first run after a migration starts on a Wednesday
+    ctx.fx.length = 0;
+    contributeExpress(s, null, ctx);
+    expect(s.express.stage).toBe(10);
+    const crowning = ctx.fx.filter((f): f is Extract<Fx, { k: "news" }> => f.k === "news").map((f) => f.text).find((t) => t.startsWith("ДА ЗДРАВСТВУЕТ"));
+    expect(crowning).toBe("ДА ЗДРАВСТВУЕТ КРЫСИНЫЙ КОРОЛЬ! «Для людей это одна среда. Для крыс — целая история.»");
   });
 
   it("the new run's tabs and HUD are revealed at once (no blank second on the migration screen)", () => {

@@ -51,6 +51,25 @@ export function Defs() {
         <stop offset="0" stopColor="#fff4d0" />
         <stop offset="1" stopColor="#e2b862" />
       </linearGradient>
+      {/* CO-5: the grate glass and its rays follow the human clock */}
+      <linearGradient id="cv-skylight-dusk" x1="0" x2="0" y1="0" y2="1">
+        <stop offset="0" stopColor="#ffd2a0" />
+        <stop offset="1" stopColor="#c9784a" />
+      </linearGradient>
+      <linearGradient id="cv-skylight-night" x1="0" x2="0" y1="0" y2="1">
+        <stop offset="0" stopColor="#26314d" />
+        <stop offset="1" stopColor="#46557a" />
+      </linearGradient>
+      <linearGradient id="cv-rays-dusk" x1="0" x2="0" y1="0" y2="1">
+        <stop offset="0" stopColor="#ffb36b" stopOpacity=".3" />
+        <stop offset=".55" stopColor="#ffb36b" stopOpacity=".07" />
+        <stop offset="1" stopColor="#ffb36b" stopOpacity="0" />
+      </linearGradient>
+      <linearGradient id="cv-rays-night" x1="0" x2="0" y1="0" y2="1">
+        <stop offset="0" stopColor="#a9c1ff" stopOpacity=".18" />
+        <stop offset=".55" stopColor="#a9c1ff" stopOpacity=".04" />
+        <stop offset="1" stopColor="#a9c1ff" stopOpacity="0" />
+      </linearGradient>
       {(
         [
           ["warm", "#f2b84b"],
@@ -98,6 +117,14 @@ export function Defs() {
         <stop offset="0" stopColor="#14121a" stopOpacity=".92" />
         <stop offset=".5" stopColor="#1e1c26" stopOpacity=".55" />
         <stop offset="1" stopColor="#2a2833" stopOpacity=".2" />
+      </linearGradient>
+      {/* CO-8: the next zone seen through the rock — desaturated and darkened */}
+      <filter id="cv-silhouette" x="-5%" y="-5%" width="110%" height="110%">
+        <feColorMatrix type="matrix" values=".22 .22 .22 0 .02  .2 .2 .2 0 .02  .18 .18 .18 0 .03  0 0 0 1 0" />
+      </filter>
+      <linearGradient id="cv-feather" x1="0" x2="0" y1="0" y2="1">
+        <stop offset="0" stopColor="#0d0a08" stopOpacity="1" />
+        <stop offset="1" stopColor="#0d0a08" stopOpacity="0" />
       </linearGradient>
     </>
   );

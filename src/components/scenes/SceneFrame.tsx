@@ -25,12 +25,15 @@ const KEYFRAMES = `
 @keyframes rr-paw{0%{transform:translate(-80px,26px) rotate(-10deg);opacity:0}12%{opacity:1}68%{transform:translate(80px,-14px) rotate(8deg);opacity:1}100%{transform:translate(90px,-16px) rotate(8deg);opacity:0}}
 @keyframes rr-jitter{0%,100%{transform:translate(0,0)}25%{transform:translate(calc(var(--amp) * -1),var(--amp))}50%{transform:translate(var(--amp),calc(var(--amp) * -.5))}75%{transform:translate(calc(var(--amp) * .5),calc(var(--amp) * -1))}}
 @keyframes rr-flash{from{opacity:.85}to{opacity:0}}
+@keyframes rr-flash-soft{from{opacity:.3}to{opacity:0}}
 @keyframes rr-card{0%{transform:translateY(36px) rotate(-2.5deg) scale(.95);opacity:0}70%{transform:translateY(-4px) rotate(.4deg) scale(1.01);opacity:1}100%{transform:none;opacity:1}}
 @keyframes rr-flicker{0%,100%{opacity:.25}8%{opacity:.95}16%{opacity:.35}30%{opacity:1}44%{opacity:.5}60%{opacity:.9}}
 @keyframes rr-glow{0%,100%{opacity:.6}50%{opacity:1}}
 @keyframes rr-blink{50%{opacity:.35}}
 @keyframes rr-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
 @keyframes rr-hint{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+@keyframes rr-fadein{from{opacity:0}to{opacity:1}}
+@keyframes rr-scene-ping{0%{transform:scale(1);opacity:.85}80%,100%{transform:scale(1.9);opacity:0}}
 `;
 
 export function SceneStyles() {
@@ -117,6 +120,11 @@ export default function SceneFrame({ id, right, children }: { id: SceneEventId; 
   const reduced = useGame((s) => s.game.settings.reducedMotion);
   const [humanDone, setHumanDone] = useState(false);
   const lines = EVENT_LINES[id];
+  // SC-4: this scene's own 👤/🐀 pair from the engine (EN-6 pools and variants), else the v1 pair
+  const human = useGame((s) => (s.game.scene?.id === id ? s.game.scene.line?.human : undefined)) ?? lines.human;
+  const rat = useGame((s) => (s.game.scene?.id === id ? s.game.scene.line?.rat : undefined)) ?? lines.rat;
+  // SC-6: a warning scene (cat, ratcatcher) starts with its choice buttons: no cut-in may cover them
+  const cutIn = !reduced && id !== "cat" && id !== "ratcatcher";
   const royal = id === "royal_express";
   return (
     <div
@@ -139,16 +147,16 @@ export default function SceneFrame({ id, right, children }: { id: SceneEventId; 
         </div>
         <p className="text-[11px] leading-snug text-parchment-dim md:text-xs">
           <span className="font-bold">👤 Человек видит: </span>
-          <Typewriter key={"h" + id} text={lines.human} delay={reduced ? 0 : 450} instant={reduced} onDone={() => setHumanDone(true)} />
+          <Typewriter key={"h" + id + human} text={human} delay={reduced ? 0 : 450} instant={reduced} onDone={() => setHumanDone(true)} />
         </p>
         <p className="min-h-[1.2em] text-[11px] leading-snug text-parchment md:text-xs">
           <span className="font-bold text-brass-light">🐀 Крысы видят: </span>
-          {humanDone && <Typewriter key={"r" + id} text={lines.rat} delay={120} instant={reduced} />}
+          {humanDone && <Typewriter key={"r" + id + rat} text={rat} delay={120} instant={reduced} />}
         </p>
       </header>
       <div className="relative min-h-0 flex-1 overflow-hidden">
         {children}
-        {!reduced && <IntroCutIn id={id} />}
+        {cutIn && <IntroCutIn id={id} />}
       </div>
       {royal && <div className="pointer-events-none absolute inset-0 z-30 border-[3px] border-[#d4af37] shadow-[inset_0_0_36px_rgba(212,175,55,.45)]" style={{ animation: "rr-glow 2.4s ease-in-out infinite" }} />}
     </div>

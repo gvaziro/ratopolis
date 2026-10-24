@@ -40,6 +40,7 @@ for (let i = 0; i < (minutes * 60) / TICK; i++) {
     if (f.k === "upgrade") console.log(`  ${Math.floor(s.time)}s upgrade ${f.upgrade}`);
     else if (f.k === "zoneOpen") console.log(`  ${Math.floor(s.time)}s ZONE ${f.zone}`);
     else if (f.k === "expressStage") console.log(`  ${Math.floor(s.time)}s EXPRESS ${f.stage}`);
+    else if (f.k === "scout") console.log(`  ${Math.floor(s.time)}s SCOUT ${f.zone} #${f.step} +${Math.round(f.amount)} ${f.res}`);
     else if (f.k === "buy" && s.time >= dbgFrom && s.time <= dbgTo) console.log(`  ${Math.floor(s.time)}s buy ${f.building} ${f.level}`);
   }
   ctx.fx.length = 0;

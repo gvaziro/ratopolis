@@ -3,7 +3,7 @@
  * Everything here is plain module state mutated from effects / event handlers, never during render.
  */
 
-export type BurstKind = "dust" | "gold" | "spark" | "confetti" | "heart" | "ember" | "crumb" | "glint";
+export type BurstKind = "dust" | "gold" | "spark" | "confetti" | "heart" | "ember" | "crumb" | "glint" | "gear";
 
 export interface FloatSpec {
   text: string;

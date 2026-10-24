@@ -3,6 +3,8 @@
  *   voices → bus → high shelf (−4 dB, never harsh) → compressor → master volume → speakers,
  * a small synthetic "brick tunnel" reverb on a send, shared noise buffers, and voice bookkeeping
  * (per-sound throttling so one sound never stacks past its voice limit, node cleanup on end).
+ * v2: a second input, the ambience bus (× settings.ambience, ducked −9 dB under close-ups), joins the
+ * same shelf → compressor → master chain, so the background obeys the master volume and the limiter too.
  * Nothing here touches the DOM until unlock() runs on a user gesture.
  */
 
@@ -17,16 +19,24 @@ export interface Core {
   /** User volume, after the compressor. */
   master: GainNode;
   noise: Record<NoiseKind, AudioBuffer>;
+  /** Ambience bus input: → ambLevel (settings.ambience) → ambDuck (close-ups) → shelf, plus a bus-wide reverb send. */
+  amb: GainNode;
+  ambLevel: GainNode;
+  ambDuck: GainNode;
 }
 
 /** Hard ceiling on simultaneously sounding voices (one voice = one sound call). */
 const MAX_VOICES = 72;
 /** Sounds scheduled this soon after a resume request still play (the first tap unlocks and clicks). */
 const RESUME_GRACE_MS = 700;
+/** Ambience under a close-up: −9 dB. */
+const AMB_DUCK = Math.pow(10, -9 / 20);
 
 let core: Core | null = null;
 let enabled = true;
 let volume = 0.4;
+let ambVolume = 0.5;
+let ambDucked = false;
 let resumeAskedAt = -Infinity;
 let testMode = false;
 let voiceCount = 0;
@@ -34,6 +44,8 @@ let voiceCount = 0;
 const clamp01 = (x: number): number => (x < 0 ? 0 : x > 1 ? 1 : Number.isFinite(x) ? x : 0);
 /** Perceptual volume curve: 40% on the slider ≈ −12 dB. */
 const volumeGain = (v: number): number => Math.pow(clamp01(v), 1.5);
+/** Ambience slider curve: 0.5 (the default) = unity, 1 ≈ +7 dB, 0.25 ≈ −7 dB, 0 = silence. */
+const ambienceGain = (v: number): number => (v <= 0.001 ? 0 : Math.pow(clamp01(v) * 2, 1.2));
 
 type AudioCtor = new (opts?: AudioContextOptions) => AudioContext;
 
@@ -93,6 +105,29 @@ export function setVolumeCore(v: number, on: boolean): void {
   g.setTargetAtTime(on ? volumeGain(volume) : 0, now, on ? 0.03 : 0.012);
 }
 
+/** settings.ambience 0..1: the background bus level (master volume still applies after it). */
+export function setAmbienceCore(v: number): void {
+  ambVolume = clamp01(v);
+  if (!core) return;
+  const g = core.ambLevel.gain;
+  const now = core.ctx.currentTime;
+  g.cancelScheduledValues(now);
+  g.setValueAtTime(g.value, now);
+  g.setTargetAtTime(ambienceGain(ambVolume), now, 0.04);
+}
+
+/** Duck the ambience −9 dB over 0.4 s while a close-up is on screen; back up over 1.5 s afterwards. */
+export function duckAmbienceCore(on: boolean): void {
+  if (on === ambDucked) return;
+  ambDucked = on;
+  if (!core) return;
+  const g = core.ambDuck.gain;
+  const now = core.ctx.currentTime;
+  g.cancelScheduledValues(now);
+  g.setValueAtTime(g.value, now);
+  g.linearRampToValueAtTime(on ? AMB_DUCK : 1, now + (on ? 0.4 : 1.5));
+}
+
 /** The core when sounds may be scheduled right now (unlocked, running, not muted), else null. */
 export function live(): Core | null {
   if (!core) return null;
@@ -102,6 +137,22 @@ export function live(): Core | null {
   if (st === "running") return core;
   if (st === "suspended" && performance.now() - resumeAskedAt < RESUME_GRACE_MS) return core;
   return null;
+}
+
+/** live(), and the ambience slider is above zero. */
+export function ambienceLive(): Core | null {
+  const c = live();
+  return c && ambVolume > 0.001 ? c : null;
+}
+
+/** Milliseconds for throttling; in test mode the audio clock, so an offline render can step through time. */
+export function clockMs(): number {
+  return testMode && core ? core.ctx.currentTime * 1000 : performance.now();
+}
+
+/** Voices sounding right now (test reports). */
+export function voicesNow(): number {
+  return voiceCount;
 }
 
 /** Test harness only: render the synth into an OfflineAudioContext. */
@@ -156,12 +207,30 @@ function build(ctx: BaseAudioContext): Core {
   conv.connect(ret);
   ret.connect(shelf);
 
+  // ambience bus: its own level and duck, then the same tone/compression/master as everything else;
+  // the reverb send is taken after both, so «Фон» at 0 silences the tails as well
+  const amb = ctx.createGain();
+  const ambLevel = ctx.createGain();
+  ambLevel.gain.value = ambienceGain(ambVolume);
+  const ambDuck = ctx.createGain();
+  ambDuck.gain.value = ambDucked ? AMB_DUCK : 1;
+  const ambSend = ctx.createGain();
+  ambSend.gain.value = 0.4;
+  amb.connect(ambLevel);
+  ambLevel.connect(ambDuck);
+  ambDuck.connect(shelf);
+  ambDuck.connect(ambSend);
+  ambSend.connect(verb);
+
   return {
     ctx,
     bus,
     verb,
     master,
     noise: { white: noiseBuffer(ctx, "white", 2), pink: noiseBuffer(ctx, "pink", 4), brown: noiseBuffer(ctx, "brown", 4) },
+    amb,
+    ambLevel,
+    ambDuck,
   };
 }
 
@@ -243,6 +312,8 @@ export interface VoiceOpts {
   delay?: number;
   /** Absolute start time on the context clock (overrides delay). */
   at?: number;
+  /** "amb": play on the ambience bus (its level, duck and reverb) instead of the effects bus; leave `send` unset. */
+  bus?: "amb";
 }
 
 /** One sound call: owns its nodes and disconnects them all when its last source ends. */
@@ -274,7 +345,7 @@ export class Voice {
       this.nodes.push(p);
       tail = p;
     }
-    tail.connect(c.bus);
+    tail.connect(o.bus === "amb" ? c.amb : c.bus);
     if (o.send) {
       const s = c.ctx.createGain();
       s.gain.value = o.send;
@@ -333,6 +404,8 @@ export interface Limits {
   gapMs?: number;
   /** Max starts per rolling second. */
   perSec?: number;
+  /** Skip while this many voices already sound (background sounds leave room for gameplay). */
+  yieldAt?: number;
 }
 
 interface Gate {
@@ -349,12 +422,13 @@ const gates = new Map<string, Gate>();
 export function play(key: string, lim: Limits, opts: VoiceOpts, build: (v: Voice) => void): void {
   const c = live();
   if (!c || voiceCount >= MAX_VOICES) return;
+  if (lim.yieldAt !== undefined && voiceCount >= lim.yieldAt) return;
   let g = gates.get(key);
   if (!g) {
     g = { last: -Infinity, ends: [], starts: [] };
     gates.set(key, g);
   }
-  const nowMs = performance.now();
+  const nowMs = clockMs();
   if (lim.gapMs && nowMs - g.last < lim.gapMs) return;
   const now = c.ctx.currentTime;
   g.ends = g.ends.filter((e) => e > now);

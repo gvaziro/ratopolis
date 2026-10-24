@@ -1,7 +1,12 @@
 import type { EngineCtx, GameState, TickInput } from "../types";
+import { HEADLINES } from "../data/headlines";
+import { ACHIEVEMENT_ORDER, ACHIEVEMENTS } from "../data/meta";
 import { applyReveals, autoContribute, click, foremanTick, openZone, smartAssign } from "./actions";
-import { award, news } from "./core";
-import { derive, type Derived } from "./derive";
+import { award, news, pushNews } from "./core";
+import { checkCommission } from "./commissions";
+import { progressStat } from "./progress";
+import { rand } from "./rng";
+import { derive, highestZoneId, type Derived } from "./derive";
 import { tickEconomy } from "./economy";
 import { onZoneOpen, tickEvents } from "./events";
 import { canMigrate, humanActivity, humanClock } from "./formulas";
@@ -9,10 +14,17 @@ import { canMigrate, humanActivity, humanClock } from "./formulas";
 export const TICK = 0.1; // seconds per fixed step (10 Hz)
 
 /**
+ * Test/dev hook (EN-8): called at the start of every step. Tests set it to throw and check that the store stops
+ * publishing and saving; production code never sets it.
+ */
+export const stepHooks: { before: ((s: GameState) => void) | null } = { before: null };
+
+/**
  * Advance the whole game by dt seconds. Mutates `s`.
  * Order: time → bustle/autoclick → economy → digging → events → once-per-second housekeeping.
  */
 export function step(s: GameState, dt: number, input: TickInput, ctx: EngineCtx): Derived {
+  if (stepHooks.before) stepHooks.before(s);
   const prevTime = s.time;
   s.time += dt;
   s.meta.lifetime.playSeconds += dt;
@@ -58,18 +70,54 @@ function tickBustle(s: GameState, d: Derived, dt: number, ctx: EngineCtx): void 
     s.buffs.frenzyUntil = s.time + 10;
     s.buffs.frenzyCooldownUntil = s.time + 25;
     b.value = 0;
+    s.stats.frenzies++;
+    s.meta.lifetime.frenzies++;
     ctx.fx.push({ k: "frenzy" });
     news(s, "frenzy", {}, ctx);
   }
   void d;
 }
 
+/** Medals with a progress counter (awarded by housekeeping when the counter reaches the goal). */
+const PROGRESS_MEDALS = ACHIEVEMENT_ORDER.filter((id) => ACHIEVEMENTS[id].progress);
+
+function progressReached(s: GameState, id: (typeof PROGRESS_MEDALS)[number]): boolean {
+  const p = ACHIEVEMENTS[id].progress!;
+  return progressStat(s, p.stat) >= p.goal;
+}
+
+/** The no-repeat ring of filler headlines (EN-10). */
+const FILLER_RING = 8;
+
+/**
+ * Filler headlines (EN-10): first at 150 s, then every 70–120 s, only when the paper has been quiet for 45 s.
+ * Pool: the general filler, the highest open zone's, the district's and the crowned ones; never one of the last 8.
+ */
+function fillerNews(s: GameState, ctx: EngineCtx): void {
+  if (s.time < s.timers.filler) return;
+  const last = s.news[s.news.length - 1];
+  if (last && s.time - last.t < 45) {
+    s.timers.filler = last.t + 45;
+    return;
+  }
+  s.timers.filler = s.time + 70 + 50 * rand(s);
+  const pool = [
+    ...(HEADLINES.filler ?? []),
+    ...(HEADLINES[`filler_${highestZoneId(s)}`] ?? []),
+    ...(HEADLINES[`filler_d${s.meta.district % 6}`] ?? []),
+    ...(s.flags.coronation || s.meta.coronations > 0 ? (HEADLINES.filler_crowned ?? []) : []),
+  ].filter((x) => !s.newsRecent.includes(x));
+  if (!pool.length) return;
+  const text = pool[Math.floor(rand(s) * pool.length)];
+  s.newsRecent.push(text);
+  if (s.newsRecent.length > FILLER_RING) s.newsRecent.splice(0, s.newsRecent.length - FILLER_RING);
+  pushNews(s, text, ctx);
+}
+
 function housekeeping(s: GameState, d: Derived, input: TickInput, ctx: EngineCtx): void {
-  // achievements that are plain thresholds
+  // achievements that are plain thresholds; every counter medal (ACHIEVEMENTS[id].progress) is awarded at its goal
   if (s.resEver.crumbs >= 1) award(s, "first_crumb", ctx);
-  if (s.rats >= 100) award(s, "colony_100", ctx);
-  if (s.rats >= 1000) award(s, "colony_1000", ctx);
-  if (s.meta.lifetime.clicks >= 1000) award(s, "click_1000", ctx);
+  for (const id of PROGRESS_MEDALS) if (s.meta.achievements[id] === undefined && progressReached(s, id)) award(s, id, ctx);
   if (s.resEver.rails >= 1 && s.meta.achievements.first_rail === undefined) {
     award(s, "first_rail", ctx);
     news(s, "first_rail", {}, ctx);
@@ -90,6 +138,11 @@ function housekeeping(s: GameState, d: Derived, input: TickInput, ctx: EngineCtx
     s.flags.migration_ready = true;
     news(s, "migration_ready", {}, ctx);
     ctx.fx.push({ k: "toast", text: "Великое Переселение доступно! Загляните во вкладку «Переселение»", icon: "👑", tone: "gold" });
+  }
+
+  if (!input.offline) {
+    fillerNews(s, ctx);
+    checkCommission(s, ctx);
   }
 
   // a new rat generation every 3 real minutes (flavour)

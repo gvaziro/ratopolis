@@ -76,10 +76,22 @@ export function addAmounts(into: Amounts, a: Amounts, mult = 1): Amounts {
 export function news(s: GameState, key: string, vars: Record<string, string | number>, ctx?: EngineCtx): void {
   const list = HEADLINES[key];
   if (!list || list.length === 0) return;
-  let text = pick(s, list);
-  for (const [k, v] of Object.entries(vars)) text = text.replaceAll(`{${k}}`, String(v));
-  pushNews(s, text, ctx);
+  const fill = (tpl: string) => {
+    let text = tpl;
+    for (const [k, v] of Object.entries(vars)) text = text.replaceAll(`{${k}}`, String(v));
+    return text;
+  };
+  // EN-10: the paper never prints the same line twice within NEWS_FRESH headlines: a template whose text ran recently
+  // is skipped, and when every one did, the news is dropped (a routine carriage is not worth a reprint)
+  const recent = new Set(s.news.slice(-NEWS_FRESH).map((n) => n.text));
+  const fresh = list.map(fill).filter((t) => !recent.has(t));
+  if (!fresh.length) return;
+  // a single template takes no RNG draw
+  pushNews(s, fresh.length === 1 ? fresh[0] : pick(s, fresh), ctx);
 }
+
+/** A headline is not reprinted within this many latest ones. */
+const NEWS_FRESH = 9;
 
 export function pushNews(s: GameState, text: string, ctx?: EngineCtx): void {
   s.news.push({ t: s.time, text });
@@ -97,7 +109,7 @@ export function award(s: GameState, id: AchievementId, ctx?: EngineCtx): void {
   if (s.meta.achievements[id] !== undefined) return;
   s.meta.achievements[id] = s.meta.lifetime.playSeconds;
   ctx?.fx.push({ k: "medal", id });
-  pushNews(s, `Медаль «${ACHIEVEMENTS[id].name}» вручена колонии`, ctx);
+  news(s, "medal", { name: ACHIEVEMENTS[id].name }, ctx);
 }
 
 /* ------------------------------------------------------------ rats */
@@ -173,3 +185,7 @@ export function normalizeJobs(s: GameState, d: Derived): void {
   }
   s.jobs.idle = Math.max(0, s.rats - assignedRats(s));
 }
+
+/* ------------------------------------------------------------ edicts (v2) */
+
+export { edictRank } from "./ranks";

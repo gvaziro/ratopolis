@@ -154,6 +154,33 @@ export const ACHIEVEMENT_IDS = [
   "starved",
   "lantern_greed",
   "before_noon",
+  // v2 (EN-11): meta medals
+  "nomads",
+  "all_london",
+  "treasury",
+  "thousand_crowns",
+  "seal_and_tail",
+  "full_code",
+  "long_train",
+  "tail_horizon",
+  "again_throne",
+  "naturalist",
+  "purser",
+  "honored_rail",
+  "genealogy",
+  // v2 (EN-11): secret
+  "hungry_king",
+  "miser",
+  "forever_tuesday",
+  // v2 (EN-11): event feats
+  "clean_car_10",
+  "no_spark",
+  "gold_streak",
+  "ties_survivor",
+  "dry_paws",
+  "cat_nightmare",
+  "royal_retinue",
+  "full_consist",
 ] as const;
 export type AchievementId = (typeof ACHIEVEMENT_IDS)[number];
 
@@ -161,6 +188,37 @@ export type AchievementId = (typeof ACHIEVEMENT_IDS)[number];
 export type SceneEventId = "carriage" | "capsule" | "metro_train" | "royal_express" | "downpour" | "cat" | "ratcatcher";
 export type BgEventId = "purse" | "shiny" | "market";
 export type EventId = SceneEventId | BgEventId;
+
+/** Side panel tabs (UI state; re-exported from store.ts for the v1 imports). */
+export type TabId = "buildings" | "jobs" | "upgrades" | "map" | "schedule" | "migration" | "medals" | "settings";
+
+/** Great Seals (EN-9): one active at a time, bought for 120 👑 each. */
+export const SEAL_IDS = ["railway", "silence", "dynasty"] as const;
+export type SealId = (typeof SEAL_IDS)[number];
+
+/** Metro train variants (EN-6). "normal" is the plain train. */
+export const TRAIN_VARIANT_IDS = ["normal", "rush_hour", "edinburgh_mail", "freight", "flooded"] as const;
+export type TrainVariantId = (typeof TRAIN_VARIANT_IDS)[number];
+
+/** Royal commissions after the coronation (EN-12). */
+export const COMMISSION_IDS = [
+  "three_gold",
+  "whiskers_twice",
+  "pipe_splinters",
+  "purse_season",
+  "frenzy5",
+  "dry_paws2",
+  "royal_mail",
+  "lamplighter",
+  "bullseye",
+  "replenish",
+  "wagon",
+  "quick_hand",
+] as const;
+export type CommissionId = (typeof COMMISSION_IDS)[number];
+
+/** Colony records (EN-11): best run time (s) to open a zone or to be crowned. */
+export type RecordKey = "sewers" | "cellars" | "metro" | "terminal" | "coronation";
 
 /* ---------------------------------------------------------- conditions */
 
@@ -183,6 +241,13 @@ export interface RunStats {
   bestCombo: number;
   lanternMax: number; // most lantern items caught in one train
   hookPerfects: number;
+  /* v2 */
+  cleanCars: number; // cars with every non-spark item caught (EN-11)
+  goldStreak: number; // current run of gold+ hauls in a row (EN-11)
+  goldHauls: number; // gold+ hauls (EN-12 commission "three_gold")
+  downpoursWon: number; // downpours with all 3 valves closed (EN-11/12)
+  frenzies: number; // bustle frenzies started (EN-12)
+  royalExpresses: number; // royal expresses passed (EN-6/11)
 }
 export type StatKey = keyof RunStats;
 
@@ -327,6 +392,10 @@ export interface EdictDef {
   icon: string;
   cost: number; // crowns
   effect: string;
+  /** Royal decree flavour line (EN-10). */
+  decree: string;
+  /** Ranks II and III (EN-9), bought after the first coronation ever: ranks[0] is rank II, ranks[1] rank III. */
+  ranks?: { cost: number; effect: string }[];
 }
 
 export interface AchievementDef {
@@ -336,6 +405,105 @@ export interface AchievementDef {
   desc: string;
   secret?: boolean;
   reward?: string; // cosmetic note
+  /** Counter medals (EN-11): what achievementProgress() measures and the goal. */
+  progress?: { stat: string; goal: number };
+  /** Medal cabinet section (PA-7). */
+  group?: "colony" | "events" | "meta" | "secret";
+}
+
+/** A 👤/🐀 pair of lines: what the humans see and what the rats see. */
+export interface LinePair {
+  human: string;
+  rat: string;
+}
+
+/** Train variant row (EN-6, data/events.ts TRAIN_VARIANTS). */
+export interface TrainVariantDef {
+  id: TrainVariantId;
+  name: string;
+  icon: string;
+  /** Chance per metro train once the gate holds (0..1); "normal" takes the rest. */
+  weight: number;
+  /** "rushHour": human clock 08:00–09:30; "flooded": a downpour ended with an open valve < 300 s ago. */
+  gate: "always" | "rushHour" | "flooded";
+  perCarMul: number;
+  itemLifeMul: number;
+  /** Seconds added to itemLife (after itemLifeMul). */
+  itemLifeAdd: number;
+  sMul: number;
+  countMul: number;
+  sparkMul: number;
+  /** Replaces the random car weights. */
+  carWeights?: Partial<Record<TrainCarKind, number>>;
+  /** Cars placed right after the engine. */
+  forcedCars?: TrainCarKind[];
+  /** Per car kind drop tables overriding TRAIN_CARS[kind].drops. */
+  dropOverride?: Partial<Record<TrainCarKind, Partial<Record<ResId, number>>>>;
+  /** How items move in the catch canvas: rail bounce, bobbing on water, fluttering letters. */
+  physics: "bounce" | "float" | "flutter";
+  /** Body tint for the train painter (null = no tint). */
+  tint: string | null;
+  lines: LinePair[];
+}
+
+/** Numeric knobs of a London district trait (EN-9). Missing = neutral. */
+export interface DistrictMods {
+  marketInterval?: [number, number];
+  catCheckMult?: number; // cat check chance multiplier (quirk)
+  steamBufferMult?: number;
+  capsuleInterval?: number;
+  metroCarsDelta?: number;
+  purseFreqMult?: number;
+  ratcatcherThreshold?: number;
+  expressIntervalMult?: number;
+  suspicionMult?: number;
+  /** Production multipliers per resource. */
+  res?: Partial<Record<ResId, number>>;
+}
+
+export interface DistrictTrait {
+  name: string;
+  icon: string;
+  perk: string;
+  quirk: string;
+  mods: DistrictMods;
+}
+
+export interface SealDef {
+  id: SealId;
+  name: string;
+  icon: string;
+  cost: number; // crowns
+  effect: string;
+}
+
+export interface CommissionDef {
+  id: CommissionId;
+  name: string;
+  icon: string;
+  /** RunStats key or "wagons" (express wagons built). */
+  stat: StatKey | "wagons";
+  goal: number;
+  /** "delta": the stat must grow by `goal` after acceptance; "max": the stat must reach `goal` after acceptance. */
+  mode: "delta" | "max";
+  desc: string;
+}
+
+export interface CommissionState {
+  offered: CommissionId[];
+  active?: { id: CommissionId; base: number };
+  done: number;
+}
+
+/** One finished run in the colony chronicle (EN-11, meta.history). */
+export interface RunHistoryEntry {
+  district: number;
+  seconds: number;
+  eRun: number;
+  crowns: number;
+  zones: Partial<Record<ZoneId, number>>;
+  coronationAt?: number;
+  bestRating: HaulSummary["rating"];
 }
 
 export type TrainCarKind = "engine" | "tender" | "third" | "dining" | "mail" | "first" | "baggage" | "royal" | "capsule" | "carriage" | "flotsam";
@@ -393,11 +561,15 @@ export interface CatchItem {
   weight: number; // S-weight for the rating share
   spark?: boolean; // a spark: touching it is bad, it has no value
   t: number; // spawn time offset (s) from phase start
+  /** v2 (EN-5): absent from this pass (sparks at the 'wall' position): never rendered, never counted. */
+  skip?: boolean;
 }
 
 export interface SceneCar {
   kind: TrainCarKind;
   itemIds: number[];
+  /** v2 (EN-6): a special car on an existing kind ('cheese' = the rare Cheddar dining car). */
+  special?: "cheese";
 }
 
 export interface CatchResult {
@@ -408,6 +580,8 @@ export interface CatchResult {
   sparksHit: number;
   hook: "none" | "miss" | "hit" | "perfect";
   maxCombo: number;
+  /** v2 (EN-11): cars whose every non-spark item was caught (the engine recounts when omitted). */
+  cleanCars?: number;
 }
 
 export type ScenePhase =
@@ -428,10 +602,18 @@ export interface HaulSummary {
   rating: "none" | "bronze" | "silver" | "gold" | "royal";
   ratingBonus: number;
   combo: number;
+  /** Total suspicion change of the pass (kept a number for the v1 UI; the breakdown is in suspicionParts). */
   suspicion: number;
   crash: boolean;
   jackpot: boolean;
   notes: string[];
+  /* v2 (all optional: v1 saves keep haulLog entries without them) */
+  /** «Тем временем наверху»: the human newspaper line about this pass (EN-6). */
+  headline?: string;
+  /** Suspicion breakdown (EN-5): pass = the pass itself, lantern = 5 × lantern catches, total = whole-scene change. */
+  suspicionParts?: { pass: number; lantern: number; total: number };
+  /** Hook jackpot size in seconds of market-value income (EN-1). */
+  jackpotSeconds?: number;
 }
 
 export interface Scene {
@@ -474,6 +656,19 @@ export interface Scene {
   ratingBonus: number;
   crash: boolean;
   jackpot: boolean;
+  /* v2 (all optional) */
+  /** Metro train variant (EN-6); absent = "normal". */
+  variant?: TrainVariantId;
+  /** This scene's 👤/🐀 lines (EN-6), templates already resolved; absent = EVENT_LINES[id]. */
+  line?: LinePair;
+  /** Rumble banner text, e.g. «Сырный вагон из Чеддера!» (EN-6). */
+  announce?: string;
+  /** s.suspicion when the catch phase began (EN-5): haul.suspicionParts.total is measured from it. */
+  suspBefore?: number;
+  /** Index of `line` in EVENT_LINE_POOLS[id] (absent for variant lines); recorded in meta.seenLines when the scene begins. */
+  lineIdx?: number;
+  /** Suspicion the lantern greed actually added in the catch phase (EN-5 haul breakdown). */
+  lanternSusp?: number;
 }
 
 export interface Purse {
@@ -521,16 +716,31 @@ export interface Timers {
   /** Train due time for which the "К путям!" toast was already shown. */
   toastFor: number;
   nextGeneration: number;
+  /** Next filler headline (EN-10). */
+  filler: number;
 }
+
+export type TextScale = 1 | 1.15 | 1.3;
 
 export interface Settings {
   sound: boolean;
-  volume: number; // 0..1
+  volume: number; // 0..1 (effects)
   reducedMotion: boolean;
   noShake: boolean;
   trainToasts: boolean;
   sciNotation: boolean;
+  /* v2 */
+  /** The elder's hint row in «Цели колонии» (nextHint returns null when off). */
+  hints: boolean;
+  /** Background ambience volume 0..1. */
+  ambience: number;
+  /** CSS zoom of the panel / header / resource bar / ticker. */
+  textScale: TextScale;
+  /** reducedMotion was seeded from the OS prefers-reduced-motion on a fresh save. */
+  reducedMotionFromOS: boolean;
 }
+
+export type HaulRating = HaulSummary["rating"];
 
 export interface Meta {
   crowns: number; // spendable
@@ -545,6 +755,26 @@ export interface Meta {
   seenEvents: EventId[]; // bestiary
   /** Rat Express stages kept across migrations (express_blueprints edict). */
   expressKept: number;
+  /* v2 */
+  /** Edict ranks II/III (EN-9). Missing = rank 1 when edicts[id], else 0 (use edictRank()). */
+  edictRank: Partial<Record<EdictId, number>>;
+  /** The active Great Seal (EN-9), null = none. */
+  seal: SealId | null;
+  sealsOwned: SealId[];
+  /** Coronations ever (EN-3). */
+  coronations: number;
+  /** Best haul rating each car kind appeared in (EN-11, «Журнал путейца»). */
+  carLog: Partial<Record<TrainCarKind, HaulRating>>;
+  /** Cheddar cars seen ever (EN-6: the first one comes sooner). */
+  cheeseCars: number;
+  /** Best haul rating per train variant (EN-11). */
+  variantLog: Partial<Record<TrainVariantId, HaulRating>>;
+  /** Indices into EVENT_LINE_POOLS[id] already shown (EN-6, bestiary). */
+  seenLines: Partial<Record<SceneEventId, number[]>>;
+  /** Finished runs, newest last, at most 20 (EN-11). */
+  history: RunHistoryEntry[];
+  /** Best run times (s) per record key (EN-11). */
+  records: Partial<Record<RecordKey, number>>;
 }
 
 export interface GameState {
@@ -609,6 +839,19 @@ export interface GameState {
   generation: number;
   meta: Meta;
   settings: Settings;
+  /* v2 */
+  /** Scouting payouts already paid per expedition zone, 0..3 (EN-4). */
+  scouted: Partial<Record<ZoneId, number>>;
+  /** Last filler headlines (no-repeat ring, EN-10). */
+  newsRecent: string[];
+  /** Royal commissions (EN-12); null before the coronation. */
+  commissions: CommissionState | null;
+  /** Crown charters earned this run, 0..10 (EN-12). */
+  charters: number;
+  /** Last pool lines shown per scene event, newest last, at most 4 (EN-6 no-repeat ring). */
+  recentLines: Partial<Record<SceneEventId, number[]>>;
+  /** Run time of this run's coronation, -1 before it (EN-11 chronicle). */
+  coronatedAt: number;
 }
 
 /* -------------------------------------------------------- engine I/O */
@@ -639,7 +882,20 @@ export type Fx =
   | { k: "purse"; outcome: string }
   | { k: "frenzy" }
   | { k: "hunger"; on: boolean }
-  | { k: "news"; text: string };
+  | { k: "news"; text: string }
+  /* v2 */
+  | { k: "scout"; zone: ZoneId; res: ResId; amount: number; step: 1 | 2 | 3 }
+  | {
+      k: "migration";
+      crowns: number;
+      /** New district index (districtName / districtTrait). */
+      district: number;
+      /** Human weekday of the new run, e.g. «среда». */
+      weekday: string;
+      summary: { seconds: number; eRun: number; trains: number; bestRating: HaulRating; rats: number };
+    }
+  | { k: "record"; what: RecordKey; time: number; prev: number }
+  | { k: "commission"; id: CommissionId; done: boolean };
 
 export interface TickInput {
   /** Tab visible and the player interacted within the last 60 s (gates harmful events, suspicion growth). */
@@ -666,5 +922,5 @@ export type SceneAction =
   | { a: "catch"; result: CatchResult }
   | { a: "piles"; fractions: number[] }
   | { a: "choice"; option: "hide" | "fight" | "pay" }
-  | { a: "taps"; cleared: number } // valves closed / paw hits / notes popped
+  | { a: "taps"; cleared: number; /** v2: ms from the first to the last valve closed (dry_paws). */ fastMs?: number } // valves closed / paw hits / notes popped
   | { a: "dismiss" }; // close the haul card

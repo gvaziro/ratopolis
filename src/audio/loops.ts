@@ -35,6 +35,8 @@ let rWanted = false;
 let rTarget = 0;
 let rKind: RumbleKind = "train";
 let rKill = 0;
+/** rumbleCut() latched: rumbleSet() stays silent until the next rumbleStart() / rumbleStop(). */
+let rCut = false;
 
 function tanhCurve(drive: number): Float32Array<ArrayBuffer> {
   const n = 1024;
@@ -177,6 +179,7 @@ export function rumbleKind(kind: RumbleKind): void {
 
 export function rumbleStart(intensity: number): void {
   rWanted = true;
+  rCut = false;
   rTarget = clamp01(intensity);
   if (rKill) {
     clearTimeout(rKill);
@@ -187,6 +190,7 @@ export function rumbleStart(intensity: number): void {
 }
 
 export function rumbleSet(intensity: number): void {
+  if (rCut) return;
   const i = clamp01(intensity);
   // called ~10×/s: don't pile up automation events when nothing changed
   if (R && rWanted && Math.abs(i - rTarget) < 0.004) return;
@@ -196,8 +200,24 @@ export function rumbleSet(intensity: number): void {
   applyRumble();
 }
 
+/**
+ * The train is gone: the rumble drops to nothing in `sec` (ringing silence). Latched, so the scene-phase driver's
+ * rumbleSet() calls cannot bring it back before the next rumbleStart() / rumbleStop().
+ */
+export function rumbleCut(sec = 0.12): void {
+  rCut = true;
+  rTarget = 0;
+  if (!R) return;
+  const g = R.level.gain;
+  const now = R.c.ctx.currentTime;
+  g.cancelScheduledValues(now);
+  g.setValueAtTime(g.value, now);
+  g.linearRampToValueAtTime(0, now + Math.max(0.01, sec));
+}
+
 export function rumbleStop(): void {
   rWanted = false;
+  rCut = false;
   if (!R) return;
   const now = R.c.ctx.currentTime;
   R.level.gain.cancelScheduledValues(now);

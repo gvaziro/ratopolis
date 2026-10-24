@@ -1,14 +1,17 @@
 "use client";
 
 /**
- * «Базарный день»: Барыга Бенедикт's floating stall (bottom-left, over the colony, never over the grate centre).
+ * «Базарный день»: Барыга Бенедикт's stall, docked inside the colony window (the shell mounts it in the colony
+ * <section>, position: relative): bottom-left, never over the grate centre and never over the side panel.
  * Three trades with a +30% markup in the player's favour, a 60 s countdown, done deals stamped «ПРОДАНО».
- * Collapsible; starts collapsed on phones so it does not cover the bottom sheet.
- * While a close-up runs (the engine pauses the stall's clock meanwhile) it folds into `MarketChip` in the scene
- * header and opens only on demand.
+ * Collapsible; starts collapsed on phones so it does not cover the bottom sheet. Expanded it takes
+ * min(320 px, 62%) of the colony's width.
+ * While a close-up runs (the engine pauses the stall's clock meanwhile) it folds into `MarketChip` at the top right
+ * of the scene header and opens on demand from the top-right corner.
+ * Mounted outside the colony section (an older shell) it falls back to the v1 fixed placement.
  * Subscribes to primitives only (deal keys, affordability bits, whole seconds) — not to the 10 Hz game object.
  */
-import { memo, useId, useMemo, useState, useSyncExternalStore } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from "react";
 import { Badge, BrassButton, cx, ResIcon, Ring, Rivets, Stamp } from "@/components/ui/kit";
 import { RESOURCES } from "@/game/data/resources";
 import { EVENT_TIMING } from "@/game/data/events";
@@ -115,25 +118,50 @@ function Stall() {
   const peek = usePeekSeq();
   const expanded = sceneOn ? peek === sceneSeq : open;
   const setExpanded = (v: boolean) => (sceneOn ? setPeekSeq(v ? sceneSeq : 0) : setOpen(v));
+  // SH-4: Esc folds the stall into its chip
+  useEffect(() => {
+    const fold = () => {
+      setOpen(false);
+      setPeekSeq(0);
+    };
+    window.addEventListener("rr-escape", fold);
+    return () => window.removeEventListener("rr-escape", fold);
+  }, []);
 
   const life = EVENT_TIMING.marketLife;
   const open3 = deals.filter((d) => !d.done).length;
   const ready = deals.filter((d, i) => !d.done && affordKey[i] === "1").length;
   const urgent = left <= 10 && !sceneOn; // the clock stands still during a scene
+  // docked = mounted inside the colony <section>; otherwise (older shell) keep the v1 fixed placement
+  const [docked, setDocked] = useState(true);
+  const dockRef = useCallback((el: HTMLDivElement | null) => {
+    if (el) setDocked(!!el.parentElement?.closest("section"));
+  }, []);
 
   if (sceneOn && !expanded) return null;
   return (
-    <aside
+    <div
+      ref={dockRef}
+      role="region"
       className={cx(
-        "fixed bottom-[calc(env(safe-area-inset-bottom)_+_3rem)] md:bottom-14",
-        sceneOn ? "right-2 z-50 md:right-[412px] md:z-30 xl:right-[472px]" : "left-2 z-30 md:left-4",
+        docked
+          ? cx(
+              "absolute flex flex-col",
+              sceneOn ? "right-2 top-11 z-50 max-h-[calc(100%_-_52px)] md:top-12 md:z-30 md:max-h-[calc(100%_-_56px)]" : "bottom-2 left-2 z-30 max-h-[calc(100%_-_16px)]",
+              expanded && "w-[min(320px,62%)]",
+            )
+          : cx(
+              "fixed bottom-[calc(env(safe-area-inset-bottom)_+_3rem)] md:bottom-14",
+              sceneOn ? "right-2 z-50 md:right-[412px] md:z-30 xl:right-[472px]" : "left-2 z-30 md:left-4",
+              expanded && "w-[min(320px,calc(100vw_-_16px))]",
+            ),
       )}
       style={reduced ? undefined : { animation: "rh-slide-in .35s ease-out both" }}
       aria-label="Лавка Барыги Бенедикта"
     >
       <HazardStyles />
       {expanded ? (
-        <div className="relative w-[min(340px,calc(100vw_-_16px))] overflow-hidden rounded-lg border border-brass-dark bg-gradient-to-b from-panel-2 to-panel shadow-[0_10px_30px_rgba(0,0,0,.6),inset_0_1px_0_rgba(232,201,131,.08)]">
+        <div className="relative min-h-0 w-full overflow-y-auto overflow-x-hidden rounded-lg border border-brass-dark bg-gradient-to-b from-panel-2 to-panel shadow-[0_10px_30px_rgba(0,0,0,.6),inset_0_1px_0_rgba(232,201,131,.08)]">
           <Awning />
           <Rivets />
           <header className="flex items-center gap-2 px-2.5 pb-1 pt-1.5">
@@ -190,7 +218,7 @@ function Stall() {
           </span>
         </button>
       )}
-    </aside>
+    </div>
   );
 }
 

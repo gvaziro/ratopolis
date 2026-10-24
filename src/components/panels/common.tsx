@@ -16,8 +16,10 @@ import { ZONES } from "@/game/data/zones";
 import { buildingVisible } from "@/game/engine/actions";
 import { check, describeCond } from "@/game/engine/conditions";
 import type { Derived } from "@/game/engine/derive";
-import { entries, lockedByCap } from "@/game/engine/formulas";
+import { canAfford, entries, lockedByCap, timeToAfford } from "@/game/engine/formulas";
+import { resourceSources, storageHintFor } from "@/game/engine/hints";
 import { emitUiFx } from "@/game/fx";
+import { derivedOf, useGame } from "@/game/store";
 import {
   BUILDING_IDS,
   type Amounts,
@@ -27,10 +29,12 @@ import {
   type GameState,
   type JobId,
   type ResId,
+  type TabId,
   type UpgradeId,
   type ZoneId,
 } from "@/game/types";
-import { fmt, fmtInt } from "@/lib/format";
+import { useSampled } from "@/game/useSampled";
+import { fmt, fmtInt, fmtRate, fmtTime, plural } from "@/lib/format";
 import { Bar, BrassButton, ResIcon, cx } from "@/components/ui/kit";
 
 /* ------------------------------------------------------------ names & conditions */
@@ -130,6 +134,40 @@ export function storageHint(s: GameState, d: Derived, r: ResId, price: number): 
   return `${head}${body} Или добыча событий — ей лимит не писан.`;
 }
 
+/* ------------------------------------------------------------ «Где взять» */
+
+/** «🎩 Карманники (0 из 13 крыс) · 👆 клик по решётке · 🐎 Экипаж» (PA-3). */
+export function sourcesText(s: GameState, r: ResId): string {
+  const list = resourceSources(s, r);
+  if (!list.length) return "пока нигде — источник откроется позже";
+  return list
+    .map((x) =>
+      x.kind === "job" ? `${x.icon} ${x.label} (${fmtInt(x.workers ?? 0)} из ${fmtInt(s.rats)} ${plural(s.rats, "крысы", "крыс", "крыс")})` : `${x.icon} ${x.label}`,
+    )
+    .join(" · ");
+}
+
+/** Tooltip body that reads the store while it is open (3 Hz), so the card models need not carry live numbers. */
+function LiveText({ get }: { get: (s: GameState, d: Derived) => string }) {
+  const text = useSampled((st) => get(st.game, derivedOf(st.game)), 3, Object.is);
+  return <span className="whitespace-pre-line">{text}</span>;
+}
+
+/** «Не хватает N · +X/с · ≈ T» + «Где взять: …» for one red cost item (live while the tooltip is open). */
+function shortText(s: GameState, d: Derived, r: ResId, v: number, lock: string | null): string {
+  const icon = RESOURCES[r].icon;
+  const lack = Math.max(0, v - s.res[r]);
+  const rate = s.rates[r];
+  const lines: string[] = [];
+  if (lock) lines.push(lock);
+  if (lack > 0) {
+    const pace = rate > 1e-9 ? `${fmtRate(rate)} · ≈ ${fmtTime(Math.ceil(lack / rate))}` : "не добывается";
+    lines.push(`Не хватает ${fmt(lack)} ${icon} · ${pace}`);
+  } else lines.push(`${icon} хватает`);
+  lines.push(`Где взять ${icon}: ${sourcesText(s, r)}`);
+  return lines.join("\n");
+}
+
 /* ------------------------------------------------------------ costs */
 
 export interface CostItem {
@@ -148,23 +186,120 @@ export function costItems(s: GameState, d: Derived, cost: Amounts): CostItem[] {
   });
 }
 
-/** Like kit's CostList (red/green/🔒) but the 🔒 tooltip names the storage building and level. */
+/**
+ * Like kit's CostList (red/green/🔒). A red item explains itself on hover/tap: what is missing, the pace, the ETA,
+ * where to get it, and (🔒) which storage building and level would hold the price.
+ */
 export function CostView({ items, className }: { items: CostItem[]; className?: string }) {
   return (
     <span className={cx("inline-flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-xs tabular", className)}>
-      {items.map((c) => (
-        <span key={c.r} className={cx("inline-flex items-center gap-0.5 whitespace-nowrap", c.ok ? "text-good" : "text-danger-light")}>
-          <ResIcon res={c.r} />
-          {fmt(c.v)}
-          {c.lock && (
-            <HoverTip tip={c.lock}>
-              <span className="cursor-help" aria-label="нужен склад">
-                🔒
-              </span>
-            </HoverTip>
-          )}
-        </span>
-      ))}
+      {items.map((c) => {
+        const body = (
+          <>
+            <ResIcon res={c.r} />
+            {fmt(c.v)}
+            {c.lock && <span aria-label="нужен склад">🔒</span>}
+          </>
+        );
+        if (c.ok) {
+          return (
+            <span key={c.r} className="inline-flex items-center gap-0.5 whitespace-nowrap text-good">
+              {body}
+            </span>
+          );
+        }
+        return (
+          <HoverTip key={c.r} tip={<LiveText get={(s, d) => shortText(s, d, c.r, c.v, c.lock)} />}>
+            <span className="inline-flex cursor-help items-center gap-0.5 whitespace-nowrap text-danger-light underline decoration-danger/40 decoration-dotted underline-offset-2">
+              {body}
+            </span>
+          </HoverTip>
+        );
+      })}
+    </span>
+  );
+}
+
+/* ------------------------------------------------------------ "when can I buy it" */
+
+/** Serializable "why not yet" of a price (part of the card models). */
+export type WaitInfo =
+  | { k: "eta"; text: string }
+  /** Price above the cap: a store to build (target b_<id> / z_<zone>, or none when it is not unlocked yet). */
+  | { k: "lock"; text: string; target?: string }
+  /** A short resource nobody produces. */
+  | { k: "none"; r: ResId };
+
+/** ETA, 🔒 store or «не добывается» for a price that is not affordable yet (null when it is). */
+export function waitInfo(s: GameState, d: Derived, cost: Amounts): WaitInfo | null {
+  if (canAfford(s, cost)) return null;
+  const locked = lockedByCap(cost, d).find((r) => s.res[r] < (cost[r] ?? 0));
+  if (locked) {
+    const h = storageHintFor(s, d, locked, cost[locked]);
+    return { k: "lock", text: h.text, target: h.target };
+  }
+  const t = timeToAfford(s, cost);
+  if (Number.isFinite(t)) return { k: "eta", text: `через ${fmtTime(Math.ceil(t))}` };
+  const dry = entries(cost).find(([r, v]) => s.res[r] + 1e-9 < v && !(s.rates[r] > 0));
+  return dry ? { k: "none", r: dry[0] } : { k: "eta", text: "не копится" };
+}
+
+const TARGET_TAB: Record<string, TabId> = { b: "buildings", j: "jobs", u: "upgrades", e: "migration", z: "map", x: "map" };
+
+/** Tab that holds a data-target (b_ → buildings, z_ → map, …). */
+export function tabOfTarget(target: string): TabId {
+  return TARGET_TAB[target.split("_")[0]] ?? "buildings";
+}
+
+/** The "через 3м 12с" / «🔒 Кладовка ур. 3» (a button to that card) / «🪙 не добывается» (with «Где взять») chip. */
+export function WaitView({ w }: { w: WaitInfo | null }) {
+  if (!w) return null;
+  const chip = "whitespace-nowrap font-mono text-[10px] tabular";
+  if (w.k === "eta") return <span className={cx(chip, "text-parchment-dim")}>{w.text}</span>;
+  if (w.k === "lock") {
+    if (!w.target) {
+      return (
+        <HoverTip tip={`Цена выше лимита склада. Нужен склад: ${w.text}`}>
+          <span className={cx(chip, "cursor-help whitespace-normal text-gaslight")}>🔒 {w.text}</span>
+        </HoverTip>
+      );
+    }
+    const target = w.target;
+    return (
+      <button
+        type="button"
+        onClick={() => useGame.getState().focus(tabOfTarget(target), target)}
+        title="Цена выше лимита склада — показать, какой склад строить"
+        className={cx(
+          chip,
+          "-my-1 inline-flex min-h-7 items-center gap-0.5 whitespace-normal rounded border border-gaslight/40 bg-gaslight/10 px-1.5 text-left text-gaslight transition hover:border-gaslight hover:bg-gaslight/20",
+        )}
+      >
+        🔒 {w.text}
+        <span aria-hidden>{" →"}</span>
+      </button>
+    );
+  }
+  const icon = RESOURCES[w.r].icon;
+  return (
+    <HoverTip tip={<LiveText get={(s) => `Где взять ${icon}:\n${sourcesText(s, w.r)}`} />}>
+      <span className={cx(chip, "cursor-help text-danger-light underline decoration-dotted underline-offset-2")}>{icon} не добывается</span>
+    </HoverTip>
+  );
+}
+
+/* ------------------------------------------------------------ small tags */
+
+/** A Badge-like tag with the extra gaslight / dim tones the panels need (kit's Badge has four tones). */
+export function Tag({ children, tone = "gaslight", className }: { children: ReactNode; tone?: "gaslight" | "dim" | "verdigris"; className?: string }) {
+  const t = {
+    gaslight: "border-gaslight/50 bg-gaslight/15 text-gaslight",
+    dim: "border-line bg-black/30 text-parchment-dim",
+    verdigris: "border-verdigris/50 bg-verdigris/20 text-verdigris-light",
+  }[tone];
+  return (
+    <span className={cx("inline-flex items-center whitespace-nowrap rounded border px-1.5 py-px text-[10px] font-bold uppercase leading-tight tracking-wider", t, className)}>
+      {children}
     </span>
   );
 }
@@ -296,12 +431,15 @@ export function Segmented<T extends string | number>({
   onChange,
   className,
   label,
+  dense,
 }: {
   value: T;
   options: SegOption<T>[];
   onChange: (v: T) => void;
   className?: string;
   label?: string;
+  /** Phone toolbars: 36 px buttons below md. */
+  dense?: boolean;
 }) {
   return (
     <div
@@ -322,6 +460,7 @@ export function Segmented<T extends string | number>({
             onClick={() => onChange(o.value)}
             className={cx(
               "min-h-10 min-w-11 flex-1 whitespace-nowrap rounded px-2.5 text-xs font-bold transition",
+              dense && "max-md:min-h-9",
               sel
                 ? "bg-gradient-to-b from-brass-light via-brass to-brass-dark text-soot shadow-[inset_0_1px_0_rgba(255,255,255,.45)]"
                 : "text-parchment-dim hover:text-parchment disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-parchment-dim",
@@ -335,16 +474,26 @@ export function Segmented<T extends string | number>({
   );
 }
 
-/** Sticky header of a tab: title on the left, controls on the right. */
+/**
+ * Sticky header of a tab: title on the left, controls on the right. Below md (the phone sheet) the tab bar already
+ * names the tab, so the title is screen-reader only and the controls take the full width (PA-2); a toolbar with
+ * no controls takes no room at all there.
+ */
 export function Toolbar({ icon, title, right, children }: { icon: ReactNode; title: ReactNode; right?: ReactNode; children?: ReactNode }) {
+  const bare = !right && !children;
   return (
-    <div className="sticky top-0 z-20 -mx-4 mb-3 border-b border-line/70 bg-soot-2/95 px-4 py-1 shadow-[0_6px_12px_-8px_rgba(0,0,0,.8)] backdrop-blur-sm md:-mx-3 md:px-3">
-      <div className="flex min-h-10 flex-wrap items-center justify-between gap-x-3 gap-y-1">
-        <h2 className="font-display text-lg font-bold leading-none tracking-wide text-brass-light">
+    <div
+      className={cx(
+        "sticky top-0 z-20 -mx-4 mb-1.5 border-b border-line/70 bg-soot-2/95 px-4 py-0.5 shadow-[0_6px_12px_-8px_rgba(0,0,0,.8)] backdrop-blur-sm md:-mx-3 md:mb-3 md:px-3 md:py-1",
+        bare && "max-md:sr-only",
+      )}
+    >
+      <div className="flex min-h-9 flex-wrap items-center justify-between gap-x-3 gap-y-1 md:min-h-10">
+        <h2 className="font-display text-lg font-bold leading-none tracking-wide text-brass-light max-md:sr-only">
           <span className="mr-1.5">{icon}</span>
           {title}
         </h2>
-        {right}
+        {right && <div className="flex min-w-0 items-center max-md:w-full max-md:*:flex-1">{right}</div>}
       </div>
       {children}
     </div>
@@ -359,6 +508,11 @@ export function SectionTitle({ children, right, className }: { children: ReactNo
       {right}
     </div>
   );
+}
+
+/** Model key of a ContribRow (need | contributed | stock as displayed): rows re-render only when their text changes. */
+export function contribKey(need: number, have: number, stock: number): string {
+  return `${need}|${have}|${fmt(stock)}|${stock > 0 ? 1 : 0}`;
 }
 
 /** One resource line of a contribution project: bar, "внесено / нужно", "внести" button. */
@@ -448,6 +602,8 @@ const CSS = `
 .rr-puff { transform-box: fill-box; transform-origin: center; animation: rr-puff 1.9s ease-out infinite; }
 .rr-sway { transform-box: fill-box; transform-origin: 50% 0%; animation: rr-sway 2.6s ease-in-out infinite; }
 .rr-tick { animation: rr-tick 1s steps(1) infinite; }
+@keyframes rr-focus-ring { 0%,100% { box-shadow: 0 0 0 0 rgba(242,184,75,0); } 35% { box-shadow: 0 0 0 2px rgba(242,184,75,.95), 0 0 18px 4px rgba(242,184,75,.55); } }
+.rr-focus { animation: rr-focus-ring .8s ease-in-out 2; }
 .rr-board-glow { text-shadow: 0 0 6px rgba(242,184,75,.55), 0 0 1px rgba(242,184,75,.9); }
 .rr-silhouette { filter: brightness(0) drop-shadow(0 0 1px rgba(201,162,90,.75)); opacity: .7; }
 .rr-range { -webkit-appearance: none; appearance: none; background: transparent; height: 40px; width: 100%; cursor: pointer; touch-action: pan-y; }
@@ -457,9 +613,11 @@ const CSS = `
 .rr-range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 22px; height: 22px; margin-top: -8px; border-radius: 9999px; background: radial-gradient(circle at 35% 35%, var(--brass-light), var(--brass-dark)); border: 1px solid #4a3a1a; box-shadow: 0 2px 3px rgba(0,0,0,.6); }
 .rr-range::-moz-range-thumb { width: 22px; height: 22px; border-radius: 9999px; background: radial-gradient(circle at 35% 35%, var(--brass-light), var(--brass-dark)); border: 1px solid #4a3a1a; box-shadow: 0 2px 3px rgba(0,0,0,.6); }
 .rr-calm .rr-breathe, .rr-calm .rr-sheen::after, .rr-calm .rr-blink, .rr-calm .rr-glow, .rr-calm .rr-ping, .rr-calm .rr-dig,
-.rr-calm .rr-spin, .rr-calm .rr-puff, .rr-calm .rr-sway, .rr-calm .rr-tick { animation: none !important; }
+.rr-calm .rr-spin, .rr-calm .rr-puff, .rr-calm .rr-sway, .rr-calm .rr-tick, .rr-calm .rr-focus { animation: none !important; }
+.rr-calm .rr-focus { box-shadow: 0 0 0 2px var(--gaslight); }
 @media (prefers-reduced-motion: reduce) {
-  .rr-breathe, .rr-sheen::after, .rr-blink, .rr-glow, .rr-ping, .rr-dig, .rr-spin, .rr-puff, .rr-sway, .rr-tick { animation: none !important; }
+  .rr-breathe, .rr-sheen::after, .rr-blink, .rr-glow, .rr-ping, .rr-dig, .rr-spin, .rr-puff, .rr-sway, .rr-tick, .rr-focus { animation: none !important; }
+  .rr-focus { box-shadow: 0 0 0 2px var(--gaslight); }
 }
 `;
 

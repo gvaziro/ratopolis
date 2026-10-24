@@ -3,19 +3,21 @@
 /**
  * "Карта": the five zones as strata of a vertical map of the underworld. The next zone carries
  * the expedition project (per-resource contributions, rats requirement, digging); the Rat Express
- * panel sits on top once its blueprint is bought.
+ * panel sits on top once its blueprint is bought. The map samples a small model three times a
+ * second; the expedition and each of its rows sample their own (PA-1).
  */
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { UPGRADES } from "@/game/data/upgrades";
 import { ZONE_ORDER, ZONES } from "@/game/data/zones";
-import { currentExpedition } from "@/game/engine/actions";
+import { currentExpedition, fmtRunTime } from "@/game/engine/actions";
 import { entries, expeditionCost, isComplete } from "@/game/engine/formulas";
 import { useGame } from "@/game/store";
 import type { GameState, ResId, ZoneId } from "@/game/types";
+import { useSampled } from "@/game/useSampled";
 import { fmtInt, fmtTime } from "@/lib/format";
 import { Badge, Bar, BrassButton, Stamp, cx } from "@/components/ui/kit";
 import { isFresh } from "./alerts";
-import { ContribRow, Switch, Toolbar } from "./common";
+import { ContribRow, Switch, Toolbar, contribKey } from "./common";
 import ExpressPanel from "./ExpressPanel";
 
 const DEPTH: Record<ZoneId, string> = {
@@ -28,16 +30,33 @@ const DEPTH: Record<ZoneId, string> = {
 
 type Stage = "open" | "project" | "next" | "unknown";
 
-export default function MapTab() {
-  const game = useGame((s) => s.game);
-  const exp = currentExpedition(game);
-  const firstClosed = ZONE_ORDER.findIndex((z) => !game.zones[z]);
+interface MapModel {
+  plan: boolean;
+  terminal: boolean;
+  /** record: best run time to open the zone (EN-11), m:ss, empty when none. */
+  strata: { z: ZoneId; stage: Stage; fresh: boolean; record: string }[];
+  rats: string;
+}
 
-  const stageOf = (z: ZoneId, i: number): Stage => {
-    if (game.zones[z]) return "open";
-    if (i === firstClosed) return exp === z ? "project" : "next";
-    return "unknown";
+function mapModel(s: GameState): MapModel {
+  const exp = currentExpedition(s);
+  const firstClosed = ZONE_ORDER.findIndex((z) => !s.zones[z]);
+  return {
+    plan: !!s.upgrades.express_plan,
+    terminal: !!s.zones.terminal,
+    strata: ZONE_ORDER.map((z, i) => {
+      const stage: Stage = s.zones[z] ? "open" : i === firstClosed ? (exp === z ? "project" : "next") : "unknown";
+      const rec = z === "burrow" ? undefined : s.meta.records[z];
+      return { z, stage, fresh: stage === "project" && isFresh(s, `x_${z}`), record: rec !== undefined && Number.isFinite(rec) ? fmtRunTime(rec) : "" };
+    }),
+    rats: fmtInt(s.rats),
   };
+}
+
+export default function MapTab() {
+  const json = useSampled((s) => JSON.stringify(mapModel(s.game)), 3, Object.is);
+  const m = useMemo(() => JSON.parse(json) as MapModel, [json]);
+  const auto = useGame((s) => s.game.autoContribute);
 
   return (
     <>
@@ -46,7 +65,7 @@ export default function MapTab() {
         title="Карта подземелья"
         right={
           <Switch
-            on={game.autoContribute}
+            on={auto}
             onToggle={() => useGame.getState().toggleAutoContribute()}
             label="Автовзнос"
             sub="излишки полных складов и ½ дохода безлимитных ресурсов"
@@ -54,10 +73,10 @@ export default function MapTab() {
         }
       />
 
-      {game.upgrades.express_plan ? (
+      {m.plan ? (
         <ExpressPanel />
       ) : (
-        game.zones.terminal && (
+        m.terminal && (
           <p className="mb-4 rounded-md border border-dashed border-brass-dark/70 bg-brass/5 px-3 py-2 text-xs leading-snug text-parchment-dim">
             <b className="text-brass-light">🚂 Слухи на вокзале:</b> из хлама можно собрать собственный поезд. Нужен «{UPGRADES.express_plan.name}» во вкладке «Улучшения».
           </p>
@@ -67,8 +86,8 @@ export default function MapTab() {
       <ol className="relative">
         {/* the shaft connecting the strata */}
         <span aria-hidden className="absolute bottom-6 left-[19px] top-6 w-0.5 bg-[repeating-linear-gradient(to_bottom,var(--brass-dark)_0_6px,transparent_6px_11px)]" />
-        {ZONE_ORDER.map((z, i) => (
-          <Stratum key={z} s={game} z={z} stage={stageOf(z, i)} />
+        {m.strata.map((st) => (
+          <Stratum key={st.z} z={st.z} stage={st.stage} fresh={st.fresh} record={st.record} rats={st.stage === "next" ? m.rats : ""} />
         ))}
       </ol>
     </>
@@ -81,7 +100,7 @@ function lum(hex: string): number {
   return 0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255);
 }
 
-function Stratum({ s, z, stage }: { s: GameState; z: ZoneId; stage: Stage }) {
+const Stratum = memo(function Stratum({ z, stage, fresh, rats, record }: { z: ZoneId; stage: Stage; fresh: boolean; rats: string; record: string }) {
   const def = ZONES[z];
   const pal = def.palette;
   const ink = lum(pal.glow) >= lum(pal.accent) ? pal.glow : pal.accent;
@@ -95,7 +114,7 @@ function Stratum({ s, z, stage }: { s: GameState; z: ZoneId; stage: Stage }) {
     if (stage === "project" && el && panel) panel.scrollTop += el.getBoundingClientRect().top - panel.getBoundingClientRect().top - 64;
   }, [stage]);
   return (
-    <li ref={ref} className="relative mb-3 flex gap-2.5 last:mb-0">
+    <li ref={ref} data-target={`z_${z}`} className="relative mb-3 flex scroll-my-16 gap-2.5 rounded-lg last:mb-0">
       <span
         className={cx(
           "relative z-10 mt-1 grid h-10 w-10 shrink-0 place-items-center rounded-full border-2 text-xl shadow-[0_2px_6px_rgba(0,0,0,.6)]",
@@ -125,7 +144,7 @@ function Stratum({ s, z, stage }: { s: GameState; z: ZoneId; stage: Stage }) {
             </p>
             <h3 className="font-display text-base font-bold leading-tight" style={{ color: known ? ink : "var(--parchment-dim)" }}>
               {known ? def.name : "Неизведанные глубины"}
-              {stage === "project" && isFresh(s, `x_${z}`) && (
+              {fresh && (
                 <Badge tone="verdigris" className="ml-1.5 align-middle">
                   новинка
                 </Badge>
@@ -155,75 +174,97 @@ function Stratum({ s, z, stage }: { s: GameState; z: ZoneId; stage: Stage }) {
             <p className="mt-1 text-[11px] leading-snug" style={{ color: ink }}>
               {def.adds}
             </p>
-            {stage === "project" && <Expedition s={s} z={z} />}
+            {record && <p className="mt-0.5 font-mono text-[10px] tabular text-gaslight">⏱️ рекорд: {record}</p>}
+            {stage === "project" && <Expedition z={z} />}
           </div>
         ) : (
           <p className="px-2.5 pb-2 pt-1 text-[11px] leading-snug text-parchment-dim">
             {stage === "next"
-              ? `Разведчики покажут путь, когда в колонии будет ${fmtInt(def.mapRevealRats)} 🐀 (сейчас ${fmtInt(s.rats)}).`
+              ? `Разведчики покажут путь, когда в колонии будет ${fmtInt(def.mapRevealRats)} 🐀 (сейчас ${rats}).`
               : "Глубже не спускался ни один хвост. Говорят, там гудит земля."}
           </p>
         )}
       </div>
     </li>
   );
+});
+
+interface ExpeditionModel {
+  res: ResId[];
+  done: boolean;
+  rats: string;
+  need: string;
+  missing: string | null;
+  digging: { frac: number; left: string } | null;
+  busy: boolean;
+  anyStock: boolean;
 }
 
-function Expedition({ s, z }: { s: GameState; z: ZoneId }) {
+function expeditionModel(s: GameState, z: ZoneId): ExpeditionModel | null {
   const exp = ZONES[z].expedition;
   if (!exp) return null;
   const cost = expeditionCost(s, z);
   const prog = s.projects[z] ?? {};
-  const done = isComplete(cost, prog);
-  const ratsOk = s.rats >= exp.rats;
   const digging = s.digging?.zone === z ? s.digging : null;
-  const busy = !!s.digging;
-  const anyStock = entries(cost).some(([r, v]) => (prog[r] ?? 0) < v && s.res[r] > 0);
+  return {
+    res: entries(cost).map(([r]) => r),
+    done: isComplete(cost, prog),
+    rats: fmtInt(s.rats),
+    need: fmtInt(exp.rats),
+    missing: s.rats >= exp.rats ? null : fmtInt(exp.rats - s.rats),
+    digging: digging ? { frac: Math.round((1 - (digging.until - s.time) / 5) * 50) / 50, left: fmtTime(Math.max(0, digging.until - s.time)) } : null,
+    busy: !!s.digging,
+    anyStock: entries(cost).some(([r, v]) => (prog[r] ?? 0) < v && s.res[r] > 0),
+  };
+}
+
+function Expedition({ z }: { z: ZoneId }) {
+  const json = useSampled((s) => JSON.stringify(expeditionModel(s.game, z)), 3, Object.is);
+  const m = useMemo(() => JSON.parse(json) as ExpeditionModel | null, [json]);
+  if (!m) return null;
   const give = (r?: ResId) => useGame.getState().contributeExpedition(z, r);
 
   return (
     <div className="mt-2 rounded-md border border-brass-dark/60 bg-soot/70 p-2 shadow-[inset_0_1px_4px_rgba(0,0,0,.6)]">
       <p className="mb-1.5 flex items-center gap-1.5 font-display text-sm font-bold text-brass-light">
-        <span className={cx(digging && "rr-dig")}>⛏️</span>
+        <span className={cx(m.digging && "rr-dig")}>⛏️</span>
         Экспедиция: прорыть ход
       </p>
 
-      {digging ? (
+      {m.digging ? (
         <div className="py-1">
-          <Bar value={1 - (digging.until - s.time) / 5} color="var(--gaslight)" className="h-3" />
-          <p className="mt-1 text-center font-display text-sm font-bold text-gaslight">
-            Копаем! Комья летят во все стороны… {fmtTime(Math.max(0, digging.until - s.time))}
-          </p>
+          <Bar value={m.digging.frac} color="var(--gaslight)" className="h-3" />
+          <p className="mt-1 text-center font-display text-sm font-bold text-gaslight">Копаем! Комья летят во все стороны… {m.digging.left}</p>
         </div>
       ) : (
         <>
           <div className="space-y-1.5">
-            {entries(cost).map(([r, v]) => (
-              <ContribRow key={r} r={r} need={v} have={prog[r] ?? 0} stock={s.res[r]} locked={busy} onGive={() => give(r)} />
+            {m.res.map((r) => (
+              <ExpeditionRow key={r} z={z} r={r} busy={m.busy} />
             ))}
           </div>
 
           <div className="mt-2 flex items-center gap-2 rounded border border-line/70 bg-black/25 px-2 py-1.5 text-xs">
             <span className="text-base">🐀</span>
             <span className="flex-1">
-              Землекопов: <b className="font-mono tabular">{fmtInt(s.rats)}</b> / {fmtInt(exp.rats)}
+              Землекопов: <b className="font-mono tabular">{m.rats}</b> / {m.need}
             </span>
-            <span className={cx("font-bold", ratsOk ? "text-good" : "text-danger-light")}>{ratsOk ? "✓ хватает" : `ещё ${fmtInt(exp.rats - s.rats)}`}</span>
+            <span className={cx("font-bold", m.missing ? "text-danger-light" : "text-good")}>{m.missing ? `ещё ${m.missing}` : "✓ хватает"}</span>
           </div>
 
           <div className="mt-2 flex flex-wrap gap-2">
-            {done && ratsOk ? (
+            {m.done && !m.missing ? (
               <BrassButton tone="copper" className="rr-breathe min-h-10 flex-1" onClick={() => give()}>
                 ⛏️ Начать раскопки!
               </BrassButton>
             ) : (
-              <BrassButton className={cx("min-h-10 flex-1", anyStock && "rr-breathe")} disabled={!anyStock || busy} onClick={() => give()}>
+              <BrassButton className={cx("min-h-10 flex-1", m.anyStock && "rr-breathe")} disabled={!m.anyStock || m.busy} onClick={() => give()}>
                 Внести всё
               </BrassButton>
             )}
           </div>
-          {done && !ratsOk && (
-            <p className="mt-1.5 text-[11px] leading-snug text-gaslight">Все взносы на месте. Ждём рабочих лап: нужно ещё {fmtInt(exp.rats - s.rats)} 🐀.</p>
+          {m.done && m.missing && (
+            <p className="mt-1.5 text-[11px] leading-snug text-gaslight">Все взносы на месте. Ждём рабочих лап: нужно ещё {m.missing} 🐀.</p>
           )}
           <p className="mt-1.5 text-[10px] leading-snug text-parchment-dim">Проекту лимиты складов не помеха — вносите частями.</p>
         </>
@@ -231,3 +272,11 @@ function Expedition({ s, z }: { s: GameState; z: ZoneId }) {
     </div>
   );
 }
+
+const ExpeditionRow = memo(function ExpeditionRow({ z, r, busy }: { z: ZoneId; r: ResId; busy: boolean }) {
+  const key = useSampled((s) => contribKey(expeditionCost(s.game, z)[r] ?? 0, s.game.projects[z]?.[r] ?? 0, s.game.res[r]), 3, Object.is);
+  const [need, have] = key.split("|").map(Number);
+  // the key holds the stock as displayed; the button needs the exact amount, read at render time
+  const stock = useGame.getState().game.res[r];
+  return <ContribRow r={r} need={need} have={have} stock={stock} locked={busy} onGive={() => useGame.getState().contributeExpedition(z, r)} />;
+});

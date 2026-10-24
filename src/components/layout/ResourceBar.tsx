@@ -3,6 +3,7 @@
 /**
  * One row of resource pills under «Наверху». Each pill: icon, odometer amount, thin cap bar, net rate.
  * Full storage stamps «ПОЛНО» (bar blinks every 2 s); event loot above the cap glows gold with «ПЕРЕГРУЗ».
+ * Phones (< 640 px) drop the «/cap» text and swap the stamps for a corner badge, so four pills fit across 375 px.
  * Always one row: scrolls sideways (touch swipe or mouse wheel) when the colony is rich in kinds of loot.
  */
 import { memo, useEffect, useRef, useState } from "react";
@@ -30,7 +31,7 @@ export default function ResourceBar() {
       <HudStyles />
       <div
         ref={ref}
-        className="hud-noscroll flex items-stretch gap-1.5 overflow-x-auto overflow-y-hidden overscroll-x-contain px-2 py-1.5 sm:px-3"
+        className="hud-noscroll flex items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain px-2 py-1.5 sm:gap-1.5 sm:px-3"
         style={{ touchAction: "pan-x", maskImage: mask, WebkitMaskImage: mask }}
         role="list"
         aria-label="Запасы колонии"
@@ -118,7 +119,7 @@ const Pill = memo(function Pill({ r, pop }: { r: ResId; pop: boolean }) {
       <FloatTip tip={tip} width={260}>
         <span
           className={cx(
-            "relative flex min-h-10 cursor-default items-center gap-1.5 rounded-md border py-0.5 pl-1.5 pr-2 shadow-[inset_0_1px_0_rgba(232,201,131,.07)] transition-colors",
+            "relative flex min-h-10 cursor-default items-center gap-1 rounded-md border py-0.5 pl-1 pr-1.5 shadow-[inset_0_1px_0_rgba(232,201,131,.07)] transition-colors sm:gap-1.5 sm:pl-1.5 sm:pr-2",
             hungry
               ? "border-danger/70 bg-danger/20"
               : over
@@ -132,13 +133,14 @@ const Pill = memo(function Pill({ r, pop }: { r: ResId; pop: boolean }) {
             {isSteam && finite ? <SteamGaugeIcon frac={amount / cap} /> : def.icon}
             {hungry && <span className="hud-throb absolute -right-1.5 -top-1.5 text-[11px]">😟</span>}
           </span>
-          <span className="flex min-w-[3.3rem] flex-col justify-center leading-none">
+          <span className="flex min-w-[2.6rem] flex-col justify-center leading-none sm:min-w-[3.3rem]">
             <span className="flex items-baseline gap-0.5 whitespace-nowrap">
               <Odometer
                 value={amount}
                 className={cx("font-mono text-[13px] font-bold", hungry ? "text-danger-light" : over ? "text-gaslight" : "text-parchment")}
               />
-              {finite && <span className="font-mono text-[10px] tabular text-parchment-dim">/{fmt(cap)}</span>}
+              {/* phones: the bar under the number already shows how full the store is */}
+              {finite && <span className="hidden font-mono text-[10px] tabular text-parchment-dim sm:inline">/{fmt(cap)}</span>}
             </span>
             {finite && !isSteam && (
               <span className={cx("mt-[3px] block h-[3px] overflow-hidden rounded-full bg-black/50", full && !over && "hud-blink2")}>
@@ -157,19 +159,21 @@ const Pill = memo(function Pill({ r, pop }: { r: ResId; pop: boolean }) {
               </span>
             )}
           </span>
-          {/* the stamp sits beside the numbers (never on top of them) */}
+          {/* the stamp sits beside the numbers (never on top of them); phones get a 14-px corner badge instead */}
           {over ? (
             <>
-              <Stamp color="var(--gaslight)" className="hud-pop shrink-0 bg-soot/50 px-0.5 text-[8px] shadow-[0_0_6px_rgba(242,184,75,.5)]">
+              <Stamp color="var(--gaslight)" className="hud-pop shrink-0 bg-soot/50 px-0.5 text-[8px] shadow-[0_0_6px_rgba(242,184,75,.5)] max-sm:hidden">
                 Перегруз
               </Stamp>
+              <CornerBadge over />
               <Sparkles />
             </>
           ) : (
             full && (
-              <Stamp className="hud-pop shrink-0 bg-soot/50 px-0.5 text-[8px]">
-                Полно
-              </Stamp>
+              <>
+                <Stamp className="hud-pop shrink-0 bg-soot/50 px-0.5 text-[8px] max-sm:hidden">Полно</Stamp>
+                <CornerBadge over={false} />
+              </>
             )
           )}
         </span>
@@ -177,6 +181,24 @@ const Pill = memo(function Pill({ r, pop }: { r: ResId; pop: boolean }) {
     </div>
   );
 });
+
+/** Phones (< 640 px): «ПЕРЕГРУЗ» / «ПОЛНО» shrink to a 14-px badge on the pill's corner (the tooltip explains). */
+function CornerBadge({ over }: { over: boolean }) {
+  return (
+    <span
+      role="img"
+      aria-label={over ? "Перегруз" : "Полно"}
+      className={cx(
+        "hud-pop absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full border text-[9px] font-bold leading-none sm:hidden",
+        over
+          ? "border-[#7d5f2c] bg-gaslight text-soot shadow-[0_0_6px_rgba(242,184,75,.7)]"
+          : "border-[#5a1c17] bg-danger text-parchment shadow-[0_0_4px_rgba(196,69,58,.6)]",
+      )}
+    >
+      {over ? "✦" : "!"}
+    </span>
+  );
+}
 
 /** Three twinkling ✦ around an overloaded pill. */
 function Sparkles() {

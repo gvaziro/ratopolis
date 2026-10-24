@@ -33,3 +33,14 @@ export function pickWeighted<K extends string>(s: { rng: number }, weights: Part
 export function pick<T>(s: { rng: number }, arr: readonly T[]): T {
   return arr[Math.floor(rand(s) * arr.length)];
 }
+
+/**
+ * Stateless hash of two integers to [0, 1) (does not touch the RNG stream). Same function as the scenes'
+ * sceneUtils.hash01, so the engine and the UI agree on per-item decisions (EN-5 'wall' sparks, EN-6 lines).
+ */
+export function hash01(a: number, b = 0): number {
+  let h = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + 0x9e3779b9) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}

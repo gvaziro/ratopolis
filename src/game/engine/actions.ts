@@ -1,9 +1,10 @@
 import { BUILDINGS, MILESTONES, VISUAL_TIERS } from "../data/buildings";
 import { JOBS, OPEN_JOBS } from "../data/jobs";
-import { EDICTS, EXPRESS_STAGES } from "../data/meta";
+import { COMMISSIONS } from "../data/commissions";
+import { EDICTS, EXPRESS_STAGE_LINES, EXPRESS_STAGES, SEALS } from "../data/meta";
 import { RESOURCES } from "../data/resources";
-import { FOREMAN_UPGRADES, RAT_MEMORY_UPGRADES, UPGRADES } from "../data/upgrades";
-import { ZONES, ZONE_ORDER, districtName } from "../data/zones";
+import { FOREMAN_UPGRADES, UPGRADES, ratMemoryUpgrades } from "../data/upgrades";
+import { ZONES, ZONE_FROM, ZONE_ORDER, districtName } from "../data/zones";
 import {
   JOB_IDS,
   RES_IDS,
@@ -13,18 +14,22 @@ import {
   type AssignMode,
   type BuildingId,
   type BuyMode,
+  type CommissionId,
   type EdictId,
   type EngineCtx,
   type GameState,
   type JobId,
+  type RecordKey,
   type ResId,
   type ResMap,
+  type SealId,
   type UpgradeId,
   type ZoneId,
 } from "../types";
+import { fmt } from "../../lib/format";
 import { check } from "./conditions";
-import { award, gain, hasFreeSlot, jobUnlocked, news, normalizeJobs, spend, toast } from "./core";
-import { eventValue, idleRats, type Derived } from "./derive";
+import { award, edictRank, gain, hasFreeSlot, jobUnlocked, news, normalizeJobs, spend, toast } from "./core";
+import { derive, eventValue, idleRats, medalCount, type Derived } from "./derive";
 import { onZoneOpen } from "./events";
 import {
   buildingCost,
@@ -38,8 +43,11 @@ import {
   isComplete,
   remaining,
 } from "./formulas";
+import { coronationLine, humanWeekday } from "./narrative";
+import { commissionStat } from "./progress";
 import { rand } from "./rng";
-import { KEPT_STAGES_MAX, newRun } from "./state";
+import { offerCommissions } from "./commissions";
+import { KEPT_STAGES_MAX, applyRoyalLitter, newRun } from "./state";
 
 /* ================================================================ click */
 
@@ -176,7 +184,7 @@ export function assignJob(s: GameState, d: Derived, job: JobId, delta: number | 
       const donors = (["forager", "scavenger", "pickpocket"] as JobId[]).filter((j) => j !== job).sort((a, b) => s.jobs[b] - s.jobs[a]);
       for (const j of donors) {
         if (want <= 0) break;
-        const keep = j === "forager" ? Math.ceil((0.04 * s.rats) / Math.max(0.0001, 0.3 * d.jobYield.forager)) : 0;
+        const keep = foragerKeep(s, d, j);
         const take = Math.min(want, Math.max(0, s.jobs[j] - keep));
         s.jobs[j] -= take;
         s.jobs[job] += take;
@@ -187,6 +195,23 @@ export function assignJob(s: GameState, d: Derived, job: JobId, delta: number | 
     s.jobs[job] = Math.max(0, s.jobs[job] + delta);
   }
   normalizeJobs(s, d);
+}
+
+/** How many rats assignJob(job, +n) can really move now: room in the job, idle rats and the open jobs' rats above the forager reserve. */
+export function assignable(s: GameState, d: Derived, job: JobId): number {
+  if (job === "idle" || !jobUnlocked(s, job)) return 0;
+  const room = Math.max(0, d.slots[job] - s.jobs[job]);
+  let free = idleRats(s);
+  for (const j of ["forager", "scavenger", "pickpocket"] as JobId[]) {
+    if (j === job) continue;
+    free += Math.max(0, s.jobs[j] - foragerKeep(s, d, j));
+  }
+  return Math.min(room, free);
+}
+
+/** Foragers assignJob never takes away (enough to feed the colony); 0 for other jobs. */
+function foragerKeep(s: GameState, d: Derived, j: JobId): number {
+  return j === "forager" ? Math.ceil((0.04 * s.rats) / Math.max(0.0001, 0.3 * d.jobYield.forager)) : 0;
 }
 
 export function setFocus(s: GameState, job: JobId): void {
@@ -317,8 +342,70 @@ export function contributeExpedition(s: GameState, zone: ZoneId, res: ResId | nu
     prog[r] = (prog[r] ?? 0) + amt;
     any = true;
   }
+  if (any) checkScouting(s, zone, ctx);
   if (isComplete(cost, prog) && s.rats >= (ZONES[zone].expedition?.rats ?? 0)) startDig(s, zone, ctx);
   return any;
+}
+
+/* ---------------------------------------------------------------- scouting payouts (EN-4) */
+
+/** Mean contributed fractions of an expedition that pay the scouts (steps 1, 2, 3). */
+export const SCOUT_STEPS = [0.25, 0.5, 0.75] as const;
+/** A payout is this many seconds of the resource's event value. */
+export const SCOUT_SECONDS = 60;
+
+/** Contributed share of an expedition: the mean over its cost resources of min(1, contributed / need) (as GoalWidget shows it). */
+export function expeditionFraction(s: GameState, zone: ZoneId): number {
+  const list = entries(expeditionCost(s, zone)).filter(([, v]) => v > 0);
+  if (!list.length) return 0;
+  const prog = s.projects[zone] ?? {};
+  return list.reduce((a, [r, v]) => a + Math.min(1, (prog[r] ?? 0) / v), 0) / list.length;
+}
+
+/**
+ * The scarcest expedition resource, which the scouts bring back: the lowest contributed fraction, ties broken by the
+ * most seconds of event value still missing. Resources without an event value yet (💍 before the Terminal) are skipped.
+ */
+export function scoutResource(s: GameState, d: Derived, zone: ZoneId): ResId | null {
+  const prog = s.projects[zone] ?? {};
+  let best: ResId | null = null;
+  let bestF = Infinity;
+  let bestT = -Infinity;
+  for (const [r, need] of entries(expeditionCost(s, zone))) {
+    const v = eventValue(s, d, r);
+    if (need <= 0 || !(v > 0)) continue;
+    const have = prog[r] ?? 0;
+    const f = Math.min(1, have / need);
+    const t = Math.max(0, need - have) / v;
+    if (f < bestF - 1e-12 || (Math.abs(f - bestF) <= 1e-12 && t > bestT)) {
+      best = r;
+      bestF = f;
+      bestT = t;
+    }
+  }
+  return best;
+}
+
+/**
+ * Pay the scouts when an expedition's contributed share first crosses 25/50/75%: 60 s of event value of the scarcest
+ * resource (over the cap), a news line and Fx scout. Each step pays once per run (s.scouted survives saves).
+ */
+function checkScouting(s: GameState, zone: ZoneId, ctx: EngineCtx, d?: Derived): void {
+  const done = Math.max(0, Math.floor(s.scouted[zone] ?? 0));
+  if (done >= SCOUT_STEPS.length) return;
+  const frac = expeditionFraction(s, zone);
+  let reached = done;
+  while (reached < SCOUT_STEPS.length && frac + 1e-9 >= SCOUT_STEPS[reached]) reached++;
+  if (reached === done) return;
+  const dd = d ?? derive(s);
+  for (let k = done + 1; k <= reached; k++) {
+    s.scouted[zone] = k;
+    const r = scoutResource(s, dd, zone);
+    if (!r) continue;
+    const amount = gain(s, dd, r, SCOUT_SECONDS * eventValue(s, dd, r), true, ctx);
+    ctx.fx.push({ k: "scout", zone, res: r, amount, step: k as 1 | 2 | 3 });
+    news(s, "scout", { from: ZONE_FROM[zone], amount: fmt(amount), icon: RESOURCES[r].icon }, ctx);
+  }
 }
 
 function startDig(s: GameState, zone: ZoneId, ctx: EngineCtx): void {
@@ -326,8 +413,8 @@ function startDig(s: GameState, zone: ZoneId, ctx: EngineCtx): void {
   ctx.fx.push({ k: "zoneDig", zone });
 }
 
-/** Called from the step when digging completes. */
-export function openZone(s: GameState, zone: ZoneId, ctx: EngineCtx): void {
+/** Called from the step when digging completes. `noRecord`: opened by an edict at the start of a run (no record). */
+export function openZone(s: GameState, zone: ZoneId, ctx: EngineCtx, noRecord = false): void {
   s.zones[zone] = true;
   s.zoneOpenedAt[zone] = s.time;
   s.digging = null;
@@ -335,6 +422,42 @@ export function openZone(s: GameState, zone: ZoneId, ctx: EngineCtx): void {
   news(s, `zone_${zone}`, {}, ctx);
   const medal = ({ sewers: "sewers_open", cellars: "cellars_open", metro: "metro_open", terminal: "terminal_open" } as const)[zone as "sewers"];
   if (medal) award(s, medal, ctx);
+  if (zone !== "burrow" && !noRecord) checkRecord(s, zone, ctx);
+}
+
+/** «Вокзал», «Коронация»: what a record is about, for the paper. */
+export const RECORD_LABEL: Record<RecordKey, string> = {
+  sewers: "Канализация",
+  cellars: "Подвалы",
+  metro: "Метро",
+  terminal: "Вокзал",
+  coronation: "Коронация",
+};
+
+/**
+ * Colony records (EN-11): the first time is stored silently; a faster run later stores the new time, pushes Fx record
+ * and the paper's «РЕКОРД КОЛОНИИ: Вокзал за 14:54 (было 48:31)».
+ */
+function checkRecord(s: GameState, what: RecordKey, ctx: EngineCtx): void {
+  const prev = s.meta.records[what];
+  const time = s.time;
+  if (prev === undefined || !Number.isFinite(prev)) {
+    s.meta.records[what] = time;
+    return;
+  }
+  if (time >= prev) return;
+  s.meta.records[what] = time;
+  ctx.fx.push({ k: "record", what, time, prev });
+  news(s, "record", { what: RECORD_LABEL[what], time: fmtRunTime(time), prev: fmtRunTime(prev) }, ctx);
+}
+
+/** m:ss (h:mm:ss past an hour) of run time. */
+export function fmtRunTime(sec: number): string {
+  const t = Math.max(0, Math.floor(sec));
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const ss = String(t % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 }
 
 export function expressCost(s: GameState): ReturnType<typeof expressStageCost> {
@@ -359,7 +482,7 @@ export function contributeExpress(s: GameState, res: ResId | null, ctx: EngineCt
     if (s.express.stage < 10) {
       s.express.stage++;
       ctx.fx.push({ k: "expressStage", stage: s.express.stage });
-      news(s, "express_stage", { stage: EXPRESS_STAGES[s.express.stage - 1] }, ctx);
+      news(s, "express_stage", { stage: EXPRESS_STAGES[s.express.stage - 1], human: EXPRESS_STAGE_LINES[s.express.stage - 1]?.human ?? "" }, ctx);
       if (s.express.stage >= 10) coronation(s, ctx);
     } else {
       s.express.wagons++;
@@ -371,12 +494,20 @@ export function contributeExpress(s: GameState, res: ResId | null, ctx: EngineCt
 
 function coronation(s: GameState, ctx: EngineCtx): void {
   s.coronatedThisRun = true;
+  s.coronatedAt = s.time;
   s.flags.coronation = true;
+  s.meta.coronations++;
   ctx.fx.push({ k: "coronation" });
   award(s, "coronation", ctx);
-  news(s, "coronation", {}, ctx);
-  // human clock before noon: 05:00 + time*5 s < 12:00 → time < 7h*3600/5
-  if (s.time * 5 < 7 * 3600) award(s, "before_noon", ctx);
+  const line = coronationLine(s);
+  news(s, "coronation", { human: line.human, rat: line.rat }, ctx);
+  // v2 (EN-11): «Ещё до обеда» is a coronation before 10:00 of the human clock: 05:00 + time·5 s < 10:00
+  if (s.time * 5 < 5 * 3600) award(s, "before_noon", ctx);
+  if (s.hungry) award(s, "hungry_king", ctx);
+  if (s.meta.migrations === 0) award(s, "forever_tuesday", ctx);
+  checkRecord(s, "coronation", ctx);
+  // EN-12: the King starts handing out commissions
+  if (!s.commissions) offerCommissions(s);
 }
 
 type AutoProject = { kind: "zone"; zone: ZoneId } | { kind: "express" };
@@ -436,6 +567,8 @@ export function autoContribute(s: GameState, d: Derived, ctx: EngineCtx): void {
       prog[r] = (prog[r] ?? 0) + amt;
     }
     if (p.kind === "zone") {
+      // also catches what autoContributeUncapped fed in during the last second
+      checkScouting(s, p.zone, ctx, d);
       if (isComplete(cost, prog) && s.rats >= (ZONES[p.zone].expedition?.rats ?? 0) && !s.digging) startDig(s, p.zone, ctx);
     } else if (isComplete(cost, prog)) contributeExpress(s, null, ctx, 0);
   }
@@ -496,12 +629,34 @@ export function migrate(s: GameState, now: number, ctx: EngineCtx): GameState | 
   meta.district += 1;
   meta.lifetime.playSeconds = s.meta.lifetime.playSeconds;
   // remembered even without the edict: "Чертежи экспресса" bought on the migration screen keeps these stages;
-  // at most 9, so the final "Отправление!" stage and the coronation (×1.25 crowns, before_noon) replay every run
+  // at most KEPT_STAGES_MAX (5): stages 6–10 and the coronation (×1.25 crowns, before_noon) replay every run
   meta.expressKept = Math.min(KEPT_STAGES_MAX, Math.max(meta.expressKept, s.express.stage));
+  const ratingOrder = ["none", "bronze", "silver", "gold", "royal"] as const;
+  const bestRating = s.haulLog.reduce<(typeof ratingOrder)[number]>((b, h) => (ratingOrder.indexOf(h.rating) > ratingOrder.indexOf(b) ? h.rating : b), "none");
+  // EN-11 chronicle: the finished run, newest last, at most 20
+  meta.history.push({
+    district: s.meta.district,
+    seconds: s.time,
+    eRun: s.eRun,
+    crowns: gained,
+    zones: { ...s.zoneOpenedAt },
+    ...(s.coronatedAt >= 0 ? { coronationAt: s.coronatedAt } : {}),
+    bestRating,
+  });
+  if (meta.history.length > 20) meta.history.splice(0, meta.history.length - 20);
+  const miser = s.meta.crowns >= 200;
   const next = newRun(meta, s.settings, (s.rng ^ 0x9e3779b9) >>> 0, now);
+  ctx.fx.push({
+    k: "migration",
+    crowns: gained,
+    district: meta.district,
+    weekday: humanWeekday(next),
+    summary: { seconds: s.time, eRun: s.eRun, trains: s.stats.trains, bestRating, rats: s.rats },
+  });
   // the migration screen is where edicts are bought: keep the tabs and the HUD up instead of a blank second
   applyReveals(next);
   award(next, "first_migration", ctx);
+  if (miser) award(next, "miser", ctx);
   news(next, "migration", { district: districtName(meta.district) }, ctx);
   ctx.fx.push({ k: "toast", text: `Великое Переселение! +${gained} 👑. Новый район: ${districtName(meta.district)}`, icon: "👑", tone: "gold" });
   return next;
@@ -519,29 +674,78 @@ export function buyEdict(s: GameState, id: EdictId, ctx: EngineCtx): boolean {
 }
 
 /**
+ * Rank II/III of an edict (EN-9): available after the first coronation ever, for EDICTS[id].ranks[rank-1].cost crowns.
+ * v2: the rank effects themselves are applied by EN-9 (derive.ts, newRun, applyRunStartEdict).
+ */
+export function buyEdictRank(s: GameState, id: EdictId, ctx: EngineCtx): boolean {
+  const ranks = EDICTS[id].ranks;
+  const r = edictRank(s, id);
+  if (!ranks || r < 1 || r > ranks.length || s.meta.achievements.coronation === undefined) return false;
+  const cost = ranks[r - 1].cost;
+  if (s.meta.crowns < cost) return false;
+  s.meta.crowns -= cost;
+  s.meta.edictRank[id] = r + 1;
+  applyRunStartEdict(s, id, ctx);
+  toast(ctx, `Указ «${EDICTS[id].name}» переподписан: ранг ${r + 1 === 2 ? "II" : "III"}`, "📜", "gold");
+  return true;
+}
+
+/** Buy a Great Seal (120 👑) and make it the active one; an owned seal is just activated (setSeal rules apply). */
+export function buySeal(s: GameState, id: SealId, ctx: EngineCtx): boolean {
+  if (s.meta.sealsOwned.includes(id)) return setSeal(s, id, ctx);
+  const cost = SEALS[id].cost;
+  if (s.meta.crowns < cost) return false;
+  s.meta.crowns -= cost;
+  s.meta.sealsOwned.push(id);
+  s.meta.seal = id;
+  toast(ctx, `${SEALS[id].name} скреплена воском и хвостом`, SEALS[id].icon, "gold");
+  return true;
+}
+
+/** Swap the active seal for free, only in the first minute of a run (s.time < 60). */
+export function setSeal(s: GameState, id: SealId, ctx: EngineCtx): boolean {
+  if (!s.meta.sealsOwned.includes(id) || s.time >= 60 || s.meta.seal === id) return false;
+  s.meta.seal = id;
+  toast(ctx, `Действует ${SEALS[id].name.replace("Печать", "печать")}`, SEALS[id].icon, "info");
+  return true;
+}
+
+/** Accept one of the King's offered commissions (EN-12): progress is measured from the current stat value. */
+export function acceptCommission(s: GameState, id: CommissionId, ctx: EngineCtx): boolean {
+  const c = s.commissions;
+  if (!c || c.active || !c.offered.includes(id)) return false;
+  c.active = { id, base: commissionStat(s, COMMISSIONS[id]) };
+  // the King's errand starts the clock: its event is not left waiting for its usual long interval
+  const soon = (k: "purse" | "downpour" | "royal_express", sec: number) => (s.timers[k] = Math.min(s.timers[k], s.time + sec));
+  if (id === "purse_season") soon("purse", 60);
+  else if (id === "dry_paws2" && s.zones.sewers) soon("downpour", 120);
+  else if (id === "royal_mail" && Number.isFinite(s.timers.royal_express)) soon("royal_express", 120);
+  else if (id === "whiskers_twice" && s.zones.cellars) s.timers.catForcedAt = Math.min(s.timers.catForcedAt, s.time + 90);
+  ctx.fx.push({ k: "commission", id, done: false });
+  toast(ctx, `Поручение принято: «${COMMISSIONS[id].name}»`, COMMISSIONS[id].icon, "gold");
+  return true;
+}
+
+/**
  * Edicts are bought on the migration screen right after the move (crowns arrive in migrate()),
  * so the run-start bonuses that newRun() grants must also apply to the current run at once.
  */
 function applyRunStartEdict(s: GameState, id: EdictId, ctx: EngineCtx): void {
   if (id === "royal_litter") {
-    if (s.rats < 10) {
-      s.jobs.forager += 10 - s.rats;
-      s.rats = 10;
-    }
-    s.buildings.nest = Math.max(s.buildings.nest, 5);
-    s.flags.vagrants = true;
-    if (s.res.crumbs < 50) {
-      s.resEver.crumbs += 50 - s.res.crumbs;
-      s.res.crumbs = 50;
-    }
+    applyRoyalLitter(s);
   } else if (id === "rat_memory") {
-    for (const u of RAT_MEMORY_UPGRADES) s.upgrades[u] = true;
+    for (const u of ratMemoryUpgrades(edictRank(s, "rat_memory"))) s.upgrades[u] = true;
   } else if (id === "inherited_foreman") {
     for (const u of FOREMAN_UPGRADES) s.upgrades[u] = true;
-  } else if (id === "old_tunnels" && !s.zones.sewers) {
-    if (s.digging?.zone === "sewers") s.digging = null;
-    openZone(s, "sewers", ctx);
-    onZoneOpen(s, "sewers");
+  } else if (id === "old_tunnels") {
+    // rank I opens the Sewers, rank II the Cellars too (bought on the migration screen: the run has just begun)
+    const zones: ZoneId[] = edictRank(s, "old_tunnels") >= 2 ? ["sewers", "cellars"] : ["sewers"];
+    for (const z of zones) {
+      if (s.zones[z]) continue;
+      if (s.digging?.zone === z) s.digging = null;
+      openZone(s, z, ctx, true);
+      onZoneOpen(s, z);
+    }
   } else if (id === "express_blueprints") {
     s.express.stage = Math.max(s.express.stage, Math.min(KEPT_STAGES_MAX, s.meta.expressKept));
   }
@@ -565,7 +769,8 @@ export function applyReveals(s: GameState): void {
   set("tab_schedule", !!s.flags.first_capsule || !!s.zones.metro || !!s.zones.sewers);
   set("suspicion", !!s.zones.cellars);
   set("tab_migration", !!s.zones.metro || s.meta.migrations > 0);
-  set("tab_medals", Object.keys(s.meta.achievements).length > 0);
+  // not the first thing a newcomer sees: the medal cabinet waits for the buildings tab (or a second medal)
+  set("tab_medals", medalCount(s) > 0 && (!!R.tab_buildings || medalCount(s) >= 2));
   set("steam", s.buildings.boiler > 0);
   set("bustle", !!s.upgrades.bustle);
   const exp = currentExpedition(s);

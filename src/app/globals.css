@@ -18,7 +18,7 @@
   --gaslight: #f2b84b;
   --parchment: #eadcc0;
   --parchment-dim: #a8977a;
-  --muted: #7a6b57;
+  --muted: #9c8b70; /* SH-4: ≥ 4.5:1 on --panel */
   --danger: #c4453a;
   --danger-light: #e8705f;
   --steam: #cfd6d6;
@@ -79,4 +79,17 @@ body {
 
 .tabular {
   font-variant-numeric: tabular-nums;
+}
+
+/* SH-4: danger text reads on the dark panels (--danger stays for fills and borders) */
+.text-danger,
+.text-danger-text {
+  color: var(--danger-light);
+}
+
+/* SH-4: the OS «reduce motion» stops the HUD's decorative loops (unless motion was switched back on in ⚙) */
+@media (prefers-reduced-motion: reduce) {
+  html:not([data-motion="on"]) :is(.hud-blink2, .hud-over, .hud-twinkle, .hud-alarm, .hud-throb, .hud-shiver, .hud-shine, .hud-rays, .sk-leg, .sk-spin, .sk-smoke, .sk-bigsmoke, .sk-rain, .sk-flicker, .sk-tail, .sk-eyes, .sk-note, .sk-bob, .sk-capsule, .sk-puff, .sk-glow, .sk-ripple, .sk-shake, .sk-board-blink) {
+    animation: none !important;
+  }
 }

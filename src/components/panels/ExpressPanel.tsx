@@ -2,106 +2,220 @@
 
 /**
  * The Rat Express project (GDD 5.2): ten stages that assemble a locomotive from junk,
- * then endless "wagons" (+10% each) after the coronation.
+ * then endless "wagons" (+10% each) after the coronation. The panel samples a small header model;
+ * every resource row of the current stage subscribes to its own (PA-1).
  */
-import { useState } from "react";
-import { EXPRESS_STAGES } from "@/game/data/meta";
+import { memo, useMemo, useState } from "react";
+import { COMMISSIONS } from "@/game/data/commissions";
+import { EXPRESS_STAGE_LINES, EXPRESS_STAGES } from "@/game/data/meta";
+import { commissionProgress } from "@/game/engine/progress";
 import { expressCost } from "@/game/engine/actions";
 import { entries, isComplete } from "@/game/engine/formulas";
 import { useGame } from "@/game/store";
+import type { CommissionId, GameState, ResId } from "@/game/types";
+import { useSampled } from "@/game/useSampled";
 import { fmt } from "@/lib/format";
 import { Badge, BrassButton, Plate, cx } from "@/components/ui/kit";
-import { ContribRow } from "./common";
+import { ContribRow, contribKey } from "./common";
+import KingPortrait from "./KingPortrait";
 import Locomotive from "./Locomotive";
 
-export default function ExpressPanel() {
-  const game = useGame((s) => s.game);
-  const [showStages, setShowStages] = useState(false);
-  const { stage, wagons, progress } = game.express;
-  const crowned = stage >= 10;
-  const cost = expressCost(game);
+interface ExpressModel {
+  stage: number;
+  wagons: number;
+  /** Stage progress in 2.5% steps (the locomotive's assembly animation). */
+  frac: number;
+  res: ResId[];
+  anyStock: boolean;
+  complete: boolean;
+  kept: boolean;
+  calm: boolean;
+}
+
+function expressModel(s: GameState): ExpressModel {
+  const { stage, wagons, progress } = s.express;
+  const cost = expressCost(s);
   const list = entries(cost);
   const frac = list.length ? list.reduce((a, [r, v]) => a + Math.min(1, (progress[r] ?? 0) / v), 0) / list.length : 0;
-  const anyStock = list.some(([r, v]) => (progress[r] ?? 0) < v && game.res[r] > 0);
+  return {
+    stage,
+    wagons,
+    frac: Math.floor(frac * 40) / 40,
+    res: list.map(([r]) => r),
+    anyStock: list.some(([r, v]) => (progress[r] ?? 0) < v && s.res[r] > 0),
+    complete: isComplete(cost, progress),
+    kept: !!s.meta.edicts.express_blueprints,
+    calm: s.settings.reducedMotion,
+  };
+}
+
+export default function ExpressPanel() {
+  const json = useSampled((s) => JSON.stringify(expressModel(s.game)), 3, Object.is);
+  const m = useMemo(() => JSON.parse(json) as ExpressModel, [json]);
+  const [showStages, setShowStages] = useState(false);
+  const { stage, wagons, frac } = m;
+  const crowned = stage >= 10;
   const bonus = 20 * stage + 10 * wagons;
-  const kept = game.meta.edicts.express_blueprints;
 
   return (
-    <Plate
-      title="Крысиный экспресс"
-      icon="🚂"
-      className="mb-4"
-      right={<Badge tone="good">+{bonus}% ко всему</Badge>}
-    >
-      <div className="-mx-1 mb-2 overflow-hidden rounded-md border border-line bg-[radial-gradient(ellipse_at_50%_30%,#3b3022,#14110f_75%)] px-1 pt-2 shadow-[inset_0_2px_10px_rgba(0,0,0,.7)]">
-        <Locomotive stage={stage} wagons={wagons} frac={Math.round(frac * 40) / 40} calm={game.settings.reducedMotion} />
-      </div>
+    <div data-target="x_express" className="mb-4 rounded-lg">
+      <Plate title="Крысиный экспресс" icon="🚂" right={<Badge tone="good">+{bonus}% ко всему</Badge>}>
+        <div className="-mx-1 mb-2 overflow-hidden rounded-md border border-line bg-[radial-gradient(ellipse_at_50%_30%,#3b3022,#14110f_75%)] px-1 pt-2 shadow-[inset_0_2px_10px_rgba(0,0,0,.7)]">
+          <Locomotive stage={stage} wagons={wagons} frac={frac} calm={m.calm} />
+        </div>
 
-      <div className="mb-2 flex items-baseline justify-between gap-2">
-        <p className="min-w-0 font-display text-base font-bold leading-tight text-brass-light">
-          {crowned ? `Вагон экспресса №${wagons + 1}` : `Этап ${stage + 1} из 10: ${EXPRESS_STAGES[stage]}`}
+        <div className="mb-2 flex items-baseline justify-between gap-2">
+          <p className="min-w-0 font-display text-base font-bold leading-tight text-brass-light">
+            {crowned ? `Вагон экспресса №${wagons + 1}` : `Этап ${stage + 1} из 10: ${EXPRESS_STAGES[stage]}`}
+          </p>
+          <span className="shrink-0 font-mono text-xs tabular text-parchment-dim">{Math.floor(frac * 100)}%</span>
+        </div>
+        <p className="mb-2 text-[11px] leading-snug text-parchment-dim">
+          {crowned
+            ? "Король коронован, но Лондон велик: каждый новый вагон даёт ещё +10% ко всему производству."
+            : `Каждый этап — +20% ко всему производству (кроме 📜 и 💍).${stage === 9 ? " Последний рывок — и коронация!" : ""}`}
+          {m.kept ? " Указ «Чертежи экспресса»: этапы переживут переселение." : ""}
         </p>
-        <span className="shrink-0 font-mono text-xs tabular text-parchment-dim">{Math.floor(frac * 100)}%</span>
-      </div>
-      <p className="mb-2 text-[11px] leading-snug text-parchment-dim">
-        {crowned
-          ? "Король коронован, но Лондон велик: каждый новый вагон даёт ещё +10% ко всему производству."
-          : `Каждый этап — +20% ко всему производству (кроме 📜 и 💍).${stage === 9 ? " Последний рывок — и коронация!" : ""}`}
-        {kept ? " Указ «Чертежи экспресса»: этапы переживут переселение." : ""}
-      </p>
 
-      <div className="space-y-1.5">
-        {list.map(([r, v]) => (
-          <ContribRow key={r} r={r} need={v} have={progress[r] ?? 0} stock={game.res[r]} onGive={() => useGame.getState().contributeExpress(r)} />
-        ))}
-      </div>
+        {!crowned && EXPRESS_STAGE_LINES[stage] && (
+          <p className="mb-2 rounded border border-line/60 bg-black/20 px-2 py-1 text-[11px] italic leading-snug text-parchment">👤 {EXPRESS_STAGE_LINES[stage].human}</p>
+        )}
 
-      <div className="mt-2.5 flex flex-wrap items-center gap-2">
-        <BrassButton
-          tone="copper"
-          className={cx("min-h-10 flex-1", anyStock && "rr-breathe")}
-          disabled={!anyStock || isComplete(cost, progress)}
-          onClick={() => useGame.getState().contributeExpress()}
+        <div className="space-y-1.5">
+          {m.res.map((r) => (
+            <ExpressRow key={`${stage}-${wagons}-${r}`} r={r} />
+          ))}
+        </div>
+
+        <div className="mt-2.5 flex flex-wrap items-center gap-2">
+          <BrassButton
+            tone="copper"
+            className={cx("min-h-10 flex-1", m.anyStock && "rr-breathe")}
+            disabled={!m.anyStock || m.complete}
+            onClick={() => useGame.getState().contributeExpress()}
+          >
+            Внести всё
+          </BrassButton>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setShowStages((v) => !v)}
+          aria-expanded={showStages}
+          className="mt-2 min-h-10 w-full rounded text-left text-xs font-bold text-brass hover:text-brass-light"
         >
-          Внести всё
-        </BrassButton>
-      </div>
-
-      <button
-        type="button"
-        onClick={() => setShowStages((v) => !v)}
-        aria-expanded={showStages}
-        className="mt-2 min-h-10 w-full rounded text-left text-xs font-bold text-brass hover:text-brass-light"
-      >
-        {showStages ? "Скрыть смету ▴" : "Смета экспресса: все 10 этапов ▾"}
-      </button>
-      {showStages && (
-        <ol className="mt-1 space-y-0.5">
-          {EXPRESS_STAGES.map((name, i) => {
-            const done = i < stage;
-            const cur = i === stage;
-            return (
-              <li
-                key={name}
-                className={cx(
-                  "flex items-center gap-2 rounded px-1.5 py-1 text-xs",
-                  done ? "text-good" : cur ? "bg-brass/10 font-bold text-brass-light" : "text-parchment-dim opacity-70",
-                )}
-              >
-                <span className="w-5 shrink-0 text-center font-mono tabular">{done ? "✓" : i + 1}</span>
-                <span className="min-w-0 flex-1">{name}</span>
-                {cur && <span className="font-mono tabular">{fmt(frac * 100)}%</span>}
+          {showStages ? "Скрыть смету ▴" : "Смета экспресса: все 10 этапов ▾"}
+        </button>
+        {showStages && (
+          <ol className="mt-1 space-y-0.5">
+            {EXPRESS_STAGES.map((name, i) => {
+              const done = i < stage;
+              const cur = i === stage;
+              return (
+                <li
+                  key={name}
+                  className={cx(
+                    "flex items-center gap-2 rounded px-1.5 py-1 text-xs",
+                    done ? "text-good" : cur ? "bg-brass/10 font-bold text-brass-light" : "text-parchment-dim opacity-70",
+                  )}
+                >
+                  <span className="w-5 shrink-0 text-center font-mono tabular">{done ? "✓" : i + 1}</span>
+                  <span className="min-w-0 flex-1">
+                    {name}
+                    {(done || cur) && EXPRESS_STAGE_LINES[i] && (
+                      <span className="block text-[10px] font-normal italic leading-snug text-parchment-dim">
+                        👤 {EXPRESS_STAGE_LINES[i].human}
+                        {done && <span className="block">🐀 {EXPRESS_STAGE_LINES[i].rat}</span>}
+                      </span>
+                    )}
+                  </span>
+                  {cur && <span className="font-mono tabular">{fmt(frac * 100)}%</span>}
+                </li>
+              );
+            })}
+            {crowned && (
+              <li className="flex items-center gap-2 rounded bg-brass/10 px-1.5 py-1 text-xs font-bold text-gaslight">
+                <span className="w-5 shrink-0 text-center">👑</span>
+                <span className="flex-1">Коронация состоялась · вагонов после неё: {wagons}</span>
               </li>
-            );
-          })}
-          {crowned && (
-            <li className="flex items-center gap-2 rounded bg-brass/10 px-1.5 py-1 text-xs font-bold text-gaslight">
-              <span className="w-5 shrink-0 text-center">👑</span>
-              <span className="flex-1">Коронация состоялась · вагонов после неё: {wagons}</span>
-            </li>
-          )}
-        </ol>
-      )}
-    </Plate>
+            )}
+          </ol>
+        )}
+      </Plate>
+      <Commissions />
+    </div>
   );
 }
+
+interface CommissionModel {
+  offered: CommissionId[];
+  active: { id: CommissionId; cur: number; goal: number } | null;
+  done: number;
+  charters: number;
+  tails: number;
+}
+
+/** EN-12/PA-6: «Поручения Короля» after the coronation — three offers, one accepted at a time, crown charters. */
+function Commissions() {
+  const json = useSampled((s) => {
+    const c = s.game.commissions;
+    if (!c) return "";
+    const m: CommissionModel = { offered: c.offered, active: commissionProgress(s.game), done: c.done, charters: s.game.charters, tails: 1 + s.game.meta.migrations };
+    return JSON.stringify(m);
+  }, 3, Object.is);
+  if (!json) return null;
+  const m = JSON.parse(json) as CommissionModel;
+  const mult = Math.min(1.5, Math.pow(1.05, m.charters));
+  return (
+    <div className="mt-3">
+      <Plate title="Поручения Короля" icon="📜" right={<Badge tone="good">Грамоты: ×{mult.toFixed(2)}</Badge>}>
+        <div className="mb-2 flex items-center gap-2.5">
+          <div className="w-12 shrink-0">
+            <KingPortrait tails={m.tails} gilded={false} crowned />
+          </div>
+          <p className="text-[11px] leading-snug text-parchment-dim">
+            Его Величество милостив, но скучает. Каждое исполненное поручение — королевская грамота: венцы за забег ×1.05 (до ×1.5). Исполнено: {m.done}.
+          </p>
+        </div>
+        {m.active ? (
+          <div className="rounded-md border border-gaslight/70 bg-gradient-to-b from-[#3b2c12] to-panel p-2">
+            <p className="font-display text-sm font-bold text-gaslight">
+              {COMMISSIONS[m.active.id].icon} {COMMISSIONS[m.active.id].name}
+            </p>
+            <p className="text-[11px] text-parchment-dim">{COMMISSIONS[m.active.id].desc}</p>
+            <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-black/40">
+              <div className="h-full rounded-full bg-gaslight" style={{ width: Math.round((m.active.cur / m.active.goal) * 100) + "%" }} />
+            </div>
+            <p className="mt-0.5 text-right font-mono text-[11px] tabular text-brass-light">
+              {m.active.cur} / {m.active.goal}
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            {m.offered.map((id) => (
+              <div key={id} className="flex items-center gap-2 rounded-md border border-line bg-panel/60 p-2">
+                <span className="text-xl">{COMMISSIONS[id].icon}</span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-bold leading-tight text-parchment">{COMMISSIONS[id].name}</p>
+                  <p className="text-[11px] leading-snug text-parchment-dim">{COMMISSIONS[id].desc}</p>
+                </div>
+                <BrassButton size="sm" className="min-h-10 shrink-0" onClick={() => useGame.getState().acceptCommission(id)}>
+                  Принять
+                </BrassButton>
+              </div>
+            ))}
+          </div>
+        )}
+      </Plate>
+    </div>
+  );
+}
+
+/** One resource of the current stage: need / contributed / stock as displayed, sampled on its own. */
+const ExpressRow = memo(function ExpressRow({ r }: { r: ResId }) {
+  const key = useSampled((s) => contribKey(expressCost(s.game)[r] ?? 0, s.game.express.progress[r] ?? 0, s.game.res[r]), 3, Object.is);
+  const [need, have] = key.split("|").map(Number);
+  // the key holds the stock as displayed; the button needs the exact amount, read at render time
+  const stock = useGame.getState().game.res[r];
+  return <ContribRow r={r} need={need} have={have} stock={stock} onGive={() => useGame.getState().contributeExpress(r)} />;
+});

@@ -1,3 +1,34 @@
+/**
+ * Infinite decorative loops: paused with settings.reducedMotion (.cv-rm) and with the OS «reduce motion»
+ * unless the player switched motion back on by hand (.cv-motion). Status signals (blinks) keep running.
+ */
+const DECOR = [
+  ".cv-flicker",
+  ".cv-gas",
+  ".cv-glow",
+  ".cv-ray",
+  ".cv-ripple",
+  ".cv-wave",
+  ".cv-mote",
+  ".cv-spin",
+  ".cv-spin-slow",
+  ".cv-spin-rev",
+  ".cv-bob",
+  ".cv-pulse",
+  ".cv-piston",
+  ".cv-pend",
+  ".cv-sparkle",
+  ".cv-zzz",
+  ".cv-purse",
+  ".cv-hover",
+  ".cv-key",
+  ".cv-tap",
+  ".cv-steam",
+  ".cv-drip",
+  ".cv-fall",
+  ".cv-clump",
+].join(",");
+
 /** Keyframes and helper classes for the colony view (rendered once in a <style> tag by ColonyView). */
 export const COLONY_CSS = `
 .cv-fb{transform-box:fill-box;transform-origin:center}
@@ -37,6 +68,13 @@ export const COLONY_CSS = `
 .cv-fall{animation:cv-fall 1.4s linear infinite}
 @keyframes cv-fall{0%{transform:translateY(0);opacity:0}10%{opacity:1}90%{opacity:1}100%{transform:translateY(var(--fall,60px));opacity:0}}
 .cv-pop{animation:cv-pop .6s cubic-bezier(.2,1.6,.4,1) both;transform-box:fill-box;transform-origin:50% 100%}
+.cv-pop-late{animation-delay:.7s}
+.cv-rm .cv-scaffold{display:none}
+.cv-rm .cv-pop-late{animation-delay:0s}
+.cv-scaffold{animation:cv-scaffold .8s linear both}
+@keyframes cv-scaffold{0%{opacity:0}10%,80%{opacity:1}100%{opacity:0}}
+.cv-ping-in{animation:cv-ping-in .2s ease-out both}
+@keyframes cv-ping-in{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
 @keyframes cv-pop{0%{transform:scale(.2);opacity:0}60%{transform:scale(1.12);opacity:1}100%{transform:scale(1)}}
 .cv-boom{animation:cv-boom .9s ease-out both;transform-box:fill-box;transform-origin:center}
 @keyframes cv-boom{0%{transform:scale(.4);opacity:0}25%{transform:scale(1.15);opacity:1}70%{opacity:1}100%{transform:scale(1) translateY(-14px);opacity:0}}
@@ -75,4 +113,14 @@ export const COLONY_CSS = `
 @keyframes cv-vibrate{from{transform:translateX(-1px)}to{transform:translateX(1px)}}
 .cv-rm .cv-drip,.cv-rm .cv-ripple,.cv-rm .cv-steam,.cv-rm .cv-mote,.cv-rm .cv-clump,.cv-rm .cv-fall,.cv-rm .cv-wave,.cv-rm .cv-vibrate,.cv-rm .cv-frenzy,.cv-rm .cv-avral,.cv-rm .cv-flash{animation:none}
 .cv-rm .cv-steam,.cv-rm .cv-drip,.cv-rm .cv-mote,.cv-rm .cv-clump,.cv-rm .cv-fall,.cv-rm .cv-flash{opacity:0}
+[data-off] *,.cv-covered *{animation-play-state:paused!important}
+.cv-rm :is(${DECOR}){animation-play-state:paused}
+@media (prefers-reduced-motion:reduce){.cv-root:not(.cv-motion) :is(${DECOR}){animation-play-state:paused}}
+.cv-plate{transform:scale(var(--plate-k,1));transform-box:fill-box;transform-origin:100% 100%}
+.cv-plate-l{transform:scale(var(--plate-k,1));transform-box:fill-box;transform-origin:0 100%}
+.cv-tag{transform:scale(var(--plate-k,1));transform-origin:0 0}
+.cv-idle{filter:saturate(.35) brightness(.7);transition:filter .4s}
+.cv-ping{animation:cv-ping 1.4s cubic-bezier(0,0,.2,1) infinite}
+@keyframes cv-ping{0%{transform:scale(1);opacity:.8}75%,100%{transform:scale(1.7);opacity:0}}
+.cv-rm .cv-ping{animation:cv-blink 1s steps(2) infinite}
 `;

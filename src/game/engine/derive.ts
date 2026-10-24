@@ -1,8 +1,10 @@
-import { BUILDINGS, MILESTONES } from "../data/buildings";
+import { BUILDINGS, MILESTONES, MILESTONE_JOB_BOOST } from "../data/buildings";
 import { JOBS } from "../data/jobs";
 import { RESOURCES } from "../data/resources";
-import { ZONES, ZONE_ORDER } from "../data/zones";
-import { ACHIEVEMENT_IDS, BUILDING_IDS, JOB_IDS, RES_IDS, type Amounts, type BuildingId, type GameState, type JobId, type ResId, type ResMap } from "../types";
+import { TINKERS_MULT } from "../data/upgrades";
+import { ZONES, ZONE_ORDER, districtTrait } from "../data/zones";
+import { RANKED, byRank, sealOn } from "./ranks";
+import { ACHIEVEMENT_IDS, BUILDING_IDS, JOB_IDS, RES_IDS, type Amounts, type BuildingId, type GameState, type JobId, type ResId, type ResMap, type ZoneId, type CommissionId } from "../types";
 
 /**
  * Everything that is a pure function of the current state (levels, upgrades, edicts, buffs).
@@ -37,6 +39,23 @@ export interface Derived {
   rumbleMetro: number;
   intervals: { capsule: number; metro: number; express: number };
   steamNeed: number; // steam/s wanted by press + clocktower
+  /** Production multipliers of the district trait per resource (EN-9), applied by resMult. */
+  districtRes: Partial<Record<ResId, number>>;
+  /** Purse frequency multiplier (golden_whiskers ranks × district) and purse effect multiplier. */
+  purseFreq: number;
+  purseEffect: number;
+  /** Value multiplier of train/capsule items (lucky_tail ranks); trinket pieces too. */
+  lucky: number;
+  /** Suspicion that summons the ratcatcher (district Мэйфэр: 80). */
+  ratcatcherAt: number;
+  /** Cat check chance multiplier (district quirk). */
+  catMult: number;
+  /** Market interval range (district Боро-маркет: [240, 300]). */
+  marketInterval: readonly [number, number];
+  /** Печать Тишины: no suspicion, no cat, no ratcatcher. */
+  silence: boolean;
+  /** The accepted royal commission (EN-12): its event comes more often while it runs. */
+  commission: CommissionId | null;
   suspicionMult: number;
   offline: { eta: number; capSec: number };
   frenzy: boolean;
@@ -52,9 +71,14 @@ export interface Derived {
 }
 
 export function milestoneMult(level: number): number {
-  let m = 1;
-  for (const t of MILESTONES) if (level >= t) m *= 2;
-  return m;
+  return Math.pow(2, milestonesReached(level));
+}
+
+/** How many ×2 milestones a level has passed (log2 of milestoneMult). */
+export function milestonesReached(level: number): number {
+  let n = 0;
+  for (const t of MILESTONES) if (level >= t) n++;
+  return n;
 }
 
 export function nextMilestone(level: number): number | null {
@@ -68,6 +92,13 @@ export function highestZone(s: GameState): number {
   return z;
 }
 
+/** Id of the highest open zone. */
+export function highestZoneId(s: GameState): ZoneId {
+  let best: ZoneId = "burrow";
+  for (const id of ZONE_ORDER) if (s.zones[id] && ZONES[id].order >= ZONES[best].order) best = id;
+  return best;
+}
+
 export function medalCount(s: GameState): number {
   let n = 0;
   for (const id of ACHIEVEMENT_IDS) if (s.meta.achievements[id] !== undefined) n++;
@@ -79,6 +110,9 @@ export function derive(s: GameState): Derived {
   const u = s.upgrades;
   const e = s.meta.edicts;
   const t = s.time;
+  const dm = districtTrait(s.meta.district).mods;
+  const railway = sealOn(s, "railway");
+  const silence = sealOn(s, "silence");
 
   const railMult = (u.rail_switches ? 1.5 : 1) * (u.steel_rails ? 1.25 : 1);
 
@@ -89,6 +123,8 @@ export function derive(s: GameState): Derived {
   let steamCapAdd = 0;
   const slots = Object.fromEntries(JOB_IDS.map((j) => [j, JOBS[j].slots ? 0 : Infinity])) as Record<JobId, number>;
   const jobPct = Object.fromEntries(JOB_IDS.map((j) => [j, 0])) as Record<JobId, number>;
+  // EN-4: every ×2 milestone of a producing building also gives its linked job ×MILESTONE_JOB_BOOST (once per building)
+  const jobMs = Object.fromEntries(JOB_IDS.map((j) => [j, 1])) as Record<JobId, number>;
   let housing = 3;
   let tierPct = 0;
   let globalPct = 0;
@@ -113,6 +149,9 @@ export function derive(s: GameState): Derived {
     if (L <= 0) continue;
     const isRail = id === "rat_rail";
     const rm = isRail ? railMult : 1;
+    const msBoost = Math.pow(MILESTONE_JOB_BOOST, milestonesReached(L));
+    const producer = msBoost !== 1 && def.effects.some((x) => x.t === "produce");
+    let boosted: JobId | null = null; // once per building, even if it names the job twice
     for (const ef of def.effects) {
       switch (ef.t) {
         case "produce":
@@ -131,9 +170,17 @@ export function derive(s: GameState): Derived {
           break;
         case "jobPct":
           jobPct[ef.job] += ef.pct * L;
+          if (msBoost !== 1 && boosted !== ef.job) {
+            boosted = ef.job;
+            jobMs[ef.job] *= msBoost;
+          }
           break;
         case "slots":
           slots[ef.job] += ef.amt * L;
+          if (producer && boosted !== ef.job) {
+            boosted = ef.job;
+            jobMs[ef.job] *= msBoost;
+          }
           break;
         case "tierPct":
           tierPct += ef.pct * L;
@@ -185,7 +232,7 @@ export function derive(s: GameState): Derived {
   for (const r of RES_IDS) {
     const def = RESOURCES[r];
     if (def.capGroup === "steam") {
-      caps[r] = (50 + steamCapAdd) * (u.safety_valves ? 2 : 1);
+      caps[r] = (50 + steamCapAdd) * (u.safety_valves ? 2 : 1) * (dm.steamBufferMult ?? 1);
       continue;
     }
     if (def.baseCap === null) {
@@ -201,7 +248,7 @@ export function derive(s: GameState): Derived {
 
   // ---- jobs
   const jobSpeed = Object.fromEntries(JOB_IDS.map((j) => [j, 1])) as Record<JobId, number>;
-  const jobYield = Object.fromEntries(JOB_IDS.map((j) => [j, 1 + jobPct[j] / 100])) as Record<JobId, number>;
+  const jobYield = Object.fromEntries(JOB_IDS.map((j) => [j, (1 + jobPct[j] / 100) * jobMs[j]])) as Record<JobId, number>;
   if (u.forager_sacks) jobYield.forager *= 2;
   if (u.nimble_tails) jobYield.pickpocket *= 2;
   if (u.candle_stubs) jobYield.scavenger *= 2;
@@ -213,7 +260,7 @@ export function derive(s: GameState): Derived {
 
   // ---- multipliers
   const soggy = s.buffs.soggyUntil > t;
-  const tierMult = (1 + tierPct / 100) * (u.tinkers_guild ? 2 : 1) * (soggy ? 0.8 : 1);
+  const tierMult = (1 + tierPct / 100) * (u.tinkers_guild ? TINKERS_MULT : 1) * (soggy ? 0.8 : 1);
 
   const medals = medalCount(s);
   const crownC = e.kings_favor ? 0.03 : 0.02;
@@ -230,6 +277,7 @@ export function derive(s: GameState): Derived {
   push("Венцы", 1 + crownC * s.meta.crownsEver);
   push("Медали", 1 + 0.01 * medals);
   push("Сытость", satietyActive ? 1.25 : 1);
+  push("Печать Династии", sealOn(s, "dynasty") ? 1 + 0.1 * s.meta.migrations : 1);
   const global = parts.reduce((a, p) => a * p.mult, 1);
 
   const frenzy = s.buffs.frenzyUntil > t;
@@ -241,14 +289,14 @@ export function derive(s: GameState): Derived {
   const birthRate = (0.08 + 0.005 * s.rats) * (1 + birthPct / 100) * (u.courtship_squeak ? 1.5 : 1);
 
   // ---- click
-  const click = (1 + (u.sharp_teeth ? 1 : 0)) * (u.greedy_paws ? 2 : 1) * (e.ancestral_paws ? 3 : 1) * (frenzy ? 3 : 1) * (luckyPaw ? 15 : 1);
+  const click = (1 + (u.sharp_teeth ? 1 : 0)) * (u.greedy_paws ? 2 : 1) * byRank(s, "ancestral_paws", RANKED.ancestral_paws, 1) * (silence ? 2 : 1) * (frenzy ? 3 : 1) * (luckyPaw ? 15 : 1);
   const autoclick = u.clockwork_legion ? { cps: 5, power: 0.5 } : u.windup_rat ? { cps: 1, power: 0.5 } : { cps: 0, power: 0.5 };
 
   // ---- events
   const post = b.platform_post;
-  const trainAutoBase = 0.35 + trainAuto + (u.pickup_brigade ? 0.25 : 0) + (e.timetable_in_head ? 0.1 : 0) + (u.steel_rails ? 0.1 : 0);
+  const trainAutoBase = 0.35 + trainAuto + (u.pickup_brigade ? 0.25 : 0) + (e.timetable_in_head ? 0.1 : 0) + (u.steel_rails ? 0.1 : 0) + (railway ? 0.15 : 0);
   const capsuleAutoTotal = Math.min(0.9, 0.3 + capsuleAuto + (u.steel_rails ? 0.1 : 0));
-  const lucky = e.lucky_tail ? 2 : 1;
+  const lucky = byRank(s, "lucky_tail", RANKED.lucky_tail, 1);
   const depot = b.express_depot;
 
   return {
@@ -272,20 +320,29 @@ export function derive(s: GameState): Derived {
     trainAutoBase,
     capsuleAuto: capsuleAutoTotal,
     capsuleCount: 3 + capsuleCount,
-    trainExtraCars: trainCars + (u.stolen_timetable ? 1 : 0) + (e.timetable_in_head ? 2 : 0),
+    trainExtraCars: trainCars + (u.stolen_timetable ? 1 : 0) + byRank(s, "timetable_in_head", RANKED.timetable_in_head, 0) + (railway ? 2 : 0) + (dm.metroCarsDelta ?? 0),
     trainValueMult: (1 + trainValuePct / 100) * lucky,
     capsuleValueMult: (u.pneumatic_timetable ? 1.5 : 1) * lucky,
     netSlots: u.wire_nets ? 1 + (post >= 3 ? 1 : 0) + (post >= 5 ? 1 : 0) : 0,
     rumbleMetro: 8 + (u.stolen_timetable ? 4 : 0) + (e.timetable_in_head ? 5 : 0),
     intervals: {
-      capsule: 150 * (u.pneumatic_timetable ? 0.8 : 1),
+      capsule: (dm.capsuleInterval ?? 150) * (u.pneumatic_timetable ? 0.8 : 1),
       metro: 240,
-      express: 720 * Math.pow(0.85, Math.max(0, depot - 1)) * (u.royal_informant ? 0.75 : 1),
+      express: 720 * Math.pow(0.85, Math.max(0, depot - 1)) * (u.royal_informant ? 0.75 : 1) * (railway ? 0.5 : 1) * (dm.expressIntervalMult ?? 1) * (s.commissions?.active?.id === "royal_mail" ? 0.5 : 1),
     },
     steamNeed,
-    suspicionMult: (u.quiet_paws ? 0.7 : 1) * (e.felt_soles ? 0.5 : 1),
+    districtRes: dm.res ?? {},
+    purseFreq: byRank(s, "golden_whiskers", RANKED.golden_whiskers.freq, 1) * (dm.purseFreqMult ?? 1),
+    purseEffect: byRank(s, "golden_whiskers", RANKED.golden_whiskers.effect, 1),
+    lucky,
+    ratcatcherAt: dm.ratcatcherThreshold ?? 100,
+    catMult: dm.catCheckMult ?? 1,
+    marketInterval: dm.marketInterval ?? [480, 600],
+    silence,
+    commission: s.commissions?.active?.id ?? null,
+    suspicionMult: silence ? 0 : (u.quiet_paws ? 0.7 : 1) * byRank(s, "felt_soles", RANKED.felt_soles, 1) * (dm.suspicionMult ?? 1),
     offline: {
-      eta: 0.5 + (u.night_shift ? 0.25 : 0) + (e.eternal_night_shift ? 0.25 : 0),
+      eta: 0.5 + (u.night_shift ? 0.25 : 0) + byRank(s, "eternal_night_shift", RANKED.eternal_night_shift, 0),
       capSec: 3600 * (2 + (u.night_shift ? 2 : 0) + (e.eternal_night_shift ? 4 : 0)),
     },
     frenzy,
@@ -304,6 +361,8 @@ export function resMult(s: GameState, d: Derived, r: ResId, withTemp = true): nu
   const def = RESOURCES[r];
   let m = 1;
   if (def.tier === 1) m *= d.tierMult;
+  const dr = d.districtRes[r];
+  if (dr !== undefined) m *= dr;
   if (!def.excludeGlobal) {
     m *= d.global;
     if (withTemp) m *= d.temp;

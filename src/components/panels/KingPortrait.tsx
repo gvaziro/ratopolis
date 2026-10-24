@@ -3,7 +3,8 @@
 /** Official portrait of the Rat King: one more tail per migration, gilded frame for "Ещё до обеда". */
 import { memo, useId } from "react";
 
-function KingPortrait({ tails, gilded, crowned }: { tails: number; gilded: boolean; crowned: boolean }) {
+/** drawNew: the newest tail draws itself in (the Great Migration overlay, SH-5). */
+function KingPortrait({ tails, gilded, crowned, drawNew = false }: { tails: number; gilded: boolean; crowned: boolean; drawNew?: boolean }) {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const ids = { bg: `${uid}bg`, gold: `${uid}au`, clip: `${uid}cl`, robe: `${uid}rb` };
   const n = Math.max(1, Math.min(tails, 12));
@@ -43,9 +44,19 @@ function KingPortrait({ tails, gilded, crowned }: { tails: number; gilded: boole
         </clipPath>
       </defs>
 
+      {drawNew && <style>{"@keyframes kp-draw{to{stroke-dashoffset:0}}"}</style>}
       {/* tails spill out under the frame */}
       {tailPaths.map((d, i) => (
-        <path key={i} d={d} fill="none" stroke="#d9a0a0" strokeWidth={2.8} strokeLinecap="round" opacity={0.95} />
+        <path
+          key={i}
+          d={d}
+          fill="none"
+          stroke="#d9a0a0"
+          strokeWidth={2.8}
+          strokeLinecap="round"
+          opacity={0.95}
+          {...(drawNew && i === tailPaths.length - 1 ? { pathLength: 1, strokeDasharray: 1, style: { strokeDashoffset: 1, animation: "kp-draw 1.4s ease-out .3s forwards" } } : {})}
+        />
       ))}
 
       <g clipPath={`url(#${ids.clip})`}>

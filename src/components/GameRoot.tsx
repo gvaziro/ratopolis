@@ -6,6 +6,7 @@ import { useGame } from "@/game/store";
 import { useGameLoop } from "@/game/useGameLoop";
 import { setSciNotation } from "@/lib/format";
 import AudioDirector from "./AudioDirector";
+import CrashGuard from "./CrashScreen";
 import ColonyView from "./colony/ColonyView";
 import DevPanel from "./dev/DevPanel";
 import FxLayer from "./fx/FxLayer";
@@ -15,18 +16,25 @@ import ResourceBar from "./layout/ResourceBar";
 import SkyStrip from "./layout/SkyStrip";
 import Toasts from "./layout/Toasts";
 import CoronationOverlay from "./modals/CoronationOverlay";
+import MigrationOverlay from "./modals/MigrationOverlay";
 import OfflineModal from "./modals/OfflineModal";
+import SaveIssueModal from "./modals/SaveIssueModal";
 import SidePanel from "./panels/SidePanel";
 import MarketPopup from "./scenes/MarketPopup";
 import SceneHost from "./scenes/SceneHost";
+import { cx } from "./ui/kit";
+import { useHotkeys } from "./useHotkeys";
 
 /**
  * Top-level game layout.
  * Desktop: header / sky strip / resource bar / [colony | side panel] / news ticker.
- * Mobile (< 768 px): colony ~55% of the height, the side panel becomes a bottom sheet.
+ * Mobile (< 768 px): the side panel is a bottom sheet — «half» (colony 55%) or «full» (colony 15%, no sky strip),
+ * toggled by the panel (store.sheet). Benedict's market docks inside the colony window.
+ * CrashGuard wraps the layout (the loop stays outside it); SaveIssueModal covers it while a save problem is open.
  */
 export default function GameRoot() {
   useGameLoop();
+  useHotkeys();
   const ready = useGame((s) => s.ready);
   const shakeRef = useScreenShake();
   const sci = useGame((s) => s.game.settings.sciNotation);
@@ -39,6 +47,16 @@ export default function GameRoot() {
   // a new run remounts the HUD and the colony, so their first-mount snapshots (built chambers, open zones,
   // shown resources) are taken afresh and the build/reveal animations play in every run
   const runKey = useGame((s) => s.game.meta.migrations);
+  const sheet = useGame((s) => s.sheet);
+  const calm = useGame((s) => s.game.settings.reducedMotion);
+  const fromOS = useGame((s) => s.game.settings.reducedMotionFromOS);
+  // SH-4: the panel, header, resource bar and ticker grow with «Размер текста» (CSS zoom); the colony does not
+  const zoom = useGame((s) => s.game.settings.textScale);
+  const zoomStyle = zoom === 1 ? undefined : { zoom };
+  // OS «reduce motion» stops the decorative CSS loops unless the player switched motion back on by hand
+  useEffect(() => {
+    document.documentElement.dataset.motion = calm ? "off" : fromOS ? "os" : "on";
+  }, [calm, fromOS]);
 
   if (!ready) {
     return (
@@ -49,28 +67,44 @@ export default function GameRoot() {
   }
 
   return (
-    <div ref={shakeRef} className="flex h-dvh flex-col overflow-hidden">
-      <Header />
-      <SkyStrip />
-      <ResourceBar key={runKey} />
-      <main className="relative grid min-h-0 flex-1 grid-rows-[55fr_45fr] md:grid-cols-[minmax(0,1fr)_400px] md:grid-rows-1 xl:grid-cols-[minmax(0,1fr)_460px]">
-        <section className="relative min-h-0 min-w-0 overflow-hidden">
-          <ColonyView key={runKey} />
-          <SceneHost />
-        </section>
-        <aside className="relative min-h-0 min-w-0 border-t border-line md:border-l md:border-t-0">
-          <SidePanel />
-        </aside>
-      </main>
-      <NewsTicker />
-      <MarketPopup />
-      <Toasts />
-      <OfflineModal />
-      <CoronationOverlay />
-      <FxLayer />
-      <AudioDirector />
-      <DevPanel />
-    </div>
+    <CrashGuard>
+      <div ref={shakeRef} className="flex h-dvh flex-col overflow-hidden">
+        <div style={zoomStyle} className="shrink-0">
+          <Header />
+        </div>
+        <SkyStrip />
+        <div style={zoomStyle} className="shrink-0">
+          <ResourceBar key={runKey} />
+        </div>
+        <main
+          className={cx(
+            "relative grid min-h-0 flex-1 md:grid-cols-[minmax(0,1fr)_400px] md:grid-rows-1 xl:grid-cols-[minmax(0,1fr)_460px]",
+            sheet === "full" ? "grid-rows-[15fr_85fr]" : "grid-rows-[55fr_45fr]",
+            !calm && "max-md:transition-[grid-template-rows] max-md:duration-200 max-md:ease-out",
+          )}
+        >
+          <section className="relative min-h-0 min-w-0 overflow-hidden">
+            <ColonyView key={runKey} />
+            <SceneHost />
+            <MarketPopup />
+          </section>
+          <aside className="relative min-h-0 min-w-0 border-t border-line md:border-l md:border-t-0" style={zoomStyle}>
+            <SidePanel />
+          </aside>
+        </main>
+        <div style={zoomStyle} className="shrink-0">
+          <NewsTicker />
+        </div>
+        <Toasts />
+        <OfflineModal />
+        <CoronationOverlay />
+        <MigrationOverlay />
+        <SaveIssueModal />
+        <FxLayer />
+        <AudioDirector />
+        <DevPanel />
+      </div>
+    </CrashGuard>
   );
 }
 

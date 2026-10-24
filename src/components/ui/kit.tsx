@@ -4,10 +4,11 @@
  * Shared UI kit: brass buttons, riveted plates, cost lists, bars, odometer numbers, tooltips.
  * Every panel/scene should build from these so the game reads as one Victorian-steampunk system.
  */
-import { useEffect, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { memo, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { RESOURCES } from "@/game/data/resources";
 import { entries, lockedByCap } from "@/game/engine/formulas";
 import type { Derived } from "@/game/engine/derive";
+import { useGame } from "@/game/store";
 import type { Amounts, GameState, ResId } from "@/game/types";
 import { fmt } from "@/lib/format";
 
@@ -172,28 +173,59 @@ export function Ring({ value, size = 44, stroke = 3, color = "var(--brass)", chi
 
 /* ------------------------------------------------------------ odometer */
 
-/** A number that eases toward its target (max 1/6 of the gap per frame), like an odometer. */
-export function Odometer({ value, format = fmt, className }: { value: number; format?: (n: number) => string; className?: string }) {
-  const [shown, setShown] = useState(value);
-  useEffect(() => {
+/** The smallest step a ~3-significant-digit display (fmt) can show around these magnitudes: 4.56 → 0.01, 1.23K → 10. */
+function displayUnit(a: number, b: number): number {
+  const m = Math.max(Math.abs(a), Math.abs(b));
+  return m > 0 ? Math.pow(10, Math.floor(Math.log10(m)) - 2) : 0.01;
+}
+
+/**
+ * A number that eases toward its target (1/6 of the gap per frame), like an odometer. Render-cheap: React renders
+ * the span once per value change; the eased value lives in a ref and is written straight into the span's text, and
+ * the rAF stops as soon as the text reads the target. Steps under one display unit (the 10 Hz trickle of income)
+ * and reduced motion snap at once.
+ */
+export const Odometer = memo(function Odometer({ value, format = fmt, className }: { value: number; format?: (n: number) => string; className?: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const shown = useRef(value);
+  // React only ever renders the first text; every later one is written by the effect below
+  const [initial] = useState(() => format(value));
+  const calm = useGame((s) => s.game.settings.reducedMotion);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const write = (n: number) => {
+      const t = format(n);
+      if (el && el.textContent !== t) el.textContent = t;
+    };
+    const from = shown.current;
+    if (calm || !Number.isFinite(value) || !Number.isFinite(from) || Math.abs(value - from) < displayUnit(value, from) || format(from) === format(value)) {
+      shown.current = value;
+      write(value);
+      return;
+    }
     let raf = 0;
-    let done = false;
     const tick = () => {
-      setShown((cur) => {
-        const diff = value - cur;
-        if (Math.abs(diff) < Math.max(1e-6, Math.abs(value) * 1e-4)) {
-          done = true;
-          return value;
-        }
-        return cur + diff / 6;
-      });
-      if (!done) raf = requestAnimationFrame(tick);
+      const next = shown.current + (value - shown.current) / 6;
+      if (format(next) === format(value)) {
+        shown.current = value;
+        write(value);
+        return;
+      }
+      shown.current = next;
+      write(next);
+      raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [value]);
-  return <span className={cx("tabular", className)}>{format(shown)}</span>;
-}
+  }, [value, format, calm]);
+
+  return (
+    <span ref={ref} className={cx("tabular", className)}>
+      {initial}
+    </span>
+  );
+});
 
 /* ------------------------------------------------------------ tooltip */
 

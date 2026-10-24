@@ -5,7 +5,7 @@
  * A fresh headline flashes in over the marquee for a few seconds; a click opens the last 10 headlines.
  * The marquee speeds up during «Аврал» and slows down with reduced motion.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { onFx } from "@/game/fx";
 import { derivedOf, useGame } from "@/game/store";
@@ -107,16 +107,32 @@ function Masthead() {
   );
 }
 
-/** rAF-driven marquee: two copies of the strip, wrap when the first scrolls out. Pauses on hover. */
+/**
+ * rAF-driven marquee: two copies of the strip, wrap when the first scrolls out. Pauses on hover.
+ * The loop never touches layout: the copy's width is cached by a ResizeObserver (re-armed whenever the items change,
+ * so the new width arrives with the next frame's layout instead of a forced reflow), and nothing moves while the
+ * page is hidden.
+ */
 function Marquee({ items, speed }: { items: string[]; speed: number }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const copyRef = useRef<HTMLDivElement>(null);
+  const widthRef = useRef(0);
   const speedRef = useRef(speed);
   const pausedRef = useRef(false);
 
   useEffect(() => {
     speedRef.current = speed;
   }, [speed]);
+
+  useLayoutEffect(() => {
+    const el = copyRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([e]) => {
+      widthRef.current = e.borderBoxSize?.[0]?.inlineSize ?? el.offsetWidth;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [items]);
 
   useEffect(() => {
     let raf = 0;
@@ -125,12 +141,12 @@ function Marquee({ items, speed }: { items: string[]; speed: number }) {
     const loop = (now: number) => {
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
-      const w = copyRef.current?.offsetWidth ?? 0;
-      if (!pausedRef.current && w > 0) {
+      const w = widthRef.current;
+      if (!document.hidden && !pausedRef.current && w > 0) {
         x -= speedRef.current * dt;
         if (x <= -w) x += w;
+        if (trackRef.current) trackRef.current.style.transform = `translate3d(${x.toFixed(1)}px,0,0)`;
       }
-      if (trackRef.current) trackRef.current.style.transform = `translate3d(${x.toFixed(1)}px,0,0)`;
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);

@@ -2,7 +2,8 @@ import type { BurstKind, FloatSpec, FxImpl } from "./fxBus";
 
 /**
  * Canvas particle + floating-text system for FxLayer.
- * Runs its own requestAnimationFrame loop only while something is alive (or an emitter is active).
+ * Runs its own requestAnimationFrame loop only while something is alive (or an emitter is active),
+ * and clears only the bounding box of what the previous frame painted.
  */
 
 const MAX_PARTICLES = 200;
@@ -25,18 +26,26 @@ interface Particle {
 }
 
 interface FloatText {
-  text: string;
   x: number;
   y: number;
-  color: string;
-  size: number;
-  stamp: boolean;
-  outline: boolean;
   born: number; // ms
   dur: number; // ms
   alpha: number;
   rise: number;
   rot: number;
+  /** The text rasterised once at spawn (outline, stamp frame and all); frames only blit it. */
+  img: HTMLCanvasElement;
+  /** Sprite size in CSS px. */
+  iw: number;
+  ih: number;
+}
+
+/** Union bounding box (CSS px) of everything drawn in a frame. */
+interface Box {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
 }
 
 const GOLD = ["#f2d27a", "#e8c983", "#ffd34d", "#fff1b8", "#d4af37"];
@@ -62,8 +71,15 @@ export class FxSystem implements FxImpl {
   private w = 0;
   private h = 0;
   private fontDisplay = "serif";
+  /** The context's current font: assigning ctx.font resolves it against the canvas style (can force a style
+   *  recalc), so it is only assigned when it really changes. */
+  private ctxFont = "";
   private emitters: EdgeEmitter[] = [];
   private emitAcc = 0;
+  /** What the last frame painted: only this area is cleared next frame. */
+  private dirty: Box | null = null;
+  /** Sprite canvases of expired texts, reused by the next ones. */
+  private spare: HTMLCanvasElement[] = [];
   /** 1 normally, 0.3 with reduced motion. */
   density = 1;
 
@@ -84,6 +100,8 @@ export class FxSystem implements FxImpl {
     this.canvas.height = Math.round(this.h * this.dpr);
     this.canvas.style.width = `${this.w}px`;
     this.canvas.style.height = `${this.h}px`;
+    this.dirty = null; // resizing the canvas cleared it…
+    this.ctxFont = ""; // …and reset the context state
   }
 
   destroy(): void {
@@ -91,6 +109,7 @@ export class FxSystem implements FxImpl {
     this.raf = 0;
     this.parts = [];
     this.texts = [];
+    this.spare = [];
   }
 
   /* ------------------------------------------------------------ spawning */
@@ -116,24 +135,66 @@ export class FxSystem implements FxImpl {
     const big = !!spec.big;
     const size = spec.size ?? (big ? 30 : spec.stamp ? 18 : 22);
     const rise = big ? 56 : 40;
+    const { img, iw, ih } = this.sprite(spec.text, size, spec.color, !!spec.stamp, big || !!spec.stamp);
     // keep the whole flight on screen
-    const halfW = (spec.text.length * size) / 3.4;
+    const halfW = iw / 2;
     this.texts.push({
-      text: spec.text,
       x: Math.max(halfW + 6, Math.min(this.w - halfW - 6, spec.x)),
       y: Math.max(rise + size, Math.min(this.h - size, spec.y)),
-      color: spec.color,
-      size,
-      stamp: !!spec.stamp,
-      outline: big || !!spec.stamp,
       born: performance.now(),
       dur: spec.dur ?? (big ? 1100 : 700),
       alpha: spec.alpha ?? 1,
       rise,
       rot: spec.stamp ? -0.14 : 0,
+      img,
+      iw,
+      ih,
     });
-    if (this.texts.length > MAX_TEXTS) this.texts.splice(0, this.texts.length - MAX_TEXTS);
+    if (this.texts.length > MAX_TEXTS) for (const t of this.texts.splice(0, this.texts.length - MAX_TEXTS)) this.recycle(t.img);
     this.wake();
+  }
+
+  /**
+   * Rasterise a floating text once (stroke + fill, the stamp frame) into a small canvas of its own:
+   * strokeText on the big canvas every frame was the loop's main cost.
+   */
+  private sprite(text: string, size: number, color: string, stamp: boolean, outline: boolean): { img: HTMLCanvasElement; iw: number; ih: number } {
+    const img = this.spare.pop() ?? document.createElement("canvas");
+    const cx = img.getContext("2d");
+    const font = `700 ${size}px ${this.fontDisplay}, serif`;
+    const line = outline ? Math.max(3, size / 7) : 3;
+    if (!cx) return { img, iw: 1, ih: 1 };
+    cx.font = font;
+    const tw = cx.measureText(text).width;
+    const padX = Math.ceil(line / 2 + (stamp ? 9 : 0) + 2);
+    const padY = Math.ceil(line / 2 + (stamp ? 5 : 0) + 2);
+    const iw = Math.ceil(tw) + padX * 2;
+    const ih = Math.ceil(size * 1.3) + padY * 2;
+    const dpr = this.dpr;
+    img.width = Math.ceil(iw * dpr); // also clears it and resets the context state
+    img.height = Math.ceil(ih * dpr);
+    cx.setTransform(dpr, 0, 0, dpr, (iw / 2) * dpr, (ih / 2) * dpr);
+    cx.font = font;
+    cx.textAlign = "center";
+    cx.textBaseline = "middle";
+    cx.lineJoin = "round";
+    if (stamp) {
+      const w = tw + 12;
+      const h = size + 6;
+      cx.strokeStyle = color;
+      cx.lineWidth = 2.5;
+      cx.strokeRect(-w / 2, -h / 2, w, h);
+    }
+    cx.strokeStyle = outline ? "rgba(20,12,6,.85)" : "rgba(20,12,6,.6)";
+    cx.lineWidth = line;
+    cx.strokeText(text, 0, 0);
+    cx.fillStyle = color;
+    cx.fillText(text, 0, 0);
+    return { img, iw, ih };
+  }
+
+  private recycle(img: HTMLCanvasElement): void {
+    if (this.spare.length < 24) this.spare.push(img);
   }
 
   /** Red-gold sparks along the edges of a rect until `until` (frenzy). */
@@ -207,6 +268,19 @@ export class FxSystem implements FxImpl {
         p.vr = rnd(-9, 9);
         break;
       }
+      case "gear": {
+        // CO-7: brass cogs flung out by a new patent
+        const v = rnd(90, 260) * spread;
+        p.vx = Math.cos(a) * v;
+        p.vy = Math.sin(a) * v - 80;
+        p.g = 160;
+        p.drag = 1.2;
+        p.life = p.max = rnd(1, 1.6);
+        p.size = rnd(4.5, 8);
+        p.color = pick(GOLD);
+        p.vr = rnd(-4, 4);
+        break;
+      }
       case "heart": {
         p.vx = rnd(-15, 15);
         p.vy = rnd(-70, -45);
@@ -219,6 +293,12 @@ export class FxSystem implements FxImpl {
       }
     }
     return p;
+  }
+
+  private setFont(f: string): void {
+    if (f === this.ctxFont) return;
+    this.ctxFont = f;
+    this.ctx.font = f;
   }
 
   /* ------------------------------------------------------------ loop */
@@ -237,8 +317,22 @@ export class FxSystem implements FxImpl {
     this.draw(now);
     const alive = this.parts.length > 0 || this.texts.length > 0 || this.emitters.length > 0;
     this.raf = alive ? requestAnimationFrame(this.frame) : 0;
-    if (!alive) this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    if (!alive) this.clearDirty();
   };
+
+  /** Clear only what the previous frame painted (falls back to nothing when nothing was drawn). */
+  private clearDirty(): void {
+    const b = this.dirty;
+    this.dirty = null;
+    if (!b) return;
+    const c = this.ctx;
+    c.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    const x0 = Math.max(0, Math.floor(b.x0) - 2);
+    const y0 = Math.max(0, Math.floor(b.y0) - 2);
+    const x1 = Math.min(this.w, Math.ceil(b.x1) + 2);
+    const y1 = Math.min(this.h, Math.ceil(b.y1) + 2);
+    if (x1 > x0 && y1 > y0) c.clearRect(x0, y0, x1 - x0, y1 - y0);
+  }
 
   private emit(now: number, dt: number): void {
     if (!this.emitters.length) return;
@@ -284,11 +378,21 @@ export class FxSystem implements FxImpl {
 
   private draw(now: number): void {
     const c = this.ctx;
+    this.clearDirty();
     c.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    c.clearRect(0, 0, this.w, this.h);
+    const box: Box = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    const grow = (x: number, y: number, rx: number, ry: number) => {
+      if (x - rx < box.x0) box.x0 = x - rx;
+      if (x + rx > box.x1) box.x1 = x + rx;
+      if (y - ry < box.y0) box.y0 = y - ry;
+      if (y + ry > box.y1) box.y1 = y + ry;
+    };
 
     for (const p of this.parts) {
       const f = p.life / p.max; // 1 → 0
+      // generous extent: the biggest shape (dust ×1.6, hearts as text) plus a spark's motion streak
+      const ext = p.size * 2 + 3;
+      grow(p.x, p.y, ext + Math.abs(p.vx) * 0.03, ext + Math.abs(p.vy) * 0.03);
       switch (p.kind) {
         case "dust":
           c.globalAlpha = 0.55 * f;
@@ -346,10 +450,30 @@ export class FxSystem implements FxImpl {
           c.restore();
           break;
         }
+        case "gear": {
+          c.globalAlpha = Math.min(1, f * 2);
+          c.save();
+          c.translate(p.x, p.y);
+          c.rotate(p.rot);
+          c.fillStyle = p.color;
+          for (let k = 0; k < 6; k++) {
+            c.rotate(Math.PI / 3);
+            c.fillRect(-p.size * 0.18, -p.size * 1.15, p.size * 0.36, p.size * 0.5);
+          }
+          c.beginPath();
+          c.arc(0, 0, p.size * 0.8, 0, Math.PI * 2);
+          c.fill();
+          c.fillStyle = "rgba(20,17,15,.7)";
+          c.beginPath();
+          c.arc(0, 0, p.size * 0.3, 0, Math.PI * 2);
+          c.fill();
+          c.restore();
+          break;
+        }
         case "heart":
           c.globalAlpha = Math.min(1, f * 2);
           c.fillStyle = p.color;
-          c.font = `${p.size}px sans-serif`;
+          this.setFont(`${Math.round(p.size)}px sans-serif`);
           c.textAlign = "center";
           c.textBaseline = "middle";
           c.fillText("♥", p.x, p.y);
@@ -358,47 +482,34 @@ export class FxSystem implements FxImpl {
     }
     c.globalAlpha = 1;
 
-    // floating texts
+    // floating texts: blit their sprites
     const keep: FloatText[] = [];
-    c.textAlign = "center";
-    c.textBaseline = "middle";
-    c.lineJoin = "round";
     for (const t of this.texts) {
       const age = now - t.born;
-      if (age >= t.dur) continue;
+      if (age >= t.dur) {
+        this.recycle(t.img);
+        continue;
+      }
       keep.push(t);
       const k = age / t.dur;
       const ease = 1 - (1 - k) * (1 - k);
       const y = t.y - t.rise * ease;
       const pop = age < 90 ? 1.3 - 0.3 * (age / 90) : 1;
+      // half extents, plus the stamp's tilt
+      const tilt = Math.abs(Math.sin(t.rot));
+      grow(t.x, y, (t.iw / 2 + t.ih * tilt) * pop + 1, (t.ih / 2 + t.iw * tilt) * pop + 1);
       c.globalAlpha = t.alpha * (k < 0.55 ? 1 : 1 - (k - 0.55) / 0.45);
-      c.save();
-      c.translate(t.x, y);
-      c.rotate(t.rot);
-      c.scale(pop, pop);
-      c.font = `700 ${t.size}px ${this.fontDisplay}, serif`;
-      if (t.stamp) {
-        const w = c.measureText(t.text).width + 12;
-        const h = t.size + 6;
-        c.strokeStyle = t.color;
-        c.lineWidth = 2.5;
-        c.strokeRect(-w / 2, -h / 2, w, h);
-      }
-      if (t.outline) {
-        c.strokeStyle = "rgba(20,12,6,.85)";
-        c.lineWidth = Math.max(3, t.size / 7);
-        c.strokeText(t.text, 0, 0);
-      } else {
-        c.strokeStyle = "rgba(20,12,6,.6)";
-        c.lineWidth = 3;
-        c.strokeText(t.text, 0, 0);
-      }
-      c.fillStyle = t.color;
-      c.fillText(t.text, 0, 0);
-      c.restore();
+      // translate · rotate · scale in one matrix
+      const sc = this.dpr * pop;
+      const cos = Math.cos(t.rot) * sc;
+      const sin = Math.sin(t.rot) * sc;
+      c.setTransform(cos, sin, -sin, cos, t.x * this.dpr, y * this.dpr);
+      c.drawImage(t.img, -t.iw / 2, -t.ih / 2, t.iw, t.ih);
     }
+    c.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     this.texts = keep;
     c.globalAlpha = 1;
+    this.dirty = box.x1 > box.x0 ? box : null;
   }
 }
 

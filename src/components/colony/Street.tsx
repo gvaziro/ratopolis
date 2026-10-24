@@ -5,6 +5,7 @@
  * The grate keeps a minimum on-screen size (counter-scaled against the camera zoom).
  */
 import { memo, useEffect, useRef, type KeyboardEvent, type PointerEvent } from "react";
+import { humanClock } from "@/game/engine/formulas";
 import { useGame } from "@/game/store";
 import { fxBurst, getFxAnchor } from "../fx/fxBus";
 import { onCamera, toScreen } from "./camera";
@@ -44,13 +45,35 @@ const COBBLES: Cobble[] = (() => {
   return out;
 })();
 
+/** Time of day of the human clock (CO-5): night ≤ 05:59 or ≥ 21:00, dawn/dusk 06–07:59 and 18–20:59, else day. */
+export type ColonyLight = "day" | "dusk" | "night";
+
+function lightAt(totalMin: number): ColonyLight {
+  const h = (totalMin / 60) % 24;
+  if (h < 6 || h >= 21) return "night";
+  if (h < 8 || h >= 18) return "dusk";
+  return "day";
+}
+
+/** CO-5: the colony's light follows the human clock (re-read every 10 human minutes). */
+export function useColonyLight(): ColonyLight {
+  return useGame((s) => lightAt(Math.floor(humanClock(s.game).totalMin / 10) * 10));
+}
+
+/** CO-5: it rains up top — the drizzle of the Sewers era, or a downpour scene. */
+export function useRain(): boolean {
+  return useGame((s) => s.game.scene?.id === "downpour" || (!!s.game.zones.sewers && !s.game.zones.cellars));
+}
+
 /** Static part: night air, gas-lamp glow, cobbles, earth under the street. */
 export const Street = memo(function Street() {
+  const light = useColonyLight();
+  const night = light === "night";
   return (
     <g pointerEvents="none">
       <rect x={-2000} y={-400} width={W + 4000} height={440} fill="url(#cv-street)" />
-      <Glow x={70} y={10} r={90} kind="warm" opacity={0.5} className="cv-glow" />
-      <Glow x={620} y={6} r={70} kind="warm" opacity={0.35} />
+      <Glow x={70} y={10} r={90} kind="warm" opacity={night ? 0.85 : 0.5} className="cv-glow" />
+      <Glow x={620} y={6} r={70} kind="warm" opacity={night ? 0.6 : 0.35} className={night ? "cv-glow" : undefined} />
       <rect x={-2000} y={36} width={W + 4000} height={66} fill="#2a231c" />
       {COBBLES.map((c, i) => (
         <rect key={i} x={c.x} y={c.y} width={c.w} height={c.h} rx="6" fill={c.c} stroke="#1d1813" strokeWidth="1" />
@@ -63,8 +86,14 @@ export const Street = memo(function Street() {
   );
 });
 
-/** Sun/lamp rays from the grate into the burrow, with drifting dust motes. */
+/** The rays group, so the passing cab wheel (Traffic) can shade the grate imperatively. */
+export const raysRef: { current: SVGGElement | null } = { current: null };
+
+/** Sun/lamp rays from the grate into the burrow, with drifting dust motes; drips fall through in the rain. */
 export const Rays = memo(function Rays() {
+  const light = useColonyLight();
+  const rain = useRain();
+  const fill = light === "day" ? "url(#cv-rays)" : `url(#cv-rays-${light})`;
   const motes = [
     [300, 160, 0],
     [350, 210, 1.5],
@@ -76,14 +105,37 @@ export const Rays = memo(function Rays() {
   ];
   return (
     <g pointerEvents="none">
-      <path d={`M${GX - HALF_B + 6} ${BOT}L${GX + HALF_B - 6} ${BOT}L${GX + 220} ${STREET_H + 362}L${GX - 200} ${STREET_H + 362}z`} fill="url(#cv-rays)" />
-      <path d={`M${GX - 30} ${BOT}L${GX + 10} ${BOT}L${GX + 60} ${STREET_H + 300}L${GX - 50} ${STREET_H + 300}z`} fill="url(#cv-rays)" opacity=".55" />
+      <g
+        ref={(el) => {
+          raysRef.current = el;
+        }}
+        style={{ transition: "opacity .35s", filter: rain ? "saturate(.2)" : undefined }}
+        opacity={rain ? 0.5 : 1}
+      >
+        <path d={`M${GX - HALF_B + 6} ${BOT}L${GX + HALF_B - 6} ${BOT}L${GX + 220} ${STREET_H + 362}L${GX - 200} ${STREET_H + 362}z`} fill={fill} />
+        <path d={`M${GX - 30} ${BOT}L${GX + 10} ${BOT}L${GX + 60} ${STREET_H + 300}L${GX - 50} ${STREET_H + 300}z`} fill={fill} opacity=".55" />
+      </g>
+      {rain &&
+        RAIN_DRIPS.map((d, i) => (
+          <g key={i}>
+            <ellipse cx={d.x} cy={BOT + 4} rx="1.8" ry="2.8" fill="#a9e3f0" className="cv-drip" style={{ animationDelay: `${d.delay}s`, ["--fall" as string]: `${d.fall}px` }} />
+            <ellipse cx={d.x} cy={BOT + 4 + d.fall} rx="7" ry="2" fill="none" stroke="#a9e3f0" strokeWidth="1" className="cv-ripple" style={{ animationDelay: `${d.delay}s` }} />
+          </g>
+        ))}
       {motes.map(([x, y, d], i) => (
         <circle key={i} cx={x} cy={y} r={1.4} fill="#fff1c8" className="cv-mote" style={{ animationDelay: `${d}s` }} />
       ))}
     </g>
   );
 });
+
+/** Rain drips from the grate bars to the burrow floor (CO-5). */
+const RAIN_DRIPS = [
+  { x: GX - 60, fall: 230, delay: 0 },
+  { x: GX - 15, fall: 250, delay: 0.7 },
+  { x: GX + 30, fall: 240, delay: 1.3 },
+  { x: GX + 70, fall: 225, delay: 0.35 },
+];
 
 function ClockworkRat({ x, y, flip, delay }: { x: number; y: number; flip?: boolean; delay: number }) {
   return (
@@ -152,6 +204,9 @@ export function Grate() {
   const outerRef = useRef<SVGGElement>(null);
   const squashRef = useRef<SVGGElement>(null);
   const lucky = useGame((s) => s.game.buffs.luckyPawUntil > s.game.time);
+  // CO-8: «Мегаполис» (1 000 rats) gilds the grate for good
+  const gilded = useGame((s) => s.game.meta.achievements.colony_1000 !== undefined);
+  const light = useColonyLight();
 
   // keep the grate at least MIN_GRATE_PX wide on screen
   useEffect(
@@ -201,8 +256,8 @@ export function Grate() {
     const xb = GX - HALF_B + 10 + t * (2 * HALF_B - 20);
     bars.push(
       <g key={i}>
-        <line x1={xt} y1={TOP} x2={xb} y2={BOT} stroke={lucky ? "#7d5f2c" : "#1c1814"} strokeWidth="6.5" strokeLinecap="round" />
-        <line x1={xt - 1} y1={TOP + 1} x2={xb - 1.4} y2={BOT - 1} stroke={lucky ? "#ffe9a8" : "#6b625a"} strokeWidth="1.4" strokeLinecap="round" />
+        <line x1={xt} y1={TOP} x2={xb} y2={BOT} stroke={lucky ? "#7d5f2c" : gilded ? "#b8902c" : "#1c1814"} strokeWidth="6.5" strokeLinecap="round" />
+        <line x1={xt - 1} y1={TOP + 1} x2={xb - 1.4} y2={BOT - 1} stroke={lucky || gilded ? "#ffe9a8" : "#6b625a"} strokeWidth="1.4" strokeLinecap="round" />
       </g>,
     );
   }
@@ -221,7 +276,14 @@ export function Grate() {
         <rect x={GX - HALF_B - 26} y={TOP - 26} width={2 * HALF_B + 52} height={BOT - TOP + 56} fill="transparent" />
         <g ref={squashRef} className="cv-fb">
           {lucky && <Glow x={GX} y={GY} r={140} kind="gold" className="cv-glow" />}
-          <path d={`M${GX - HALF_T} ${TOP}H${GX + HALF_T}L${GX + HALF_B} ${BOT}H${GX - HALF_B}z`} fill="url(#cv-skylight)" />
+          <path d={`M${GX - HALF_T} ${TOP}H${GX + HALF_T}L${GX + HALF_B} ${BOT}H${GX - HALF_B}z`} fill={light === "day" ? "url(#cv-skylight)" : `url(#cv-skylight-${light})`} />
+          {light === "night" && (
+            <g>
+              <path d={`M${GX + 34} ${TOP + 8}a10 10 0 1 0 8 16a8 8 0 1 1 -8 -16z`} fill="#e9eef8" opacity=".85" />
+              <circle cx={GX - 40} cy={TOP + 12} r="1.3" fill="#fff" />
+              <circle cx={GX - 8} cy={TOP + 26} r="1" fill="#dfe8ff" />
+            </g>
+          )}
           <ellipse cx={GX - 34} cy={TOP + 10} rx="16" ry="5" fill="#2a2420" opacity=".35" />
           <ellipse cx={GX + 40} cy={TOP + 8} rx="12" ry="4" fill="#2a2420" opacity=".3" />
           {bars}
@@ -229,7 +291,7 @@ export function Grate() {
           <path
             d={`M${GX - HALF_T - 6} ${TOP - 4}H${GX + HALF_T + 6}L${GX + HALF_B + 8} ${BOT + 5}H${GX - HALF_B - 8}z`}
             fill="none"
-            stroke="url(#cv-iron)"
+            stroke={gilded ? "url(#cv-brass)" : "url(#cv-iron)"}
             strokeWidth="9"
             strokeLinejoin="round"
           />

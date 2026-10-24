@@ -1,4 +1,7 @@
-import { RAT_MEMORY_UPGRADES, FOREMAN_UPGRADES } from "../data/upgrades";
+import { HEADLINES } from "../data/headlines";
+import { FOREMAN_UPGRADES, ratMemoryUpgrades } from "../data/upgrades";
+import { WEEKDAYS_FULL, districtLoc } from "../data/zones";
+import { RANKED, byRank, edictRank } from "./ranks";
 import {
   BUILDING_IDS,
   JOB_IDS,
@@ -13,10 +16,11 @@ import {
   type Timers,
 } from "../types";
 
-export const SCHEMA_VERSION = 1;
+/** 2 = v2 (meta ranks/seals/history, settings hints/ambience/textScale, scouting, commissions). */
+export const SCHEMA_VERSION = 2;
 
-/** Express stages a run may start with (express_blueprints): never 10, so the coronation can happen again. */
-export const KEPT_STAGES_MAX = 9;
+/** Express stages a run may start with (express_blueprints, v2 EN-3: 9 → 5): stages 6–10 and the coronation replay every run. */
+export const KEPT_STAGES_MAX = 5;
 
 export function zeroRes(): ResMap {
   return Object.fromEntries(RES_IDS.map((r) => [r, 0])) as ResMap;
@@ -49,11 +53,28 @@ export function zeroStats(): RunStats {
     bestCombo: 0,
     lanternMax: 0,
     hookPerfects: 0,
+    cleanCars: 0,
+    goldStreak: 0,
+    goldHauls: 0,
+    downpoursWon: 0,
+    frenzies: 0,
+    royalExpresses: 0,
   };
 }
 
 export function defaultSettings(): Settings {
-  return { sound: true, volume: 0.4, reducedMotion: false, noShake: false, trainToasts: true, sciNotation: false };
+  return {
+    sound: true,
+    volume: 0.4,
+    reducedMotion: false,
+    noShake: false,
+    trainToasts: true,
+    sciNotation: false,
+    hints: true,
+    ambience: 0.5,
+    textScale: 1,
+    reducedMotionFromOS: false,
+  };
 }
 
 export function defaultMeta(): Meta {
@@ -69,6 +90,16 @@ export function defaultMeta(): Meta {
     lifetime: { ...zeroStats(), playSeconds: 0, coinsEver: 0 },
     seenEvents: [],
     expressKept: 0,
+    edictRank: {},
+    seal: null,
+    sealsOwned: [],
+    coronations: 0,
+    carLog: {},
+    cheeseCars: 0,
+    variantLog: {},
+    seenLines: {},
+    history: [],
+    records: {},
   };
 }
 
@@ -89,6 +120,7 @@ function freshTimers(): Timers {
     whistleUsedFor: -1,
     toastFor: -1,
     nextGeneration: 180,
+    filler: 150,
   };
 }
 
@@ -147,28 +179,54 @@ export function newRun(meta: Meta, settings: Settings, seed: number, now: number
     generation: 1,
     meta,
     settings,
+    scouted: {},
+    newsRecent: [],
+    commissions: null,
+    charters: 0,
+    recentLines: {},
+    coronatedAt: -1,
   };
 
   const e = meta.edicts;
-  if (e.royal_litter) {
-    s.rats = 10;
-    s.jobs.forager = 10;
-    s.buildings.nest = 5;
-    s.flags.vagrants = true;
-    s.res.crumbs = 50;
-    s.resEver.crumbs = 50;
-  }
-  if (e.rat_memory) for (const u of RAT_MEMORY_UPGRADES) s.upgrades[u] = true;
+  applyRoyalLitter(s);
+  if (e.rat_memory) for (const u of ratMemoryUpgrades(edictRank(s, "rat_memory"))) s.upgrades[u] = true;
   if (e.inherited_foreman) for (const u of FOREMAN_UPGRADES) s.upgrades[u] = true;
   if (e.old_tunnels) {
     s.zones.sewers = true;
     s.zoneOpenedAt.sewers = 0;
     s.timers.capsule = 300;
     s.timers.downpour = 480; // same as onZoneOpen("sewers"): the downpour would otherwise never be scheduled
+    // rank II: the Cellars too (the same timers as onZoneOpen("cellars"), without its random market roll)
+    if (edictRank(s, "old_tunnels") >= 2) {
+      s.zones.cellars = true;
+      s.zoneOpenedAt.cellars = 0;
+      s.timers.catForcedAt = 420;
+      s.timers.cat = 60;
+      s.timers.market = 540;
+    }
   }
   if (e.express_blueprints) s.express.stage = Math.min(KEPT_STAGES_MAX, meta.expressKept);
-  s.news.push({ t: 0, text: meta.migrations > 0 ? "Колония обустраивается на новом месте. Наверху снова 05:00" : "Вожак выбрался к решётке стока. Колония из одной крысы объявлена открытой" });
+  const start = meta.migrations > 0 ? HEADLINES.restart[0].replace("{loc}", districtLoc(meta.district)).replace("{weekday}", WEEKDAYS_FULL[meta.migrations % 7]) : HEADLINES.start[0];
+  s.news.push({ t: 0, text: start });
   return s;
+}
+
+/** Royal litter (EN-9 ranks): the run starts with 10/25/60 rats, 5/10/20 nests and 50/500/5000 🍞. Never takes anything away. */
+export function applyRoyalLitter(s: GameState): void {
+  const r = edictRank(s, "royal_litter");
+  if (r <= 0) return;
+  const rats = byRank(s, "royal_litter", RANKED.royal_litter.rats, 0);
+  const crumbs = byRank(s, "royal_litter", RANKED.royal_litter.crumbs, 0);
+  if (s.rats < rats) {
+    s.jobs.forager += rats - s.rats;
+    s.rats = rats;
+  }
+  s.buildings.nest = Math.max(s.buildings.nest, byRank(s, "royal_litter", RANKED.royal_litter.nests, 0));
+  s.flags.vagrants = true;
+  if (s.res.crumbs < crumbs) {
+    s.resEver.crumbs += crumbs - s.res.crumbs;
+    s.res.crumbs = crumbs;
+  }
 }
 
 export function createInitialState(seed: number, now: number): GameState {

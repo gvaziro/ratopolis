@@ -5,9 +5,10 @@
  * Spec: docs/GDD.md 15.14.
  */
 import { BUILDINGS } from "../src/game/data/buildings";
-import { CREW_POSITIONS, TRAIN_CARS } from "../src/game/data/events";
+import { CREW_POSITIONS, METRO_BASE_CARS, TRAIN_CARS } from "../src/game/data/events";
 import { CONVERTERS, JOBS } from "../src/game/data/jobs";
-import { EDICTS, EXPRESS_BASE } from "../src/game/data/meta";
+import { EDICTS, EXPRESS_BASE, SEALS } from "../src/game/data/meta";
+import { edictRank } from "../src/game/engine/ranks";
 import { RESOURCES } from "../src/game/data/resources";
 import { UPGRADES } from "../src/game/data/upgrades";
 import { ZONES, ZONE_ORDER } from "../src/game/data/zones";
@@ -15,7 +16,10 @@ import {
   assignJob,
   buildingVisible,
   buyBuilding,
+  acceptCommission,
   buyEdict,
+  buyEdictRank,
+  buySeal,
   buyUpgrade,
   click,
   contributeExpedition,
@@ -30,7 +34,7 @@ import {
 } from "../src/game/engine/actions";
 import { check } from "../src/game/engine/conditions";
 import { derive, eventValue, resMult, stunnedRats, type Derived } from "../src/game/engine/derive";
-import { clickPurse, clickShiny, isTrainScene, marketDeal, sceneAction, trainActive } from "../src/game/engine/events";
+import { clickPurse, clickShiny, isTrainScene, marketDeal, sceneAction, trainActive, trainDropRes } from "../src/game/engine/events";
 import {
   buildingCost,
   canAfford,
@@ -49,10 +53,12 @@ import {
   JOB_IDS,
   RES_IDS,
   UPGRADE_IDS,
+  type AchievementId,
   type Amounts,
   type BuildingId,
   type Cond,
   type CatchResult,
+  type CommissionId,
   type EdictId,
   type EngineCtx,
   type GameState,
@@ -60,6 +66,7 @@ import {
   type ResId,
   type ResMap,
   type SceneEventId,
+  type TrainVariantId,
   type UpgradeId,
   type ZoneId,
 } from "../src/game/types";
@@ -202,13 +209,15 @@ const AVG_CAR_WEIGHT: [keyof typeof TRAIN_CARS, number][] = [
   ["baggage", 15],
 ];
 
-/** Expected loot of one car, per resource, added to `out` × scale. */
+/** Expected loot of one car, per resource, added to `out` × scale (drops of unrevealed resources swap exactly like fillCar). */
 function carLoot(s: GameState, d: Derived, kind: keyof typeof TRAIN_CARS, scale: number, out: ResMap, opts: { drops?: Partial<Record<ResId, number>>; mult?: number; pieces?: number } = {}): void {
   const def = TRAIN_CARS[kind];
   const lucky = s.meta.edicts.lucky_tail ? 2 : 1;
-  for (const [r, p] of Object.entries(opts.drops ?? def.drops) as [ResId, number][]) {
+  const total = Object.values(opts.drops ?? def.drops).reduce((a, p) => a + (p ?? 0), 0) || 1;
+  for (const [r0, p] of Object.entries(opts.drops ?? def.drops) as [ResId, number][]) {
+    const r = trainDropRes(s, r0);
     const per = r === "trinkets" ? (opts.pieces ?? 1) * lucky : def.S * eventValue(s, d, r) * (opts.mult ?? 1);
-    out[r] += p * def.items * per * scale;
+    out[r] += (p / total) * def.items * per * scale;
   }
 }
 
@@ -222,14 +231,23 @@ export function eventRates(s: GameState, d: Derived, active: boolean): ResMap {
   }
   const trainA = Math.min(0.9, (d.trainAutoBase + (active ? 0.15 : 0)) * CREW_POSITIONS.rails.auto);
   if (trainActive(s, "metro_train")) {
-    const cars = Math.min(11, 3 + d.trainExtraCars);
+    const cars = Math.min(11, METRO_BASE_CARS + d.trainExtraCars);
     const k = collect(trainA) / d.intervals.metro;
     const m = { mult: d.trainValueMult };
     carLoot(s, d, "engine", k, out, m);
     carLoot(s, d, "tender", 0.7 * k, out, m);
     const tw = AVG_CAR_WEIGHT.reduce((acc, [, x]) => acc + x, 0);
+    // expected random cars: cars − 1 without the tender (30%), cars − 2 with it (70%)
     for (const [kind, x] of AVG_CAR_WEIGHT) carLoot(s, d, kind, (Math.max(0, cars - 1.7) * x * k) / tw, out, m);
-    if (active && s.upgrades.grappling_hook) out.trinkets += (0.6 * 2) / d.intervals.metro;
+    if (s.upgrades.grappling_hook) {
+      // the hook turns the last random car into a baggage car when the train has no 1st-class/baggage car
+      const none = 0.3 * Math.pow(0.7, Math.max(0, cars - 1)) + 0.7 * Math.pow(0.7, Math.max(0, cars - 2));
+      carLoot(s, d, "baggage", none * k, out, m);
+      const plain = AVG_CAR_WEIGHT.filter(([kind]) => kind !== "first" && kind !== "baggage");
+      const pw = plain.reduce((acc, [, x]) => acc + x, 0);
+      for (const [kind, x] of plain) carLoot(s, d, kind, (-none * x * k) / pw, out, m);
+      if (active) out.trinkets += (0.6 * 2) / d.intervals.metro;
+    }
   }
   if (trainActive(s, "royal_express")) {
     const k = collect(trainA) / d.intervals.express;
@@ -463,6 +481,9 @@ interface Candidate {
   rates2: ResMap;
 }
 
+/** Commissions in the order the active bot can finish them (EN-12). */
+const COMMISSION_PREF: CommissionId[] = ["three_gold", "purse_season", "royal_mail", "whiskers_twice", "dry_paws2", "pipe_splinters", "replenish", "bullseye", "lamplighter", "quick_hand", "frenzy5", "wagon"];
+
 /** Priority order for edicts (cheap first, per GDD 15.14). */
 export const EDICT_PLAN: EdictId[] = [
   "royal_litter",
@@ -529,6 +550,7 @@ export class Bot {
     if (this.kind === "active") {
       this.handleScene(s, d, ctx);
       this.handleBackground(s, d, ctx);
+      this.handleCommissions(s, ctx);
     }
     const interval = this.kind === "active" ? 5 : 60;
     if (s.time >= this.nextDecision) {
@@ -584,7 +606,7 @@ export class Bot {
         break;
       case "piles":
         if (dt >= Math.min(6, (sc.phaseEnds - sc.phaseStart) * 0.4)) {
-          const f = Math.min(1, sc.auto + 0.1);
+          const f = Math.min(1, sc.auto + 0.15); // EN-5: the lineman leaves a good player about +15%
           sceneAction(s, d, { a: "piles", fractions: sc.piles.map(() => f) }, ctx);
         }
         break;
@@ -839,6 +861,11 @@ export class Bot {
 
   private note(s: GameState): void {
     this.stats.purchases++;
+    this.goal(s);
+  }
+
+  /** A scouting payout (EN-4) is a beat too: it counts as a new goal for the "ожидание новой цели" metric. */
+  noteScout(s: GameState): void {
     this.goal(s);
   }
 
@@ -1140,18 +1167,51 @@ export class Bot {
     if (!canMigrate(s) || s.coronatedThisRun) return false;
     const crowns = crownsForRun(s);
     const min = s.time / 60;
-    if (run === 1) return (min >= 72 && crowns >= 20) || min >= 82 || crowns >= 28;
+    // a train haul can add 5–6 crowns at once near the end of run 1: a player with 24 already moves on
+    if (run === 1) return (min >= 72 && crowns >= 20) || min >= 82 || crowns >= 24;
     if (run === 2) return min >= 85 && s.express.stage < 6;
     return false;
   }
 
-  buyEdicts(s: GameState, ctx: EngineCtx): EdictId[] {
-    const out: EdictId[] = [];
+  /**
+   * EN-9 spending plan: unsigned base edicts (EDICT_PLAN order, cheapest first), then the railway seal, then edict
+   * ranks II/III cheapest first. Returns what was bought ("railway" for the seal, "id:II"/"id:III" for ranks).
+   */
+  buyEdicts(s: GameState, ctx: EngineCtx): string[] {
+    const out: string[] = [];
     for (const e of EDICT_PLAN) {
       if (s.meta.edicts[e]) continue;
       if (s.meta.crowns >= EDICTS[e].cost && buyEdict(s, e, ctx)) out.push(e);
     }
+    if (EDICT_PLAN.every((e) => s.meta.edicts[e])) {
+      if (!s.meta.sealsOwned.includes("railway") && s.meta.crowns >= SEALS.railway.cost && buySeal(s, "railway", ctx)) out.push("railway");
+      if (s.meta.sealsOwned.includes("railway")) {
+        for (;;) {
+          let best: EdictId | null = null;
+          let bestCost = Infinity;
+          for (const e of EDICT_PLAN) {
+            const ranks = EDICTS[e].ranks;
+            const r = edictRank(s, e);
+            if (!ranks || r < 1 || r > ranks.length) continue;
+            if (ranks[r - 1].cost < bestCost) {
+              bestCost = ranks[r - 1].cost;
+              best = e;
+            }
+          }
+          if (!best || s.meta.crowns < bestCost || !buyEdictRank(s, best, ctx)) break;
+          out.push(`${best}:${edictRank(s, best) === 2 ? "II" : "III"}`);
+        }
+      }
+    }
     return out;
+  }
+
+  /** EN-12: take the King's commission the bot can actually finish (its preference order), one at a time. */
+  handleCommissions(s: GameState, ctx: EngineCtx): void {
+    const c = s.commissions;
+    if (!c || c.active) return;
+    const pick = COMMISSION_PREF.find((id) => c.offered.includes(id)) ?? c.offered[0];
+    if (pick) acceptCommission(s, pick, ctx);
   }
 }
 
@@ -1194,12 +1254,33 @@ export interface RunReport {
   maxStorageStallAt: number;
   maxGoalGap: number;
   maxGoalGapAt: number;
+  /** Longest stretch (s) at rats ≥ housing while housing is below the offered expedition's rat requirement (EN-2). */
+  maxHousingStall: number;
+  maxHousingStallAt: number;
+  /** The same, per expedition zone (the longest stretch while that zone was the one on the map). */
+  housingStallByZone: Partial<Record<ZoneId, number>>;
+  /** Scouting payouts (EN-4). */
+  scouts: number;
+  /** Lowest steam efficiency of the press/clocktower seen in the run (1 = never short of steam). */
+  minSteamEff: number;
+  /** Express stages kept from the previous run at the start (express_blueprints). */
+  expressKept: number;
   nonFinite: string[];
   buildingsSeen: BuildingId[];
   upgradesSeen: UpgradeId[];
   buildingLevels: Partial<Record<BuildingId, number>>;
   upgradesBought: number;
   scenes: Partial<Record<SceneEventId, number>>;
+  /** Metro train variants seen (EN-6) and Cheddar cars. */
+  variants: Partial<Record<TrainVariantId, number>>;
+  cheeseCars: number;
+  /** Medals awarded during the run (EN-11), in order. */
+  medals: AchievementId[];
+  /** Royal commissions finished after the coronation (EN-12). */
+  commissionsDone: number;
+  commissionLog: string[];
+  /** Crowns spent on edicts, ranks and seals right after this run's migration (filled by simulate). */
+  crownsSpent: number;
   migrated: boolean;
   final: GameState;
   offlineCheck?: OfflineCheck;
@@ -1226,6 +1307,8 @@ export interface SimOptions {
   offlineAtMinute?: number;
   /** Stop a run as soon as all zones are open + coronation (for tests) */
   stopAtCoronation?: boolean;
+  /** Minutes the last run keeps playing after its coronation (EN-12 commissions; default 0.5). */
+  postCoronationMinutes?: number;
   onProgress?: (msg: string) => void;
 }
 
@@ -1267,7 +1350,9 @@ export function simulate(opts: SimOptions): RunReport[] {
     const next = migrate(rep.final, 0, ctx);
     if (!next) break;
     s = next;
-    edictsBought = bot.buyEdicts(s, ctx);
+    const before = s.meta.crowns;
+    edictsBought = bot.buyEdicts(s, ctx) as EdictId[];
+    rep.crownsSpent = before - s.meta.crowns;
   }
   return reports;
 }
@@ -1296,12 +1381,24 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
     maxStorageStallAt: 0,
     maxGoalGap: 0,
     maxGoalGapAt: 0,
+    maxHousingStall: 0,
+    maxHousingStallAt: 0,
+    housingStallByZone: {},
+    scouts: 0,
+    minSteamEff: 1,
+    expressKept: s.express.stage,
     nonFinite: [],
     buildingsSeen: [],
     upgradesSeen: [],
     buildingLevels: {},
     upgradesBought: 0,
     scenes: {},
+    variants: {},
+    cheeseCars: 0,
+    medals: [],
+    commissionsDone: 0,
+    commissionLog: [],
+    crownsSpent: 0,
     migrated: false,
     final: s,
   };
@@ -1317,6 +1414,7 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
   let trainV = 0;
   let eventV = 0;
   let lastSec = -1;
+  let housingStall = 0;
   const ticks = Math.round(limit / TICK);
   for (let i = 0; i < ticks; i++) {
     const dStep = step(s, TICK, { active: bot.isActive(s) }, ctx);
@@ -1330,9 +1428,23 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
           trainC += fx.haul?.gained.coins ?? 0;
         }
         eventV += v;
-      } else if (fx.k === "drop" && fx.big) eventV += resValue({ [fx.res]: fx.amount });
+      } else if (fx.k === "sceneStart" && fx.id === "metro_train" && s.scene) {
+        const v = s.scene.variant ?? "normal";
+        rep.variants[v] = (rep.variants[v] ?? 0) + 1;
+        if (s.scene.announce) rep.cheeseCars++;
+      } else if (fx.k === "medal") rep.medals.push(fx.id);
+      else if (fx.k === "commission") {
+        if (fx.done) rep.commissionsDone++;
+        rep.commissionLog.push(`${fmtMin(s.time)} ${fx.done ? "✓" : "→"} ${fx.id}`);
+      }
+      else if (fx.k === "drop" && fx.big) eventV += resValue({ [fx.res]: fx.amount });
+      else if (fx.k === "scout") {
+        rep.scouts++;
+        bot.noteScout(s);
+      }
     }
     ctx.fx.length = 0;
+    if (dStep.steamNeed > 0 && s.steamEff < rep.minSteamEff) rep.minSteamEff = s.steamEff;
 
     const sec = Math.floor(s.time);
     if (sec === lastSec) continue;
@@ -1349,6 +1461,17 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
     if (rep.eRun1MAt === null && s.eRun >= 1e6) rep.eRun1MAt = s.time;
     while (rep.expressStageAt.length < s.express.stage) rep.expressStageAt.push(s.time);
     if (rep.coronationAt === null && s.coronatedThisRun) rep.coronationAt = s.time;
+    // housing dead zone: the colony is full, but too small for the expedition on the map
+    const exp = currentExpedition(s);
+    const needRats = exp && !s.digging ? (ZONES[exp].expedition?.rats ?? 0) : 0;
+    if (s.rats >= dStep.housing && dStep.housing < needRats) {
+      housingStall++;
+      if (exp && housingStall > (rep.housingStallByZone[exp] ?? 0)) rep.housingStallByZone[exp] = housingStall;
+      if (housingStall > rep.maxHousingStall) {
+        rep.maxHousingStall = housingStall;
+        rep.maxHousingStallAt = s.time;
+      }
+    } else housingStall = 0;
     if (sec % 10 === 0) {
       for (const id of BUILDING_IDS) if (buildingVisible(s, id)) seenB.add(id);
       for (const u of UPGRADE_IDS) if (upgradeVisible(s, u)) seenU.add(u);
@@ -1366,7 +1489,12 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
       rep.migrated = true;
       break;
     }
-    if (s.coronatedThisRun && run >= 2 && s.time - (rep.coronationAt ?? s.time) > 30) break;
+    const after = run < opts.runs ? 30 : (opts.postCoronationMinutes ?? 0.5) * 60;
+    if (s.coronatedThisRun && run >= 2 && s.time - (rep.coronationAt ?? s.time) > after) {
+      // after a later-run coronation the colony moves on (run 3 replays the express from the kept stages)
+      if (run < opts.runs) rep.migrated = true;
+      break;
+    }
   }
   rep.seconds = s.time;
   rep.crownsGained = crownsForRun(s);
@@ -1449,7 +1577,7 @@ export function fmtMin(sec: number | null | undefined): string {
 
 type Overrides = {
   buildings?: Record<string, { growth?: number; cost?: Amounts }>;
-  zones?: Record<string, { cost?: Amounts; rats?: number; mapRevealRats?: number }>;
+  zones?: Record<string, { cost?: Amounts; rats?: number; mapRevealRats?: number; housingBonus?: number }>;
   jobs?: Record<string, { produces?: Amounts; consumes?: Amounts; unlock?: Cond }>;
   upgrades?: Record<string, { cost?: Amounts }>;
   express?: Amounts;
@@ -1475,6 +1603,7 @@ export function applyOverrides(json: string | Overrides | undefined): void {
     if (v.cost) def.expedition.cost = v.cost;
     if (v.rats !== undefined) def.expedition.rats = v.rats;
     if (v.mapRevealRats !== undefined) def.mapRevealRats = v.mapRevealRats;
+    if (v.housingBonus !== undefined) def.housingBonus = v.housingBonus;
   }
   for (const [id, v] of Object.entries(o.jobs ?? {})) {
     const def = JOBS[id as JobId];

@@ -2,16 +2,22 @@
 
 /**
  * The `catch` primitive: a canvas of falling / flying / floating items (scene.items) that the player
- * taps or swipes. Combo, sparks, conductor's lantern, wire nets and the clockwork legion live here.
+ * taps or swipes. Combo, sparks, conductor's lantern, wire nets and the clockwork legion live here,
+ * plus (metro / express) the live rating gauge with its medal notches and the «Вагон чист!» beats.
+ * Keyboard: ←/→ walk a paw along the catch line, holding Space is a pointer held down at the paw.
  * Everything per-frame stays in closures and refs — no React state updates while it runs.
  */
 import { useEffect, useRef, type RefObject } from "react";
 import { sfx } from "@/audio/sfx";
+import { LANTERN_MULT, POSITION_FEEL, RATING_TABLE, TRAIN_VARIANTS } from "@/game/data/events";
 import { RESOURCES } from "@/game/data/resources";
-import { useGame } from "@/game/store";
+import { catchProgress } from "@/game/engine/events";
+import { sfxCue } from "@/game/fx";
+import { derivedOf, useGame } from "@/game/store";
 import type { CatchItem, CatchResult, ResId, Scene } from "@/game/types";
-import { fmt } from "@/lib/format";
+import { fmt, fmtPct } from "@/lib/format";
 import {
+  buzz,
   carLeft,
   carriageShadowX,
   clamp,
@@ -23,6 +29,8 @@ import {
   hash01,
   hexA,
   lerp,
+  noteKeyboard,
+  keyboardUsed,
   shake,
   trainGeom,
   type FallGeom,
@@ -52,10 +60,12 @@ export interface CatchControl {
   slowUntil: number;
   /** Set by the canvas while mounted. `norm` = coordinates are fractions of the canvas size. */
   burst: ((x: number, y: number, color: string, n: number, norm?: boolean) => void) | null;
+  /** While the hook's timing bar is up, Space throws the hook instead of closing the keyboard paw. */
+  hookOpen: boolean;
 }
 
 export function newCatchControl(): CatchControl {
-  return { hook: "none", slowUntil: 0, burst: null };
+  return { hook: "none", slowUntil: 0, burst: null, hookOpen: false };
 }
 
 /** Extra hooks for scenes that build on the primitive (trains, carriage). */
@@ -77,6 +87,21 @@ const MAX_PARTICLES = 140;
 const MAX_FLOATS = 40;
 const TAP_LIMIT = 15;
 const FADE = 0.35;
+/** Live rating gauge (css px, drawn under the 🐾 counter). */
+const GAUGE_W = 160;
+const GAUGE_H = 8;
+/** Keyboard paw: top speed (px/s), ease-in time to reach it, catch radius and how far up the paw reaches. */
+const PAW_SPEED = 900;
+const PAW_EASE = 0.15;
+const PAW_R = 40;
+const PAW_REACH = 46;
+/** Synthetic pointer id of the keyboard paw. */
+const KEY_ID = -7;
+/** Medal tiers of the gauge, lowest first (bronze 40%, silver 65%, gold 85%, royal 95%). */
+const TIERS = RATING_TABLE.filter((r) => r.min > 0)
+  .slice()
+  .sort((a, b) => a.min - b.min);
+const ROYAL = TIERS.findIndex((r) => r.id === "royal");
 
 interface Body {
   it: CatchItem;
@@ -92,6 +117,9 @@ interface Body {
   landed: boolean;
   inCone: boolean;
   r: number;
+  /** First ground contact happened (sparks: 'ties' grab check runs once, on that frame). */
+  touched: boolean;
+  justLanded: boolean;
 }
 
 interface Part {
@@ -114,6 +142,8 @@ interface FloatText {
   age: number;
   life: number;
   size: number;
+  /** How far it drifts up over its life (px). */
+  rise: number;
 }
 
 interface Ghost {
@@ -142,6 +172,8 @@ interface Track {
   downX: number;
   downY: number;
   trail: { x: number; y: number; at: number }[];
+  /** The keyboard paw also sweeps this many px straight up from its point. */
+  reach: number;
 }
 
 export default function CatchCanvas(props: CatchCanvasProps) {
@@ -180,6 +212,15 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
     const phaseStart = sc.phaseStart;
     const F = fonts();
     const partK = reduced ? 0.3 : 1;
+    // crew position feel (metro / express): hit radius, and at 'ties' sparks stick to a held paw on landing
+    const feel: { hitR: number; sparkGrabPx?: number } = mode === "train" && !capsule ? (POSITION_FEEL[sc.position] ?? POSITION_FEEL.rails) : POSITION_FEEL.rails;
+    const hitK = feel.hitR;
+    const grabPx = feel.sparkGrabPx ?? 0;
+    // the live rating only exists where the engine rates the haul (metro, express)
+    const gauge = mode === "train" && !capsule;
+    const lanternSusp = game0.zones.cellars ? 5 * (derivedOf(game0).suspicionMult ?? 1) : 0;
+    // SC-4: the train variant's physics — rail bounce, bobbing on the flood water, fluttering letters
+    const physics = mode === "train" && sc.variant ? TRAIN_VARIANTS[sc.variant].physics : "bounce";
 
     let W = 0;
     let H = 0;
@@ -188,16 +229,36 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
     let fg: FallGeom = fallGeom(1, 1);
     let t = Math.max(0, game0.time - phaseStart);
 
-    const bodies: Body[] = sc.items.map((it) => ({ it, st: 0, x: 0, y: 0, vx: 0, vy: 0, rot: 0, vr: 0, age: 0, bounces: 0, landed: false, inCone: false, r: 16 }));
+    const bodies: Body[] = sc.items.map((it) => ({ it, st: 0, x: 0, y: 0, vx: 0, vy: 0, rot: 0, vr: 0, age: 0, bounces: 0, landed: false, inCone: false, r: 16, touched: false, justLanded: false }));
     let remaining = bodies.length;
-    // items that already ended before we mounted (reload mid-phase) vanish silently
+    const caughtIds = new Set<number>();
+    const lostIds = new Set<number>();
+    // sparks the engine left out of this pass (item.skip, 'wall') never appear; items that already ended before we
+    // mounted (reload mid-phase) vanish silently and count as lost
     for (const b of bodies) {
-      if (b.it.t + life <= t) {
+      if (b.it.skip || b.it.t + life <= t) {
         b.st = 2;
         remaining--;
+        if (!b.it.skip && !b.it.spark) lostIds.add(b.it.id);
       }
     }
-    const totalCount = sc.items.filter((i) => !i.spark).length;
+    const totalCount = sc.items.filter((i) => !i.spark && !i.skip).length;
+
+    // live rating (SC-2): exactly the engine's weights, recomputed once per frame when something changed
+    let prog = catchProgress(sc, caughtIds, lostIds);
+    let progDirty = false;
+    let fill = 0;
+    const tierAt = TIERS.map(() => -1);
+    // tiers already out of reach at mount (reload mid-phase) start greyed, without a sound
+    const tierLostAt = TIERS.map((r): number => (prog.maxReachable < r.min - 1e-9 ? 0 : -1));
+    let crownCrossedAt = -1;
+    // per car: its real (non-spark) items, and whether «Вагон чист!» was already shown
+    const carItems = sc.cars.map((c) => {
+      const ids = new Set(c.itemIds);
+      return sc.items.filter((it) => ids.has(it.id) && !it.spark && !it.skip).map((it) => it.id);
+    });
+    const carClean = sc.cars.map(() => false);
+    let lanternTotal = 0;
 
     const caught: CatchResult["caught"] = [];
     const netted: number[] = [];
@@ -225,6 +286,9 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
     const pointers = new Map<number, Track>();
     const taps: number[] = [];
     let hover: { x: number; y: number } | null = null;
+    // keyboard paw: x along the catch line (set on the first layout), direction keys held, time on the current heading
+    const paw = { x: -1, dirL: false, dirR: false, heldFor: 0, dir: 0 };
+    let kbd = keyboardUsed();
 
     /* ---------------- sprites */
     const sprites = new Map<string, HTMLCanvasElement>();
@@ -332,9 +396,9 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       }
     }
 
-    function addFloat(text: string, x: number, y: number, color: string, size: number, lifeS = 0.75) {
+    function addFloat(text: string, x: number, y: number, color: string, size: number, lifeS = 0.75, rise = 42) {
       if (floats.length >= MAX_FLOATS) floats.shift();
-      floats.push({ text, x: clamp(x, 24, Math.max(24, W - 24)), y, color, age: 0, life: lifeS, size });
+      floats.push({ text, x: clamp(x, 24, Math.max(24, W - 24)), y, color, age: 0, life: lifeS, size, rise });
     }
 
     function banner(text: string, sub: string, color: string, lifeS = 1.6) {
@@ -415,8 +479,20 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
         return;
       }
       const floor = mode === "train" ? tg.railY : fg.floorY;
-      const gk = (mode === "train" ? 2.4 : 1.5) * H * Math.pow(2 / life, 2) * (b.it.spark ? 0.45 : 1);
-      if (mode === "fall" && !b.landed) b.vx += Math.sin(b.age * 4 + b.it.id) * W * 0.03 * dt;
+      const gk = (mode === "train" ? 2.4 : 1.5) * H * Math.pow(2 / life, 2) * (b.it.spark ? 0.45 : 1) * (physics === "flutter" && !b.it.spark ? 0.6 : 1);
+      if ((mode === "fall" || (physics === "flutter" && !b.it.spark)) && !b.landed) b.vx += Math.sin(b.age * 4 + b.it.id) * W * 0.03 * dt;
+      if (physics === "float" && b.landed && !b.it.spark) {
+        // flooded tracks: the item bobs on the water at the rail (6 px, 1.4 s) and drifts with the current
+        b.y = floor - b.r * 0.82 - 4 + Math.sin(((b.age + b.it.id * 0.37) * Math.PI * 2) / 1.4) * (reduced ? 0 : 6);
+        b.x += b.vx * dt;
+        b.vx *= Math.exp(-0.8 * dt);
+        b.rot = Math.sin(b.age * 2.1 + b.it.id) * 0.25;
+        if (b.x < b.r) {
+          b.x = b.r;
+          b.vx = Math.abs(b.vx) * 0.4;
+        }
+        return;
+      }
       b.vy += gk * dt;
       b.x += b.vx * dt;
       b.y += b.vy * dt;
@@ -424,6 +500,10 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       const ground = floor - b.r * 0.82;
       if (b.y >= ground) {
         b.y = ground;
+        if (!b.touched) {
+          b.touched = true;
+          b.justLanded = true;
+        }
         if (b.bounces < 1 && b.vy > H * 0.15) {
           b.vy = -b.vy * (mode === "train" ? 0.42 : 0.34);
           b.vx *= 0.85;
@@ -470,11 +550,21 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       combo = 0;
     }
 
+    const GAUGE_Y = 27;
+    /** A short note under the gauge's medal row (right-aligned to it, barely drifting, so it never covers the gauge). */
+    let noteUntil = -1;
+    function gaugeNote(text: string, color: string, lifeS: number) {
+      const half = Math.min(W / 2 - 12, text.length * 3.7);
+      addFloat(text, W - 12 - half, GAUGE_Y + 38, color, 12, lifeS, 6);
+      noteUntil = t + lifeS;
+    }
+
     function collect(b: Body) {
       b.st = 2;
       remaining--;
       if (b.it.spark) {
         sparksHit++;
+        buzz(40);
         if (mitts) {
           addFloat("🪨", b.x, b.y - 12, "#c9c9c9", 22);
           burst(b.x, b.y, "#b0b0b0", 7);
@@ -485,6 +575,11 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
           sfx.ouch();
           breakCombo();
           shake(3, 300);
+          // the engine never rates a pass royal after a bare-pawed spark: say so on the gauge right away
+          if (gauge && crownCrossedAt < 0) {
+            crownCrossedAt = t;
+            if (tierLostAt[ROYAL] < 0) gaugeNote("искра — короны не будет", "#ff8a6a", 1.8);
+          }
         }
         return;
       }
@@ -492,14 +587,21 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       maxCombo = Math.max(maxCombo, combo);
       comboAt = t;
       gotCount++;
+      caughtIds.add(b.it.id);
+      progDirty = true;
       const lantern = lanternOn && b.inCone;
       caught.push({ id: b.it.id, combo, lantern });
-      const v = b.it.value * (1 + 0.02 * Math.min(combo, 25)) * (lantern ? 1.5 : 1);
+      const v = b.it.value * (1 + 0.02 * Math.min(combo, 25)) * (lantern ? LANTERN_MULT : 1);
       const col = RESOURCES[b.it.res].color;
-      addFloat(`+${fmt(v)}${lantern ? " 👁" : ""}`, b.x, b.y - 16, col, combo >= 10 ? 20 : 17);
+      addFloat(`+${fmt(v)}${lantern ? " 🏮" : ""}`, b.x, b.y - 16, col, combo >= 10 ? 20 : 17);
+      if (lantern && lanternSusp > 0) {
+        lanternTotal += lanternSusp;
+        addFloat(`+${fmt(lanternSusp)} 👁`, b.x + 22, b.y - 40, "#c39bff", 14, 0.95);
+      }
       burst(b.x, b.y, col, 9);
       ghostOf(b, false);
       sfx.blip(combo);
+      buzz(8);
       propsRef.current.onCatch?.(combo);
       if (combo === 10 || combo === 25 || (combo > 25 && combo % 25 === 0)) {
         banner(`КОМБО ×${combo}!`, combo >= 25 ? "добыча +50% — предел!" : `добыча +${2 * combo}%`, combo >= 25 ? "#ff9a4a" : "#f5d76e", 1.3);
@@ -511,6 +613,8 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       b.st = 2;
       remaining--;
       if (b.it.spark) return;
+      lostIds.add(b.it.id);
+      progDirty = true;
       if (combo >= 3) addFloat(`×${combo} — сорвано`, b.x, b.y - 10, "#b9ab94", 13, 0.9);
       breakCombo();
       puff(b.x, b.y + b.r * 0.5, 2, "rgba(120,110,95,.5)");
@@ -525,6 +629,8 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       remaining--;
       gotCount++;
       netted.push(b.it.id);
+      caughtIds.add(b.it.id);
+      progDirty = true;
       const col = RESOURCES[b.it.res].color;
       addFloat(`+${fmt(b.it.value)} ${how === "net" ? "🕸" : "⚙"}`, b.x, b.y - 12, hexA(col, 0.9), 14);
       ghostOf(b, true);
@@ -532,6 +638,46 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
         if (how === "net") sfx.pop();
         else sfx.click();
         popCd = 0.08;
+      }
+    }
+
+    /** Medal tiers reached or gone for good (once each): banners and cues for the gauge. */
+    function rateBeats() {
+      let reached = -1;
+      let gone = false;
+      for (let k = 0; k < TIERS.length; k++) {
+        if (tierAt[k] < 0 && prog.share >= TIERS[k].min - 1e-9) {
+          tierAt[k] = t;
+          if (!(k === ROYAL && crownCrossedAt >= 0)) reached = k;
+        } else if (tierAt[k] < 0 && tierLostAt[k] < 0 && prog.maxReachable < TIERS[k].min - 1e-9) {
+          tierLostAt[k] = t;
+          gone = true;
+        }
+      }
+      if (reached >= 0) {
+        const row = TIERS[reached];
+        if (row.bonus > 0) {
+          banner(`${row.icon} ${row.name}!`, `добыча +${fmtPct(row.bonus)}`, row.id === "royal" ? "#ffd86b" : "#f5d76e", 1.5);
+          sfxCue("medalTier");
+        } else {
+          // bronze adds no bonus: a quiet note by the gauge instead of a banner
+          gaugeNote(`${row.icon} ${row.name} — рейтинг есть`, "#e0b07a", 1.3);
+          sfxCue("medalTier", { intensity: 0.5 });
+        }
+      }
+      if (gone) sfxCue("tierLost");
+    }
+
+    /** «Вагон чист!» once per car whose every real item has been caught (by paw, net or clockwork). */
+    function carBeats() {
+      for (let k = 0; k < carItems.length; k++) {
+        if (carClean[k] || carItems[k].length === 0 || !carItems[k].every((id) => caughtIds.has(id))) continue;
+        carClean[k] = true;
+        const x = clamp(carLeft(tg, k, t, perCar) + tg.carLen / 2, 70, Math.max(70, W - 70));
+        const y = capsule ? (tg.tubeTop + tg.tubeBot) / 2 : tg.underY * 0.62;
+        addFloat(capsule ? "Капсула пуста!" : "Вагон чист!", x, y, "#a5e88f", W < 520 ? 18 : 22, 1.4);
+        if (!reduced) burst(x, y, "#c9f2a0", 14);
+        sfxCue("carClear");
       }
     }
 
@@ -551,51 +697,72 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       for (const h of hits) collect(h.b);
     }
 
-    const hitR = (type: string) => (type === "touch" ? 40 : 28);
+    // the crew position scales every paw (POSITION_FEEL.hitR: 'ties' 1.3×, 'wall' 0.85×)
+    const hitR = (type: string) => (type === "touch" ? 40 : type === "key" ? PAW_R : 28) * hitK;
 
-    /* ---------------- pointer input */
+    /** Sweep a paw from one point to the next (the keyboard paw also reaches straight up). */
+    function sweep(tr: Track, x0: number, y0: number, x1: number, y1: number) {
+      const R = hitR(tr.type);
+      tryCollect(x0, y0, x1, y1, R);
+      if (tr.reach > 0) tryCollect(x1, y1 - tr.reach, x1, y1, R);
+    }
+
+    /* ---------------- pointer input (real pointers and the keyboard paw share these) */
     const toLocal = (r: DOMRect, cx: number, cy: number) => ({
       x: (cx - r.left) * (r.width > 0 ? W / r.width : 1),
       y: (cy - r.top) * (r.height > 0 ? H / r.height : 1),
     });
 
-    const onDown = (e: PointerEvent) => {
-      if (e.pointerType === "mouse" && e.button !== 0) return;
-      e.preventDefault();
-      try {
-        canvas.setPointerCapture(e.pointerId);
-      } catch {
-        /* not capturable */
-      }
-      const r = canvas.getBoundingClientRect();
-      const p = toLocal(r, e.clientX, e.clientY);
+    function pointerDown(id: number, type: string, x: number, y: number) {
+      if (finished) return;
       const now = performance.now();
       while (taps.length && now - taps[0] > 1000) taps.shift();
       const allowed = taps.length < TAP_LIMIT;
       if (allowed) taps.push(now);
-      pointers.set(e.pointerId, { x: p.x, y: p.y, type: e.pointerType, armed: allowed, downX: p.x, downY: p.y, trail: [{ x: p.x, y: p.y, at: now }] });
-      if (allowed) tryCollect(p.x, p.y, p.x, p.y, hitR(e.pointerType));
-    };
+      const tr: Track = { x, y, type, armed: allowed, downX: x, downY: y, trail: [{ x, y, at: now }], reach: type === "key" ? PAW_REACH : 0 };
+      pointers.set(id, tr);
+      if (allowed) sweep(tr, x, y, x, y);
+    }
 
-    const onMove = (e: PointerEvent) => {
-      const r = canvas.getBoundingClientRect();
-      const tr = pointers.get(e.pointerId);
-      if (!tr) {
-        if (e.pointerType === "mouse") hover = toLocal(r, e.clientX, e.clientY);
-        return;
-      }
-      const evs = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [];
-      const list = evs.length ? evs : [e];
+    function pointerMove(id: number, pts: { x: number; y: number }[]) {
+      const tr = pointers.get(id);
+      if (!tr) return;
       const now = performance.now();
-      for (const ev of list) {
-        const p = toLocal(r, ev.clientX, ev.clientY);
+      for (const p of pts) {
         if (!tr.armed && Math.hypot(p.x - tr.downX, p.y - tr.downY) > 6) tr.armed = true;
-        if (tr.armed) tryCollect(tr.x, tr.y, p.x, p.y, hitR(tr.type));
+        if (tr.armed && !finished) sweep(tr, tr.x, tr.y, p.x, p.y);
         tr.x = p.x;
         tr.y = p.y;
         tr.trail.push({ x: p.x, y: p.y, at: now });
       }
       if (tr.trail.length > 28) tr.trail.splice(0, tr.trail.length - 28);
+    }
+
+    const onDown = (e: PointerEvent) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      e.preventDefault();
+      kbd = false;
+      noteKeyboard(false);
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch {
+        /* not capturable */
+      }
+      const p = toLocal(canvas.getBoundingClientRect(), e.clientX, e.clientY);
+      pointerDown(e.pointerId, e.pointerType, p.x, p.y);
+    };
+
+    const onMove = (e: PointerEvent) => {
+      const r = canvas.getBoundingClientRect();
+      if (!pointers.has(e.pointerId)) {
+        if (e.pointerType === "mouse") hover = toLocal(r, e.clientX, e.clientY);
+        return;
+      }
+      const evs = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [];
+      pointerMove(
+        e.pointerId,
+        (evs.length ? evs : [e]).map((ev) => toLocal(r, ev.clientX, ev.clientY)),
+      );
     };
 
     const onUp = (e: PointerEvent) => {
@@ -605,7 +772,43 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       if (e.pointerType === "mouse") hover = null;
     };
     const onCtx = (e: Event) => e.preventDefault();
-    const onBlur = () => pointers.clear();
+    const onBlur = () => {
+      pointers.clear();
+      paw.dirL = paw.dirR = false;
+    };
+
+    /** The paw sits on the line where the loot comes to rest. */
+    const pawY = () => (mode === "train" ? tg.railY - itemSize() * 0.45 : mode === "fall" ? fg.floorY - itemSize() * 0.45 : floatGeom(W, H).waterY);
+
+    const typing = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (finished || typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+      const space = e.code === "Space" || e.key === " ";
+      // while the hook's timing bar is up, Space is the throw (TimingBar listens on window, after us)
+      if (space && ctl()?.hookOpen) return;
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        if (e.key === "ArrowLeft") paw.dirL = true;
+        else paw.dirR = true;
+      } else if (space) {
+        e.preventDefault();
+        if (!e.repeat && !pointers.has(KEY_ID)) pointerDown(KEY_ID, "key", paw.x, pawY());
+      } else return;
+      kbd = true;
+      noteKeyboard(true);
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === "ArrowLeft") paw.dirL = false;
+      else if (e.key === "ArrowRight") paw.dirR = false;
+      else if (e.code === "Space" || e.key === " ") {
+        if (!pointers.has(KEY_ID)) return;
+        pointers.delete(KEY_ID);
+      } else return;
+      e.preventDefault();
+    };
 
     canvas.addEventListener("pointerdown", onDown);
     canvas.addEventListener("pointermove", onMove);
@@ -615,6 +818,8 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
     canvas.addEventListener("pointerleave", onLeave);
     canvas.addEventListener("contextmenu", onCtx);
     window.addEventListener("blur", onBlur);
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keyup", onKeyUp);
 
     /* ---------------- sizing */
     function resize() {
@@ -628,7 +833,9 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
           b.x *= kx;
           b.y *= ky;
         }
+        paw.x *= kx;
       }
+      if (paw.x < 0) paw.x = w / 2;
       if (nd !== dpr) sprites.clear();
       W = w;
       H = h;
@@ -657,6 +864,20 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
         }
       }
 
+      // keyboard paw: ease into PAW_SPEED over PAW_EASE s, then glide (a held Space sweeps along the way)
+      const dir = (paw.dirR ? 1 : 0) - (paw.dirL ? 1 : 0);
+      if (dir !== paw.dir) {
+        paw.dir = dir;
+        paw.heldFor = 0;
+      }
+      if (dir !== 0) {
+        paw.heldFor += dt;
+        const k = clamp(paw.heldFor / PAW_EASE);
+        const nx = clamp(paw.x + dir * PAW_SPEED * k * k * dt, 16, Math.max(16, W - 16));
+        if (pointers.has(KEY_ID)) pointerMove(KEY_ID, [{ x: nx, y: pawY() }]);
+        paw.x = nx;
+      }
+
       const steps = dt > 1 / 45 ? Math.ceil(dt / (1 / 60)) : 1;
       const sdt = dt / steps;
       const c = cone();
@@ -665,6 +886,18 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
         if (b.st !== 1) continue;
         for (let k = 0; k < steps; k++) stepBody(b, sdt);
         b.inCone = !!c && !b.it.spark && insideCone(c, b.x, b.y);
+        // 'ties': a spark that lands next to a held paw sticks to it
+        if (b.justLanded) {
+          b.justLanded = false;
+          if (grabPx > 0 && b.it.spark) {
+            let grabbed = false;
+            for (const tr of pointers.values()) if (tr.armed && Math.hypot(tr.x - b.x, tr.y - b.y) <= grabPx) grabbed = true;
+            if (grabbed) {
+              collect(b);
+              continue;
+            }
+          }
+        }
         // nets catch at most one item per car in their third
         if (nets.length && !b.it.spark && b.vy > 0 && b.y >= netY) {
           const sec = clamp(Math.floor(b.x / (W / 3)), 0, 2);
@@ -679,7 +912,7 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       }
 
       // held pointers keep catching what falls into them
-      for (const tr of pointers.values()) if (tr.armed) tryCollect(tr.x, tr.y, tr.x, tr.y, hitR(tr.type));
+      for (const tr of pointers.values()) if (tr.armed) sweep(tr, tr.x, tr.y, tr.x, tr.y);
 
       // clockwork legion: one item every 0.5 s (the most endangered one)
       if (legion) {
@@ -698,8 +931,17 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
 
       if (c && !lanternAnnounced) {
         lanternAnnounced = true;
-        banner("🏮 Фонарь кондуктора!", "в луче ×1.5, но люди заметят 👁", "#ffd56b", 2.2);
+        banner("🏮 Фонарь кондуктора!", lanternSusp > 0 ? `в луче ×${fmt(LANTERN_MULT)}, но каждая находка +${fmt(lanternSusp)} 👁` : `в луче ×${fmt(LANTERN_MULT)}`, "#ffd56b", 2.2);
       }
+
+      if (progDirty) {
+        progDirty = false;
+        prog = catchProgress(sc, caughtIds, lostIds);
+        if (gauge) rateBeats();
+        if (mode === "train") carBeats();
+      }
+      // the gauge fill chases the real share (instantly for reduced motion)
+      fill = reduced ? prog.share : fill + (prog.share - fill) * Math.min(1, dt * 10);
 
       // particles & texts
       for (let i = parts.length - 1; i >= 0; i--) {
@@ -740,7 +982,14 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       if (!finished && doneAt < 0 && remaining <= 0) doneAt = t + 0.45;
       if (!finished && doneAt >= 0 && t >= doneAt) {
         finished = true;
-        propsRef.current.onDone({ caught, netted, sparksHit, hook: ctl()?.hook ?? "none", maxCombo });
+        pointers.clear();
+        const result: CatchResult = { caught, netted, sparksHit, hook: ctl()?.hook ?? "none", maxCombo };
+        if (gauge) result.cleanCars = carClean.filter(Boolean).length;
+        propsRef.current.onDone(result);
+        if (gauge && process.env.NODE_ENV !== "production") {
+          // the engine resolves the catch synchronously: its share is in the store by now
+          console.debug("[catch] gauge share", prog.share.toFixed(4), "fill", fill.toFixed(4), "engine share", useGame.getState().game.scene?.share?.toFixed(4));
+        }
       }
     }
 
@@ -767,8 +1016,50 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       g.restore();
       const ly = 14;
       const lx = lerp(c.ax, c.bx, clamp((ly - c.top) / (c.bot - c.top)));
+      const swing = Math.sin(t * 5) * 2;
       g.globalAlpha = c.a;
-      g.drawImage(emojiSprite("🏮", 22), lx - 15, ly - 15 + Math.sin(t * 5) * 2, 30.8, 30.8);
+      // SC-5: the lantern hangs from a conductor's navy sleeve reaching down from the top edge
+      g.save();
+      g.lineCap = "round";
+      g.strokeStyle = "#1f2a44";
+      g.lineWidth = 16;
+      g.beginPath();
+      g.moveTo(lx + 26, -10);
+      g.quadraticCurveTo(lx + 14, ly - 18, lx + 3, ly - 6 + swing);
+      g.stroke();
+      g.strokeStyle = "rgba(120,140,190,.35)";
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(lx + 31, -8);
+      g.quadraticCurveTo(lx + 19, ly - 18, lx + 8, ly - 7 + swing);
+      g.stroke();
+      g.fillStyle = "#d4af37";
+      for (const k of [0.25, 0.55]) {
+        g.beginPath();
+        g.arc(lx + 26 - 20 * k, -10 + (ly + 4) * k + swing * k, 2.2, 0, Math.PI * 2);
+        g.fill();
+      }
+      g.fillStyle = "#f4efe4";
+      g.beginPath();
+      g.ellipse(lx + 1, ly - 7 + swing, 7, 5.5, -0.5, 0, Math.PI * 2);
+      g.fill();
+      g.restore();
+      g.drawImage(emojiSprite("🏮", 22), lx - 15, ly - 15 + 8 + swing, 30.8, 30.8);
+      // what the light has cost so far this pass
+      if (lanternSusp > 0) {
+        const txt = `👁 +${fmt(lanternTotal)}`;
+        g.font = `700 ${W < 520 ? 11 : 12}px ${F.mono}`;
+        g.textBaseline = "middle";
+        const right = lx + 18 + g.measureText(txt).width > W - GAUGE_W - 24;
+        g.textAlign = right ? "right" : "left";
+        const tx = right ? lx - 18 : lx + 18;
+        g.lineWidth = 3;
+        g.lineJoin = "round";
+        g.strokeStyle = "rgba(12,9,6,.85)";
+        g.strokeText(txt, tx, ly + 2);
+        g.fillStyle = "#c39bff";
+        g.fillText(txt, tx, ly + 2);
+      }
       g.globalAlpha = 1;
     }
 
@@ -945,15 +1236,47 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
         g.fill();
       }
       g.restore();
-      if (hover && pointers.size === 0) {
+      if (hover && pointers.size === 0 && !kbd) {
         g.strokeStyle = "rgba(232,201,131,.35)";
         g.lineWidth = 1.5;
         g.setLineDash([4, 5]);
         g.beginPath();
-        g.arc(hover.x, hover.y, 28, 0, Math.PI * 2);
+        g.arc(hover.x, hover.y, hitR("mouse"), 0, Math.PI * 2);
         g.stroke();
         g.setLineDash([]);
       }
+    }
+
+    /** The keyboard paw: a highlighted spot on the catch line, a column of light while Space is held. */
+    function drawPaw(g: CanvasRenderingContext2D) {
+      if (!kbd || finished) return;
+      const held = pointers.has(KEY_ID);
+      const y = pawY();
+      const R = hitR("key");
+      g.save();
+      g.globalCompositeOperation = "lighter";
+      if (held) {
+        const col = g.createLinearGradient(0, y - PAW_REACH - R, 0, y);
+        col.addColorStop(0, "rgba(255,226,150,0)");
+        col.addColorStop(1, "rgba(255,226,150,.26)");
+        g.fillStyle = col;
+        g.fillRect(paw.x - R * 0.8, y - PAW_REACH - R, R * 1.6, PAW_REACH + R);
+      }
+      const gr = g.createRadialGradient(paw.x, y, 0, paw.x, y, R);
+      gr.addColorStop(0, `rgba(255,230,160,${held ? 0.42 : 0.2})`);
+      gr.addColorStop(1, "rgba(255,230,160,0)");
+      g.fillStyle = gr;
+      g.beginPath();
+      g.arc(paw.x, y, R, 0, Math.PI * 2);
+      g.fill();
+      g.restore();
+      g.strokeStyle = held ? "rgba(255,236,170,.9)" : "rgba(232,201,131,.55)";
+      g.lineWidth = held ? 2.5 : 1.5;
+      g.beginPath();
+      g.arc(paw.x, y, R * (held ? 0.92 : 1), 0, Math.PI * 2);
+      g.stroke();
+      const s = held ? 30 : 26;
+      g.drawImage(emojiSprite("🐾", 22), paw.x - s / 2, y - s / 2 - (held ? 3 : 0), s, s);
     }
 
     function drawFloats(g: CanvasRenderingContext2D) {
@@ -965,7 +1288,7 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
         const pop = 1 + 0.35 * Math.exp(-14 * f.age);
         g.globalAlpha = 1 - k * k;
         g.font = `700 ${Math.round(f.size * pop)}px ${F.mono}`;
-        const y = f.y - 42 * (1 - Math.pow(1 - k, 3));
+        const y = f.y - f.rise * (1 - Math.pow(1 - k, 3));
         g.lineWidth = 3.5;
         g.strokeStyle = "rgba(12,9,6,.85)";
         g.strokeText(f.text, f.x, y);
@@ -988,8 +1311,9 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       g.strokeText(cnt, W - 12, 16);
       g.fillStyle = "#eadcc0";
       g.fillText(cnt, W - 12, 16);
+      if (gauge) drawGauge(g);
 
-      // combo counter
+      // combo counter (below the gauge when there is one)
       const showBroken = combo < 2 && brokenCombo >= 3 && t - brokenAt < 0.7;
       if (combo >= 2 || showBroken) {
         const val = combo >= 2 ? combo : brokenCombo;
@@ -997,7 +1321,7 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
         const base = (small ? 28 : 34) + Math.min(val, 25) * (small ? 0.6 : 0.9);
         const sc2 = reduced ? 1 : combo >= 2 ? 1 + 0.45 * Math.exp(-9 * tau) * Math.cos(tau * 24) : 1 - 0.3 * clamp(tau / 0.7);
         const x = W - 14;
-        const y = (small ? 30 : 34) + base * 0.55;
+        const y = (small ? 30 : 34) + (gauge ? (t < noteUntil ? 44 : 26) : 0) + base * 0.55;
         g.save();
         g.translate(x, y);
         g.rotate(-0.06);
@@ -1068,6 +1392,102 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
         g.fillStyle = "#c9a25a";
         g.fillText(txt, 10, H - 12);
       }
+
+      // keyboard hint while the keyboard is the last thing the player touched
+      if (kbd && !finished) {
+        g.textAlign = "right";
+        g.font = `600 ${small ? 10 : 11}px ${F.mono}`;
+        const txt = "⌨ ←→ и пробел";
+        g.lineWidth = 3;
+        g.strokeStyle = "rgba(12,9,6,.8)";
+        g.strokeText(txt, W - 12, H - 12);
+        g.fillStyle = "#e8c983";
+        g.fillText(txt, W - 12, H - 12);
+      }
+    }
+
+    /**
+     * Live rating gauge under the 🐾 counter: the fill is the caught share, the red tail from the right is what can
+     * no longer be caught, notches at the medal thresholds (lit when reached, greyed when out of reach, 👑 crossed
+     * out after a bare-pawed spark).
+     */
+    function drawGauge(g: CanvasRenderingContext2D) {
+      const x1 = W - 12;
+      const x0 = x1 - GAUGE_W;
+      const y = GAUGE_Y;
+      g.save();
+      // case
+      g.fillStyle = "rgba(12,9,6,.78)";
+      g.beginPath();
+      g.roundRect(x0 - 2, y - 2, GAUGE_W + 4, GAUGE_H + 4, 5);
+      g.fill();
+      g.strokeStyle = "#7d5f2c";
+      g.lineWidth = 1.5;
+      g.stroke();
+      g.beginPath();
+      g.roundRect(x0, y, GAUGE_W, GAUGE_H, 3);
+      g.clip();
+      g.fillStyle = "#211a14";
+      g.fillRect(x0, y, GAUGE_W, GAUGE_H);
+      // fill = caught share
+      const fw = GAUGE_W * clamp(fill);
+      if (fw > 0) {
+        const gr = g.createLinearGradient(x0, 0, x0 + GAUGE_W, 0);
+        gr.addColorStop(0, "#8a5a1e");
+        gr.addColorStop(0.6, "#e0a93e");
+        gr.addColorStop(1, "#fff0b0");
+        g.fillStyle = gr;
+        g.fillRect(x0, y, fw, GAUGE_H);
+        g.fillStyle = "rgba(255,255,255,.25)";
+        g.fillRect(x0, y, fw, 2);
+      }
+      // red tail = out of reach
+      const lw = GAUGE_W * clamp(1 - prog.maxReachable);
+      if (lw > 0) {
+        g.fillStyle = "rgba(196,58,40,.9)";
+        g.fillRect(x1 - lw, y, lw, GAUGE_H);
+        g.strokeStyle = "rgba(0,0,0,.28)";
+        g.lineWidth = 1;
+        g.beginPath();
+        for (let hx = x1 - lw - GAUGE_H; hx < x1; hx += 4) {
+          g.moveTo(hx, y + GAUGE_H);
+          g.lineTo(hx + GAUGE_H, y);
+        }
+        g.stroke();
+      }
+      g.restore();
+
+      // notches and medals
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      for (let k = 0; k < TIERS.length; k++) {
+        const nx = x0 + GAUGE_W * TIERS[k].min;
+        const crossed = k === ROYAL && crownCrossedAt >= 0;
+        const lostT = tierLostAt[k] >= 0 || crossed;
+        const got = tierAt[k] >= 0 && !crossed;
+        g.strokeStyle = got ? "#fff2c0" : lostT ? "rgba(120,110,100,.8)" : "rgba(234,220,192,.75)";
+        g.lineWidth = got ? 2 : 1.5;
+        g.beginPath();
+        g.moveTo(nx, y - 3);
+        g.lineTo(nx, y + GAUGE_H + 3);
+        g.stroke();
+        const pop = got && !reduced ? 1 + 0.7 * Math.exp(-7 * (t - tierAt[k])) : 1;
+        const s = 14 * pop;
+        const iy = y + GAUGE_H + 11;
+        g.globalAlpha = got ? 1 : lostT ? 0.32 : 0.62;
+        g.drawImage(emojiSprite(TIERS[k].icon, 12), nx - s / 2, iy - s / 2, s, s);
+        g.globalAlpha = 1;
+        if (crossed) {
+          g.strokeStyle = "#ff5a3a";
+          g.lineWidth = 2;
+          g.beginPath();
+          g.moveTo(nx - 7, iy - 7);
+          g.lineTo(nx + 7, iy + 7);
+          g.moveTo(nx + 7, iy - 7);
+          g.lineTo(nx - 7, iy + 7);
+          g.stroke();
+        }
+      }
     }
 
     function draw(dt: number) {
@@ -1080,6 +1500,17 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
         extra.drawBack(g, W, H, t, dt);
         g.restore();
       }
+      if (physics === "float") {
+        // a translucent band of flood water over the rail
+        const wy = tg.railY - itemSize() * 0.55;
+        const wg = g.createLinearGradient(0, wy, 0, tg.railY + 14);
+        wg.addColorStop(0, "rgba(120,190,205,.28)");
+        wg.addColorStop(1, "rgba(40,90,105,.42)");
+        g.fillStyle = wg;
+        g.fillRect(0, wy, W, tg.railY + 14 - wy);
+        g.fillStyle = "rgba(220,245,250,.35)";
+        for (let x = (t * -40) % 36; x < W; x += 36) g.fillRect(x, wy + Math.sin(x * 0.05 + t * 3) * 1.5, 18, 1.5);
+      }
       const c = cone();
       if (c) drawCone(g, c);
       if (nets.length) drawNets(g);
@@ -1091,6 +1522,7 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       }
       drawParts(g);
       drawTrails(g);
+      drawPaw(g);
       drawFloats(g);
       drawHud(g);
     }
@@ -1125,6 +1557,8 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       canvas.removeEventListener("pointerleave", onLeave);
       canvas.removeEventListener("contextmenu", onCtx);
       window.removeEventListener("blur", onBlur);
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keyup", onKeyUp);
       const cc = ctl();
       if (cc && cc.burst === burst) cc.burst = null;
     };
@@ -1132,7 +1566,7 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
 
   return (
     <div ref={wrapRef} className={props.className ?? "absolute inset-0"}>
-      <canvas ref={canvasRef} className="block h-full w-full cursor-crosshair touch-none select-none" aria-label="Лови добычу: жми или веди, зажав кнопку" />
+      <canvas ref={canvasRef} className="block h-full w-full cursor-crosshair touch-none select-none" aria-label="Лови добычу: жми или веди, зажав кнопку; с клавиатуры — стрелки и пробел" />
     </div>
   );
 }

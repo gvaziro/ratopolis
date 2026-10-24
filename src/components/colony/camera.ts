@@ -16,7 +16,9 @@ export interface CamView {
   top: number;
 }
 
-type Mode = { k: "home" } | { k: "zone"; zone: ZoneId } | { k: "free" };
+type Mode = { k: "home" } | { k: "zone"; zone: ZoneId } | { k: "free" } | { k: "overview" };
+
+const MAX_ZOOM = 1.8;
 
 const view: CamView = { cx: W / 2, cy: 300, s: 1, cw: 1, ch: 1, left: 0, top: 0 };
 const listeners = new Set<(v: CamView) => void>();
@@ -62,10 +64,12 @@ export class CameraController {
   private homeTimer = 0;
   private ro: ResizeObserver | null = null;
   private first = true;
-  /** Called when the player starts panning (to close tooltips) and when "away from home" flips. */
+  /** Called when the player starts panning (to close tooltips), when "away from home" flips and when the 🔭 overview toggles. */
   onDragStart: () => void = () => {};
   onAwayChange: (away: boolean) => void = () => {};
+  onOverviewChange: (on: boolean) => void = () => {};
   private away = false;
+  private overviewOn = false;
 
   constructor(
     private container: HTMLDivElement,
@@ -81,6 +85,7 @@ export class CameraController {
     c.addEventListener("lostpointercapture", this.lost);
     c.addEventListener("wheel", this.wheel, { passive: false });
     window.addEventListener("resize", this.measure);
+    window.addEventListener("scroll", this.measure, { passive: true });
     this.ro = new ResizeObserver(() => {
       this.measure();
     });
@@ -97,6 +102,7 @@ export class CameraController {
     c.removeEventListener("lostpointercapture", this.lost);
     c.removeEventListener("wheel", this.wheel);
     window.removeEventListener("resize", this.measure);
+    window.removeEventListener("scroll", this.measure);
     this.ro?.disconnect();
     cancelAnimationFrame(this.raf);
     window.clearTimeout(this.homeTimer);
@@ -110,6 +116,7 @@ export class CameraController {
 
   /** Pan to a zone band; optionally return home after `homeAfterMs`. */
   focusZone(zone: ZoneId, homeAfterMs: number | null): void {
+    if (this.mode.k === "overview") this.userZoom = 1; // from the overview a pip dives back in
     this.mode = { k: "zone", zone };
     window.clearTimeout(this.homeTimer);
     if (homeAfterMs !== null) {
@@ -123,24 +130,67 @@ export class CameraController {
   home(): void {
     this.mode = { k: "home" };
     this.userZoom = 1;
+    window.clearTimeout(this.homeTimer);
     this.kick();
+  }
+
+  /** 🔭: zoom out until the whole colony (and the next locked band) fits. */
+  overview(): void {
+    this.mode = { k: "overview" };
+    this.userZoom = this.fitAllScale() / this.scaleFor(1);
+    window.clearTimeout(this.homeTimer);
+    this.kick();
+  }
+
+  toggleOverview(): void {
+    if (this.mode.k === "overview") this.home();
+    else this.overview();
   }
 
   /* ------------------------------------------------------------ geometry */
 
   private measure = (): void => {
     const r = this.container.getBoundingClientRect();
-    view.cw = Math.max(1, r.width);
-    view.ch = Math.max(1, r.height);
+    const cw = Math.max(1, r.width);
+    const ch = Math.max(1, r.height);
+    // (the view is module state: a remounted camera — a new run — must still apply its first frame)
+    if (!this.first && cw === view.cw && ch === view.ch && r.left === view.left && r.top === view.top) return;
+    view.cw = cw;
+    view.ch = ch;
     view.left = r.left;
     view.top = r.top;
-    this.kick();
+    this.kick(true);
   };
 
-  private targetScale(): number {
-    const base = Math.min(view.cw / W, view.ch / (STREET_H + BAND_H + 24));
+  /**
+   * Scale for a given user zoom. The home view always fills the width (the world never shrinks below
+   * ~92% of the view as zones open — on phones the full width); deeper zones are reached by drag, wheel or the pips.
+   */
+  private scaleFor(userZoom: number): number {
+    const base = Math.max(0.22, Math.min(MAX_ZOOM, Math.min(view.cw / W, view.ch / (STREET_H + BAND_H + 24))));
     const z = ZOOMS[Math.min(ZOOMS.length, Math.max(1, this.inputs.open)) - 1];
-    return Math.max(0.22, Math.min(1.8, base)) * z * this.userZoom;
+    const fitW = (view.cw / (W + 40)) * (view.cw < 640 ? 1 : 0.92);
+    return Math.max(base * z, fitW) * userZoom;
+  }
+
+  /** Scale at which the whole colony fits the view. */
+  private fitAllScale(): number {
+    return Math.max(0.05, Math.min(view.cw / (W + 40), view.ch / (this.contentBottom() + 24)));
+  }
+
+  /** Smallest user zoom: the old 0.6, or less when that is what it takes to see the whole colony. */
+  private minZoom(): number {
+    return Math.min(0.6, this.fitAllScale() / this.scaleFor(1));
+  }
+
+  private targetScale(): number {
+    if (this.mode.k === "overview") {
+      // keep fitting while the view resizes or a zone opens
+      const fit = this.fitAllScale();
+      this.userZoom = fit / this.scaleFor(1);
+      return fit;
+    }
+    return this.scaleFor(this.userZoom);
   }
 
   private contentBottom(): number {
@@ -164,30 +214,40 @@ export class CameraController {
     const vh = view.ch / s;
     if (this.mode.k === "home") return vh / 2 - 8;
     if (this.mode.k === "zone") return bandTop(this.mode.zone) + BAND_H / 2;
+    if (this.mode.k === "overview") return (this.contentBottom() - 8) / 2;
     return view.cy;
   }
 
   /* ------------------------------------------------------------ loop */
 
-  private kick(): void {
+  /** Schedule an easing frame; `measured` = only the container changed (a rAF also covers paused frames). */
+  private kick(measured = false): void {
+    // the first measurement reaches the listeners at once, even where frames are paused (background tab)
+    if (measured && this.first) {
+      this.last = performance.now();
+      this.frame(this.last);
+      return;
+    }
     if (this.raf) return;
     this.last = performance.now();
     this.raf = requestAnimationFrame(this.frame);
   }
 
   private frame = (now: number): void => {
+    if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
     const dt = Math.min(0.05, (now - this.last) / 1000);
     this.last = now;
     const instant = this.first || this.inputs.reducedMotion;
     this.first = false;
     const ts = this.targetScale();
-    const k = instant ? 1 : 1 - Math.exp(-dt * 3.2);
+    const k = instant ? 1 : 1 - Math.exp(-dt * 5);
     view.s += (ts - view.s) * k;
     if (Math.abs(ts - view.s) < 1e-4) view.s = ts;
     const ty = this.clampY(this.targetY(view.s), view.s);
     const tx = this.mode.k === "free" ? this.clampX(view.cx, view.s) : this.clampX(W / 2, view.s);
-    const kp = instant ? 1 : 1 - Math.exp(-dt * 3.6);
+    // pips and zone events glide quickly (a band is centred in well under 0.7 s); drags settle gently
+    const kp = instant ? 1 : 1 - Math.exp(-dt * (this.mode.k === "free" ? 3.6 : 6.5));
     view.cy += (ty - view.cy) * kp;
     view.cx += (tx - view.cx) * kp;
     if (Math.abs(ty - view.cy) < 0.3) view.cy = ty;
@@ -205,10 +265,15 @@ export class CameraController {
     const vh = view.ch / view.s;
     this.svg.setAttribute("viewBox", `${(view.cx - vw / 2).toFixed(2)} ${(view.cy - vh / 2).toFixed(2)} ${vw.toFixed(2)} ${vh.toFixed(2)}`);
     for (const fn of listeners) fn(view);
-    const away = this.mode.k !== "home" && view.cy - (vh / 2 - 8) > vh * 0.35;
+    const away = this.mode.k !== "home" && (view.cy - (vh / 2 - 8) > vh * 0.35 || Math.abs(this.userZoom - 1) > 0.05);
     if (away !== this.away) {
       this.away = away;
       this.onAwayChange(away);
+    }
+    const ov = this.mode.k === "overview";
+    if (ov !== this.overviewOn) {
+      this.overviewOn = ov;
+      this.onOverviewChange(ov);
     }
   }
 
@@ -237,7 +302,7 @@ export class CameraController {
     if (this.pinch && this.pointers.size >= 2) {
       const [a, b] = [...this.pointers.values()];
       const d = Math.hypot(a.x - b.x, a.y - b.y);
-      this.userZoom = Math.max(0.6, Math.min(1.8, (this.pinch.z0 * d) / this.pinch.d0));
+      this.userZoom = Math.max(this.minZoom(), Math.min(MAX_ZOOM, (this.pinch.z0 * d) / this.pinch.d0));
       this.mode = { k: "free" };
       this.kick();
       return;
@@ -282,7 +347,7 @@ export class CameraController {
     e.preventDefault();
     const unit = e.deltaMode === 1 ? 18 : e.deltaMode === 2 ? view.ch : 1;
     if (e.ctrlKey) {
-      this.userZoom = Math.max(0.6, Math.min(1.8, this.userZoom * Math.exp(-e.deltaY * unit * 0.002)));
+      this.userZoom = Math.max(this.minZoom(), Math.min(MAX_ZOOM, this.userZoom * Math.exp(-e.deltaY * unit * 0.002)));
       this.mode = { k: "free" };
       this.kick();
       return;

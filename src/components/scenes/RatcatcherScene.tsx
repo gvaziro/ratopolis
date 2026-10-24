@@ -10,6 +10,7 @@
  */
 import { memo, useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { sfx } from "@/audio/sfx";
+import { sfxCue } from "@/game/fx";
 import { cx } from "@/components/ui/kit";
 import { fxBurst } from "@/components/fx/fxBus";
 import { useGame } from "@/game/store";
@@ -71,6 +72,19 @@ function PiperWarn({ scene }: { scene: Scene }) {
     act({ a: "choice", option });
   };
 
+  // SC-6: keys 1 / 2 pick the choices (the global hotkeys stand aside while a scene runs)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === "1") choose("pay");
+      else if (e.key === "2") choose("fight");
+      else return;
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   return (
     <div className="absolute inset-0 flex flex-col">
       <div className="relative min-h-0 flex-1 overflow-hidden">
@@ -97,7 +111,7 @@ function PiperWarn({ scene }: { scene: Scene }) {
             ))}
         </div>
         <div className="pointer-events-none absolute left-2 top-2 z-10">
-          <Countdown endsAt={scene.phaseEnds} total={Math.max(0.1, scene.phaseEnds - scene.phaseStart)} label="Дудочник ждёт" />
+          <Countdown endsAt={scene.phaseEnds} total={Math.max(0.1, scene.phaseEnds - scene.phaseStart)} label="Дудочник ждёт" warnAt={2} />
         </div>
         <p className="pointer-events-none absolute bottom-2 left-2 z-10 max-w-[58%] text-xs leading-snug text-parchment drop-shadow-[0_1px_2px_#000]">
           Подозрение людей дошло до предела. Без ответа колония откупится сама.
@@ -109,10 +123,11 @@ function PiperWarn({ scene }: { scene: Scene }) {
             icon="💰"
             title="Откупиться"
             tone="brass"
+            hotkey="1"
             sub={
-              <>
+              <b>
                 −{fmt(stakes.payCoins)} 🪙{stakes.payCheese > 0 && <> · −{fmt(stakes.payCheese)} 🧀</>} · 👁 → 40
-              </>
+              </b>
             }
             sub2={canPay ? "Дудочник уходит, хвосты целы" : <span className="font-bold text-[#7a1d16]">Не хватает: отдадим, что есть, 👁 → 60</span>}
             onClick={() => choose("pay")}
@@ -121,14 +136,15 @@ function PiperWarn({ scene }: { scene: Scene }) {
             icon="🎵"
             title="Сломать дудку"
             tone="verdigris"
+            hotkey="2"
             sub={
-              <>
-                {fmtInt(count)} {plural(count, "нота", "ноты", "нот")} за {fmtInt(fightSec)} с — лопнуть ≥ {fmtInt(needed)} (80%)
-              </>
+              <b>
+                Лопнуть {fmtInt(needed)} из {fmtInt(count)} {plural(count, "ноты", "нот", "нот")} за {fmtInt(fightSec)} с
+              </b>
             }
             sub2={
               <>
-                Победа: 👁 → 0, 🪙 +{fmt(stakes.winCoins)} 📜 +{fmt(stakes.winBlueprints)} · иначе 👁 → 40 и крысы уйдут за дудкой
+                🎵 👁→0 🪙+{fmt(stakes.winCoins)} 📜+{fmt(stakes.winBlueprints)} | провал: 👁→40, 🎶 крысы уйдут за дудкой
               </>
             }
             onClick={() => choose("fight")}
@@ -314,6 +330,10 @@ function PiperFight({ scene }: { scene: Scene }) {
     let nReached = 0;
     let done = false;
     let burrowHeat = 0;
+    // SC-6: where the player aims (mouse hover, or a touch for a moment) — the nearest note gets a dashed hit ring
+    const aim = { x: 0, y: 0, until: 0 };
+    const beating = new Set<Note>();
+    const hitR = () => Math.max(34, 0.075 * Math.min(W, H));
 
     const pipeTip = () => {
       const ph = PIPER_H * H;
@@ -353,13 +373,25 @@ function PiperFight({ scene }: { scene: Scene }) {
     };
     finishRef.current = finish;
 
+    const onMove = (e: PointerEvent) => {
+      const r = canvas.getBoundingClientRect();
+      aim.x = e.clientX - r.left;
+      aim.y = e.clientY - r.top;
+      aim.until = performance.now() + (e.pointerType === "mouse" ? 1e9 : 350);
+    };
+    const onLeave = () => {
+      aim.until = 0;
+    };
+    canvas.addEventListener("pointermove", onMove);
+    canvas.addEventListener("pointerleave", onLeave);
     const onDown = (e: PointerEvent) => {
       if (done || (e.pointerType === "mouse" && e.button !== 0)) return;
       e.preventDefault();
+      onMove(e);
       const r = canvas.getBoundingClientRect();
       const px = e.clientX - r.left;
       const py = e.clientY - r.top;
-      const R = Math.max(34, 0.075 * Math.min(W, H));
+      const R = hitR();
       let best: Note | null = null;
       let bestD = R;
       for (const n of notes) {
@@ -396,6 +428,10 @@ function PiperFight({ scene }: { scene: Scene }) {
       if (nPopped >= needed) finish();
     };
     canvas.addEventListener("pointerdown", onDown);
+    const offAim = () => {
+      canvas.removeEventListener("pointermove", onMove);
+      canvas.removeEventListener("pointerleave", onLeave);
+    };
 
     let last = performance.now();
     let raf = 0;
@@ -410,6 +446,11 @@ function PiperFight({ scene }: { scene: Scene }) {
         if (n.st === 0 && t >= n.at) n.st = 1;
         if (n.st !== 1) continue;
         const u = (t - n.at) / FLY;
+        // a note close to the burrow makes the colony's heart pound
+        if (u > 0.8 && !beating.has(n)) {
+          beating.add(n);
+          sfxCue("heartbeat", { intensity: 0.7 });
+        }
         if (u >= 1) {
           n.st = 3;
           nReached++;
@@ -463,6 +504,30 @@ function PiperFight({ scene }: { scene: Scene }) {
         g.fillText("♪", w.x + 4, w.y - 18 + Math.sin(w.age * 5) * 3);
       }
       g.globalAlpha = 1;
+
+      // the aimed note's hit ring
+      if (performance.now() < aim.until) {
+        const R = hitR();
+        let best: Note | null = null;
+        let bestD = R * 2;
+        for (const n of notes) {
+          if (n.st !== 1) continue;
+          const d = Math.hypot(n.x - aim.x, n.y - aim.y);
+          if (d < bestD) {
+            bestD = d;
+            best = n;
+          }
+        }
+        if (best) {
+          g.setLineDash([5, 5]);
+          g.strokeStyle = bestD <= R ? "rgba(124,196,176,.9)" : "rgba(242,184,75,.45)";
+          g.lineWidth = 2;
+          g.beginPath();
+          g.arc(best.x, best.y, R, 0, Math.PI * 2);
+          g.stroke();
+          g.setLineDash([]);
+        }
+      }
 
       // notes
       g.textAlign = "center";
@@ -531,6 +596,7 @@ function PiperFight({ scene }: { scene: Scene }) {
       cancelAnimationFrame(raf);
       ro.disconnect();
       canvas.removeEventListener("pointerdown", onDown);
+      offAim();
       finishRef.current = null;
     };
   }, [scene.phaseStart, count, dur, needed, reduced]);

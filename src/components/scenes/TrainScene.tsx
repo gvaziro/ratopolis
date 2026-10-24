@@ -18,13 +18,15 @@ export default function TrainScene({ scene }: { scene: Scene }) {
   // a capsule keeps its piles on screen through "done" (no haul card) — unless everything was caught and the
   // engine skipped the piles phase (same emptiness test as beginPiles): then there is nothing to show
   const capsulePiles = capsule && scene.phase === "done" && scene.piles.some((p) => Object.keys(p).length > 0);
+  const piles = scene.phase === "piles" || capsulePiles;
   return (
     <div className="absolute inset-0 select-none overflow-hidden">
       <TrainBackdrop variant={variant} />
-      {capsule && scene.phase !== "rumble" && <CapsuleTube />}
+      {/* the tube steps back (dimmed, no flanges or gauge) under the pile strip */}
+      {capsule && (scene.phase === "catch" || piles) && <CapsuleTube quiet={piles} />}
       {scene.phase === "rumble" && <TrainRumble scene={scene} />}
       {scene.phase === "catch" && <TrainPass key={`c${scene.phaseStart}`} scene={scene} />}
-      {(scene.phase === "piles" || capsulePiles) &&<PilesPhase key={`p${scene.seq}`} scene={scene} />}
+      {piles && <PilesPhase key={`p${scene.seq}`} scene={scene} />}
       {scene.phase === "haul" && <HaulCard key={`h${scene.phaseStart}`} scene={scene} />}
     </div>
   );

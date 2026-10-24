@@ -26,6 +26,9 @@ export const TAB_REVEAL: Record<TabId, string | null> = {
   settings: null,
 };
 
+/** Tab order of the panel (hotkeys 1–8 count the revealed ones in this order). */
+export const TAB_ORDER: TabId[] = ["buildings", "jobs", "upgrades", "map", "schedule", "migration", "medals", "settings"];
+
 export function tabRevealed(s: GameState, tab: TabId): boolean {
   const k = TAB_REVEAL[tab];
   return k === null || !!s.revealed[k];

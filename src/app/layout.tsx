@@ -19,10 +19,26 @@ const mono = JetBrains_Mono({
   subsets: ["latin", "cyrillic"],
 });
 
+const DESCRIPTION = "Инкрементальная игра: крысиная стимпанк-цивилизация под викторианским городом. Тащи крошки, строй мастерские и встречай поезда.";
+
 export const metadata: Metadata = {
+  // SH-6: absolute URLs for the link preview (Vercel or local dev)
+  metadataBase: new URL(process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "http://localhost:3000"),
   title: "Ratropolis Underground | Крысиный мегаполис",
-  description:
-    "Инкрементальная игра: крысиная стимпанк-цивилизация под викторианским городом. Тащи крошки, строй мастерские и встречай поезда.",
+  description: DESCRIPTION,
+  applicationName: "Ratropolis",
+  openGraph: {
+    type: "website",
+    locale: "ru_RU",
+    siteName: "Ratropolis Underground",
+    title: "Ratropolis Underground — Крысиный мегаполис",
+    description: DESCRIPTION,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Ratropolis Underground — Крысиный мегаполис",
+    description: DESCRIPTION,
+  },
 };
 
 export const viewport: Viewport = {

@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * «Наверху»: the human-scale London street above the colony (88 px on desktop, 56 px on phones).
+ * «Наверху»: the human-scale London street above the colony (88 px on desktop; on phones a slim 32-px street band
+ * without the «НАВЕРХУ» plate, folded away entirely while the panel sheet is full).
  * Three parallax layers drift slowly; the scene follows the highest open zone, the time of day
  * follows the human clock, events start here as tiny mini-scenes, and the departures board
  * sits on the right. Art lives in ./sky/*; this file owns sizing, selection and the motion loop.
@@ -24,10 +25,13 @@ import { skyLook } from "./sky/skyTime";
 import { Walkers } from "./sky/Walkers";
 
 const PAN_PERIOD = 70; // seconds for one slow sway of the parallax camera
+/** A strip slimmer than this (phones: 32 px) keeps the art at the 56-px scale and shows its street band only. */
+const SLIM_PX = 48;
+const SLIM_SCALE_PX = 56;
 
 export default function SkyStrip() {
   const wrapRef = useRef<HTMLDivElement>(null);
-  const [size, setSize] = useState(() => ({ w: window.innerWidth, h: window.innerWidth >= 768 ? 88 : 56 }));
+  const [size, setSize] = useState(() => ({ w: window.innerWidth, h: window.innerWidth >= 768 ? 88 : 32 }));
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -50,9 +54,13 @@ export default function SkyStrip() {
     return sc ? `${sc.id}|${sc.seq}|${sc.phase}|${sc.cars.length}|${sc.perCar}` : "";
   });
   const scene = useMemo(() => parseScene(sceneKey), [sceneKey]);
+  // phones: the full sheet takes the room, so the strip folds away (the departures stay in the panel's «Расписание»)
+  const folded = useGame((s) => s.sheet === "full");
 
-  // geometry in viewBox units (88 units = strip height)
-  const unit = H / size.h;
+  // geometry in viewBox units (88 units = strip height); a slim strip draws at the 56-px scale and crops to the street
+  const slim = size.h < SLIM_PX;
+  const drawH = slim ? SLIM_SCALE_PX : size.h;
+  const unit = H / drawH;
   const W = Math.max(200, Math.round(size.w * unit));
   const panel = size.w >= 1280 ? 460 : size.w >= 768 ? 400 : 0;
   const C = Math.round(Math.min(Math.max(((size.w - panel) / 2) * unit, 200), W - 220));
@@ -68,7 +76,8 @@ export default function SkyStrip() {
   const dayShare = look.phase === "day" ? 1 : look.phase === "night" ? 0.3 : 0.65;
   const walkers = Math.max(1, Math.round(Math.min(9, Math.max(3, W / 190)) * dayShare * (calm ? 0.5 : 1)));
 
-  usePanLoop(wrapRef, W, size.h / H, calm);
+  usePanLoop(wrapRef, W, drawH / H, calm, folded && size.w < 768);
+  const fit = slim ? "xMidYMax slice" : "xMidYMid slice";
 
   const zoneId = ZONE_ORDER[Math.max(0, Math.min(4, z - 1))];
   const zone = ZONES[zoneId];
@@ -78,24 +87,24 @@ export default function SkyStrip() {
   return (
     <div
       ref={wrapRef}
-      className={cx("relative z-10 h-14 shrink-0 overflow-hidden border-b border-brass-dark/60 bg-soot md:h-[88px]", calm && "hud-calm")}
+      className={cx("relative z-10 h-8 shrink-0 overflow-hidden border-b border-brass-dark/60 bg-soot md:h-[88px]", folded && "max-md:hidden", calm && "hud-calm")}
     >
       <HudStyles />
       {/* Stacked SVG layers: each pans as a whole (GPU-composited), so the parallax never repaints the art. */}
-      <Layer W={W}>
+      <Layer fit={fit} W={W}>
         <SkyDefs look={look} z={z} />
         <Backdrop W={W} look={look} />
         <Clouds W={W} rainy={rainy} />
       </Layer>
-      <Layer W={W} pan={PAN.far}>
+      <Layer fit={fit} W={W} pan={PAN.far}>
         <FarLayer roofs={roofs} L={L} calm={calm} />
       </Layer>
-      <Layer W={W} pan={PAN.mid}>
+      <Layer fit={fit} W={W} pan={PAN.mid}>
         <MidLayer houses={houses} L={L} />
         <StationClock L={L} minute={minute} />
         {scene?.id !== "cat" && <AmbientCat L={L} />}
       </Layer>
-      <Layer W={W} pan={PAN.near}>
+      <Layer fit={fit} W={W} pan={PAN.near}>
         <NearGround L={L} />
         <Walkers L={L} count={walkers} rain={rainy} topHats={z >= 4} />
         <NearProps L={L} />
@@ -106,14 +115,14 @@ export default function SkyStrip() {
         className="pointer-events-none absolute inset-0"
         style={{ background: look.tint, opacity: look.tintA, transition: "background-color 3s linear, opacity 3s linear" }}
       />
-      <Layer W={W} pan={PAN.mid}>
+      <Layer fit={fit} W={W} pan={PAN.mid}>
         <MidLights houses={houses} L={L} look={look} />
       </Layer>
-      <Layer W={W} pan={PAN.near}>
+      <Layer fit={fit} W={W} pan={PAN.near}>
         <NearLights L={L} look={look} z={z} />
       </Layer>
       {rainy && (
-        <Layer W={W}>
+        <Layer fit={fit} W={W}>
           <Rain W={W} heavy={downpour} />
         </Layer>
       )}
@@ -122,7 +131,7 @@ export default function SkyStrip() {
       <div className="pointer-events-none absolute inset-0 bg-[#3a2814]/10 shadow-[inset_0_8px_10px_-8px_rgba(0,0,0,.75),inset_0_-8px_10px_-8px_rgba(0,0,0,.75)]" />
 
       <FloatTip
-        className="absolute left-1.5 top-1 z-10 sm:left-2.5"
+        className="absolute left-1.5 top-1 z-10 max-md:hidden sm:left-2.5"
         width={250}
         tip={
           <span className="block">
@@ -160,12 +169,12 @@ function parseScene(key: string): SceneInfo | null {
   return { id: id as SceneEventId, seq: Number(seq), phase: phase as ScenePhase, cars: Number(cars), perCar: Number(perCar) };
 }
 
-/** One full-size SVG layer; `pan` (viewBox units) marks it for the parallax sway. */
-function Layer({ W, pan, children }: { W: number; pan?: number; children: ReactNode }) {
+/** One full-size SVG layer; `pan` (viewBox units) marks it for the parallax sway. `fit`: how the art meets a slim strip. */
+function Layer({ W, pan, fit, children }: { W: number; pan?: number; fit: string; children: ReactNode }) {
   return (
     <svg
       viewBox={`0 0 ${W} ${H}`}
-      preserveAspectRatio="xMidYMid slice"
+      preserveAspectRatio={fit}
       data-pan={pan}
       className={cx("pointer-events-none absolute inset-0 h-full w-full overflow-visible", pan !== undefined && "will-change-transform")}
       aria-hidden
@@ -179,11 +188,11 @@ function Layer({ W, pan, children }: { W: number; pan?: number; children: ReactN
  * Sways the `data-pan` layers (CSS transforms on whole SVGs: composited, no repaint) and drifts the
  * `data-drift` clouds (attribute writes only when they moved a quarter unit). One rAF for the strip.
  */
-function usePanLoop(wrapRef: RefObject<HTMLDivElement | null>, W: number, pxPerUnit: number, calm: boolean) {
-  const live = useRef({ W, pxPerUnit, calm });
+function usePanLoop(wrapRef: RefObject<HTMLDivElement | null>, W: number, pxPerUnit: number, calm: boolean, paused: boolean) {
+  const live = useRef({ W, pxPerUnit, calm, paused });
   useEffect(() => {
-    live.current = { W, pxPerUnit, calm };
-  }, [W, pxPerUnit, calm]);
+    live.current = { W, pxPerUnit, calm, paused };
+  }, [W, pxPerUnit, calm, paused]);
 
   useEffect(() => {
     let raf = 0;
@@ -202,10 +211,11 @@ function usePanLoop(wrapRef: RefObject<HTMLDivElement | null>, W: number, pxPerU
     };
     const loop = (now: number) => {
       const root = wrapRef.current;
-      const { W: w, pxPerUnit: ppu, calm: still } = live.current;
+      const { W: w, pxPerUnit: ppu, calm: still, paused } = live.current;
       cloudT += ((now - last) / 1000) * (still ? 0.4 : 1);
       last = now;
-      if (root) {
+      // folded away (phone, full sheet) or a background tab: nothing to move
+      if (root && !paused && !document.hidden) {
         // layers only change on re-render; refresh the lists twice a second
         if (frame++ % 30 === 0) {
           pans = Array.from(root.querySelectorAll<SVGSVGElement>("svg[data-pan]"));

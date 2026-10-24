@@ -9,8 +9,9 @@ import { RESOURCES } from "@/game/data/resources";
 import { onFx } from "@/game/fx";
 import { useGame } from "@/game/store";
 import type { BuildingId } from "@/game/types";
-import { BUILDING_SLOT, GRATE } from "./geometry";
-import { pokeChamber } from "./registry";
+import { camView } from "./camera";
+import { BAND_H, BUILDING_SLOT, GRATE, STREET_H } from "./geometry";
+import { colonyPaused, pokeChamber } from "./registry";
 
 const POOL = 14;
 const DUR = 500;
@@ -84,9 +85,22 @@ export const FlyingItems = memo(function FlyingItems() {
       if (!raf) raf = requestAnimationFrame(frame);
     };
 
+    let lastAuto = 0;
     const off = onFx((fx) => {
-      if (fx.k === "click") launch(RESOURCES.crumbs.icon);
-      else if (fx.k === "drop" && fx.x !== undefined && fx.x > 1.0001) launch(RESOURCES[fx.res].icon);
+      if (fx.k !== "click" && fx.k !== "drop") return;
+      // nothing to see under a scene, in a hidden tab, or when the camera is down below the burrow
+      if (colonyPaused()) return;
+      const v = camView();
+      if (v.cy - v.ch / 2 / v.s > STREET_H + BAND_H) return;
+      if (fx.k === "click") {
+        if (fx.auto) {
+          // wind-up rats: a crumb every half second is plenty
+          const now = performance.now();
+          if (now - lastAuto < 500) return;
+          lastAuto = now;
+        }
+        launch(RESOURCES.crumbs.icon);
+      } else if (fx.x !== undefined && fx.x > 1.0001) launch(RESOURCES[fx.res].icon);
     });
     return () => {
       off();

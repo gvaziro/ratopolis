@@ -2,93 +2,18 @@
  * WebAudio synthesized sound effects — no audio files. Short, warm, Victorian-mechanical.
  * Every call is a safe no-op before unlock() (first user gesture) and while muted;
  * identical sounds are throttled so none stacks past its voice limit.
+ * v2: tuned grate clicks (clicks.ts), named cues and engine-Fx voices (cues.ts), the zone ambience (ambience.ts).
  */
-import { pauseCore, play, setVolumeCore, unlockCore, type Voice } from "./core";
-import { chuffSet, chuffStart, chuffStop, rumbleKind, rumbleSet, rumbleStart, rumbleStop, type RumbleKind } from "./loops";
-import { filter, noise, panner, pick, rnd, semi, strike, tone, vibrato, type BellPart } from "./synth";
+import type { SfxCue } from "@/game/fx";
+import { ambienceSet, ambienceStop, type AmbienceState } from "./ambience";
+import { clickVoice, coinVoice, playerClick, playerDrop } from "./clicks";
+import { duckAmbienceCore, pauseCore, play, setAmbienceCore, setVolumeCore, unlockCore } from "./core";
+import { commissionVoice, migrationVoice, playCue, recordVoice, scoutVoice } from "./cues";
+import { blipAt, brass, CHIME, coinTink, COIN_STEPS, GLOCK, HAND_BELL, hoof, SMALL_BELL, thudAt, TOWER_BELL, typeKey } from "./instruments";
+import { chuffSet, chuffStart, chuffStop, rumbleCut, rumbleKind, rumbleSet, rumbleStart, rumbleStop, type RumbleKind } from "./loops";
+import { filter, noise, panner, pick, rnd, semi, strike, tone, vibrato } from "./synth";
 
-/* ----------------------------------------------------------- instruments */
-
-/** Hollow wooden "tok". */
-function woodTok(v: Voice, t: number, k: number, level: number, dest?: AudioNode): void {
-  tone(v, { f: 620 * k, to: 470 * k, glide: 0.05, t, a: 0.002, d: 0.075, peak: 0.3 * level, dest });
-  tone(v, { type: "triangle", f: 1490 * k, t, a: 0.001, d: 0.028, peak: 0.06 * level, dest });
-  noise(v, { t, a: 0.001, d: 0.012, peak: 0.09 * level, filter: "bandpass", f: 2600 * k, q: 1.4, dest });
-}
-
-/** Bright coin "tink" with a short second ring. */
-function coinTink(v: Voice, t: number, f: number, level: number, dest?: AudioNode): void {
-  tone(v, { f, t, a: 0.001, d: 0.22, peak: 0.155 * level, dest });
-  tone(v, { f: f * 2.76, t, a: 0.001, d: 0.08, peak: 0.055 * level, dest });
-  tone(v, { f: f * 1.5, t: t + 0.045, a: 0.001, d: 0.2, peak: 0.085 * level, dest });
-  noise(v, { t, a: 0.0005, d: 0.006, peak: 0.07 * level, filter: "highpass", f: 6000, dest });
-}
-
-const GLOCK: readonly BellPart[] = [
-  [1, 0.17, 0.5],
-  [2.0, 0.035, 0.18],
-  [3.99, 0.02, 0.09],
-];
-const SMALL_BELL: readonly BellPart[] = [
-  [1, 0.15, 0.7],
-  [1.003, 0.05, 0.7],
-  [2.32, 0.05, 0.28],
-  [4.08, 0.025, 0.1],
-];
-const HAND_BELL: readonly BellPart[] = [
-  [1, 0.15, 0.9],
-  [2.03, 0.055, 0.5],
-  [2.92, 0.045, 0.35],
-  [4.18, 0.025, 0.2],
-  [5.4, 0.012, 0.12],
-];
-const CHIME: readonly BellPart[] = [
-  [1, 0.11, 0.8],
-  [2.76, 0.035, 0.3],
-  [5.4, 0.014, 0.12],
-];
-/** Big tower bell: hum, prime (+ beating twin), minor-third tierce, quint, nominal and upper partials. */
-const TOWER_BELL: readonly BellPart[] = [
-  [0.5, 0.13, 6.5],
-  [1, 0.18, 4.6],
-  [1.004, 0.07, 4.6],
-  [1.19, 0.12, 3.2],
-  [1.5, 0.055, 2.4],
-  [2, 0.19, 2.7],
-  [2.51, 0.075, 1.6],
-  [3.01, 0.06, 1.1],
-  [4.07, 0.04, 0.7],
-];
-
-/** Detuned-saw brass note with a filter "blat" on the attack. */
-function brass(v: Voice, t: number, f: number, dur: number, peak: number): void {
-  const ctx = v.ctx;
-  const amp = v.keep(ctx.createGain());
-  amp.connect(v.out);
-  const lp = v.keep(ctx.createBiquadFilter());
-  lp.type = "lowpass";
-  lp.Q.value = 2;
-  lp.connect(amp);
-  lp.frequency.setValueAtTime(f * 1.2, t);
-  lp.frequency.linearRampToValueAtTime(f * 6, t + 0.04);
-  lp.frequency.setTargetAtTime(f * 3.4, t + 0.05, 0.08);
-  lp.frequency.setTargetAtTime(f * 1.4, t + dur, 0.05);
-  amp.gain.setValueAtTime(0, t);
-  amp.gain.linearRampToValueAtTime(peak, t + 0.03);
-  amp.gain.setTargetAtTime(peak * 0.72, t + 0.04, 0.1);
-  amp.gain.setTargetAtTime(0, t + dur, 0.06);
-  const end = t + dur + 0.45;
-  for (const cents of [-7, 7]) {
-    const o = ctx.createOscillator();
-    o.type = "sawtooth";
-    o.detune.setValueAtTime(cents, t);
-    o.frequency.setValueAtTime(f * 0.97, t);
-    o.frequency.exponentialRampToValueAtTime(f, t + 0.035);
-    o.connect(lp);
-    if (dur > 0.3) vibrato(v, o.detune, t, end, 5.5, 9, 0.18);
-    v.run(o, t, end);
-  }
-}
+export type { AmbienceState } from "./ambience";
 
 /** Steam whistle: pure sines that scoop up, waver and sag as the steam drops, plus breath noise. */
 function whistleVoice(royal: boolean, far: boolean): void {
@@ -114,31 +39,6 @@ function whistleVoice(royal: boolean, far: boolean): void {
   });
 }
 
-/** One typewriter key: paper-thin clack, type-bar body, a hint of bell metal, the desk. */
-function typeKey(v: Voice, t: number, level: number): void {
-  const k = rnd(0.92, 1.08);
-  noise(v, { t, a: 0.0005, d: 0.018, peak: 0.45 * level, filter: "bandpass", f: 3200 * k, q: 1.6 });
-  tone(v, { type: "square", f: 210 * k, to: 150 * k, glide: 0.018, t, a: 0.001, d: 0.018, peak: 0.09 * level });
-  tone(v, { f: 4100 * k, t, a: 0.001, d: 0.03, peak: 0.04 * level });
-  noise(v, { kind: "brown", t, a: 0.001, d: 0.025, peak: 0.25 * level, filter: "lowpass", f: 600 });
-}
-
-function blipAt(v: Voice, t: number, step: number, level: number): void {
-  const s = ((Math.round(step) % 24) + 24) % 24;
-  const f = 523.25 * semi(s);
-  tone(v, { type: "triangle", f: f * 0.985, to: f, glide: 0.02, t, a: 0.003, d: 0.16, peak: 0.27 * level });
-  tone(v, { f: f * 2, t, a: 0.002, d: 0.08, peak: 0.075 * level });
-}
-
-function hoof(v: Voice, t: number, level: number, dest?: AudioNode): void {
-  const k = rnd(0.94, 1.06);
-  tone(v, { f: 430 * k, to: 300 * k, glide: 0.035, t, a: 0.001, d: 0.06, peak: 0.24 * level, dest });
-  tone(v, { f: 980 * k, t, a: 0.001, d: 0.02, peak: 0.05 * level, dest });
-  noise(v, { t, a: 0.0008, d: 0.012, peak: 0.07 * level, filter: "bandpass", f: 1700 * k, q: 1.2, dest });
-}
-
-const COIN_STEPS = [0, 2, 4, 7, 9] as const;
-
 /* --------------------------------------------------------------- public */
 
 export const sfx = {
@@ -152,9 +52,25 @@ export const sfx = {
     setVolumeCore(v, enabled);
   },
 
-  /** Soft wooden "tok", pitch ±5%. */
-  click(): void {
-    play("click", { max: 6, gapMs: 28 }, { send: 0.08, pan: rnd(-0.15, 0.15) }, (v) => woodTok(v, v.t, rnd(0.95, 1.05), 1));
+  /**
+   * Soft wooden "tok". With `step`: tuned to that G-major pentatonic step (0 = G4, 5 = G5, 10 = G6);
+   * without: untuned, pitch ±5% (scenes' incidental clicks).
+   */
+  click(step?: number): void {
+    clickVoice(step);
+  },
+
+  /**
+   * A player's click on the grate (v2 click feel): the step comes from the bustle meter (`bustle` 0..100, or null
+   * before «Суматоха»: a shadow meter stands in), «Аврал» (`frenzy`) runs the top octave; fast and long streaks soften.
+   */
+  playerClick(bustle: number | null, frenzy: boolean): void {
+    playerClick(bustle, frenzy);
+  },
+
+  /** A drop from a player click: a coin tink, thinned to every 3rd above 8 clicks/s. */
+  playerDrop(): void {
+    playerDrop();
   },
 
   /** Two-note "ding-ding", a major third up. */
@@ -172,7 +88,7 @@ export const sfx = {
 
   /** Bright metallic tink (random pentatonic pitch so a stream of coins sparkles). */
   coin(): void {
-    play("coin", { max: 6, gapMs: 45 }, { send: 0.12, pan: rnd(-0.25, 0.25) }, (v) => coinTink(v, v.t, 1568 * semi(pick(COIN_STEPS)) * rnd(0.996, 1.004), 1));
+    coinVoice();
   },
 
   /** Small bell "тинь" — readiness ring. */
@@ -182,16 +98,7 @@ export const sfx = {
 
   /** Muffled purchase "тук". */
   thud(): void {
-    play("thud", { max: 4, gapMs: 50 }, { send: 0.06 }, (v) => {
-      const t = v.t;
-      const k = rnd(0.96, 1.04);
-      tone(v, { f: 160 * k, to: 62, glide: 0.14, t, a: 0.003, d: 0.2, peak: 0.5 });
-      tone(v, { type: "triangle", f: 260 * k, to: 130 * k, glide: 0.08, t, a: 0.002, d: 0.11, peak: 0.4 });
-      // the box itself: a short hollow knock so laptop speakers get the "тук"
-      tone(v, { f: 480 * k, to: 330 * k, glide: 0.04, t, a: 0.001, d: 0.06, peak: 0.14 });
-      noise(v, { kind: "brown", t, a: 0.002, d: 0.06, peak: 0.35, filter: "lowpass", f: 700 });
-      noise(v, { t, a: 0.001, d: 0.02, peak: 0.08, filter: "bandpass", f: 1800, q: 1 });
-    });
+    play("thud", { max: 4, gapMs: 50 }, { send: 0.06 }, (v) => thudAt(v, v.t, rnd(0.96, 1.04), 1));
   },
 
   /** Tiny rising chirp (birth). At most 3 per second. */
@@ -473,6 +380,10 @@ export const sfx = {
   rumbleStop(): void {
     rumbleStop();
   },
+  /** The train is gone: the rumble drops to nothing in `sec` (default 120 ms) and stays down until the next rumbleStart/Stop. */
+  rumbleCut(sec?: number): void {
+    rumbleCut(sec);
+  },
 
   /** Steam chuff at `rate` beats per second (2 → 8). */
   chuffStart(rate: number): void {
@@ -599,11 +510,54 @@ export const sfx = {
     });
   },
 
-  /** One water drip in a cavern (sewers ambience). */
+  /** One water drip in a cavern, on the effects bus (a scene's own drip; the sewer ambience drips by itself). */
   drip(): void {
     play("drip", { max: 2, gapMs: 150 }, { send: 0.6, pan: rnd(-0.6, 0.6), gain: 0.8 }, (v) => {
       const f = rnd(850, 1350);
       tone(v, { f, to: f * 1.9, glide: 0.028, t: v.t, a: 0.001, d: 0.07, peak: 0.09 });
     });
+  },
+
+  /* ------------------------------------------------------------------- v2 */
+
+  /** A named UI cue (UiFx {k:"sfx"}): intensity 0..1 scales the volume, pitch multiplies the frequency. */
+  cue(cue: SfxCue, intensity?: number, pitch?: number): void {
+    playCue(cue, intensity, pitch);
+  },
+
+  /** Scouts are back with a share of the expedition (Fx scout, step 1..3). */
+  scout(step: number): void {
+    scoutVoice(step);
+  },
+
+  /** The Great Migration: a low brass swell (Fx migration). */
+  migration(): void {
+    migrationVoice();
+  },
+
+  /** A new colony record (Fx record): a fanfare. */
+  record(): void {
+    recordVoice();
+  },
+
+  /** A royal commission accepted (stamp) or done (stamp and bells) (Fx commission). */
+  commission(done: boolean): void {
+    commissionVoice(done);
+  },
+
+  /** settings.ambience 0..1: the background bus level (settings.volume stays the effects/master volume). */
+  setAmbience(v: number): void {
+    setAmbienceCore(v);
+  },
+
+  /** What the colony sounds like right now: open zones, the clock tower, machinery density, a close-up (ducks −9 dB). */
+  ambience(st: Partial<AmbienceState>): void {
+    if (st.duck !== undefined) duckAmbienceCore(st.duck);
+    ambienceSet(st);
+  },
+
+  /** Stop the ambience scheduler and its loops. */
+  ambienceStop(): void {
+    ambienceStop();
   },
 };

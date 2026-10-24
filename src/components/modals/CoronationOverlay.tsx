@@ -3,7 +3,7 @@
 /**
  * Coronation (GDD 13.32): the finished Rat Express runs through all five zone bands collecting rats while the
  * bell strikes twelve, gears and buttons rain down, then the Rat King's portrait gets its crown and the line
- * «Для людей это один вторник. Для крыс — целая история.» Opens on the engine fx "coronation"
+ * the 👤/🐀 line of engine coronationLine() (the right weekday, varied from the 2nd coronation). Opens on the engine fx "coronation"
  * (the AudioDirector plays sfx.coronationBells()), or after the offline report when it says `coronated`;
  * `?coronation` in the URL opens it on mount for testing.
  * Reduced motion → a static tableau with the card shown at once.
@@ -14,11 +14,11 @@ import KingPortrait from "@/components/panels/KingPortrait";
 import { HazardStyles, roman } from "@/components/scenes/HazardKit";
 import { BrassButton, Rivets } from "@/components/ui/kit";
 import { ZONE_ORDER, ZONES } from "@/game/data/zones";
+import { coronationLine } from "@/game/engine/narrative";
 import { onFx } from "@/game/fx";
 import { useGame } from "@/game/store";
 import { fmtInt, plural } from "@/lib/format";
 
-const LINE = "Для людей это один вторник. Для крыс — целая история.";
 const BELLS = 12;
 /** Seconds between bell strikes; keep in step with sfx.coronationBells(). */
 const BELL_GAP = 0.9;
@@ -86,6 +86,11 @@ function Celebration({ onClose }: { onClose: () => void }) {
   const rats = useGame((s) => s.game.rats);
   const tails = useGame((s) => 1 + s.game.meta.migrations);
   const gilded = useGame((s) => s.game.meta.achievements.before_noon !== undefined);
+  // the line of this coronation, read once when the ceremony opens (SH-5)
+  const [LINE] = useState(() => {
+    const l = coronationLine(useGame.getState().game);
+    return `${l.human} ${l.rat}`;
+  });
   const [finale, setFinale] = useState(reduced);
   const [typed, setTyped] = useState(reduced ? LINE.length : 0);
   const showButton = typed >= LINE.length;
@@ -271,7 +276,7 @@ function Celebration({ onClose }: { onClose: () => void }) {
       if (i >= LINE.length) window.clearInterval(iv);
     }, 34);
     return () => window.clearInterval(iv);
-  }, [finale, reduced]);
+  }, [finale, reduced, LINE.length]);
 
   useEffect(() => {
     if (!showButton) return;

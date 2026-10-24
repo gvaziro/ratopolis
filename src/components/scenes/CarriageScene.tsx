@@ -8,7 +8,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { sfx } from "@/audio/sfx";
 import { useGame } from "@/game/store";
 import type { CatchResult, Scene } from "@/game/types";
+import { humanClock } from "@/game/engine/formulas";
 import { CatchCanvasCore } from "./CatchCanvas";
+import { UpstairsInset } from "./UpstairsInset";
 import { act, carriageShadowX, fallGeom, shake } from "./sceneUtils";
 
 const TAU = Math.PI * 2;
@@ -109,6 +111,12 @@ export default function CarriageScene({ scene }: { scene: Scene }) {
   const first = useGame((s) => !s.game.flags.first_carriage);
   const [hint, setHint] = useState(first);
   const bammed = useRef(false);
+  const reduced = useGame((s) => s.game.settings.reducedMotion);
+  // SC-5: the «Наверху» inset shows the human clock when the cab came by
+  const [clock] = useState(() => {
+    const c = humanClock(useGame.getState().game);
+    return String(c.hh).padStart(2, "0") + ":" + String(c.mm).padStart(2, "0");
+  });
   const clopAt = useRef(0);
 
   useEffect(() => {
@@ -141,6 +149,7 @@ export default function CarriageScene({ scene }: { scene: Scene }) {
       {scene.phase === "catch" && (
         <CatchCanvasCore key={`c${scene.phaseStart}`} scene={scene} mode="fall" onDone={onDone} onCatch={onCatch} drawBack={drawBack} onFrame={onFrame} className="absolute inset-0" />
       )}
+      {scene.phase === "catch" && <UpstairsInset n={1} perCar={6} clock={clock} reduced={reduced} cab />}
       {hint && <CatchHint />}
     </div>
   );

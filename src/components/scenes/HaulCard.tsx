@@ -11,9 +11,11 @@ import { RESOURCES } from "@/game/data/resources";
 import { entries } from "@/game/engine/formulas";
 import { useGame } from "@/game/store";
 import type { Scene } from "@/game/types";
-import { fmt, fmtInt, fmtPct } from "@/lib/format";
+import { fmt, fmtInt, fmtPct, fmtTime } from "@/lib/format";
 import { BrassButton, cx } from "@/components/ui/kit";
 import { act, clamp, easeOutCubic, shake } from "./sceneUtils";
+
+const signed = (v: number) => (v >= 0 ? `+${fmt(v)}` : fmt(v));
 
 /** Number rolling up from 0 to `value` in 1.2 s with an ease-out (DOM text, no React re-renders). */
 function RollUp({ value, delay = 0, prefix = "+" }: { value: number; delay?: number; prefix?: string }) {
@@ -67,6 +69,9 @@ function HaulCardImpl({ scene }: { scene: Scene }) {
     .sort((a, b) => b[1] * (RESOURCES[b[0]].market ?? 40) - a[1] * (RESOURCES[a[0]].market ?? 40));
   const rating = RATING_TABLE.find((r) => r.id === haul.rating) ?? RATING_TABLE[RATING_TABLE.length - 1];
   const royal = haul.rating === "royal";
+  // the honest breakdown (EN-5) when the engine sends it; v1 hauls only know the total
+  const parts = haul.suspicionParts;
+  const suspTotal = parts?.total ?? haul.suspicion;
 
   return (
     <div className="absolute inset-0 z-10 flex items-start justify-center overflow-y-auto bg-black/60 p-3 md:items-center">
@@ -115,10 +120,27 @@ function HaulCardImpl({ scene }: { scene: Scene }) {
               Лучшее комбо <b className="font-mono">×{fmtInt(haul.combo)}</b>
             </p>
           )}
-          {showSusp && (
-            <p>
-              Подозрение людей <b className={cx("font-mono", haul.suspicion > 0 ? "text-[#9a2a1f]" : "text-[#3d6b2a]")}>{haul.suspicion >= 0 ? `+${fmt(haul.suspicion)}` : fmt(haul.suspicion)}</b> 👁
+          {showSusp && suspTotal !== 0 && (
+            <p className="sm:col-span-2">
+              Подозрение:{" "}
+              {parts ? (
+                <>
+                  проход <b className="font-mono text-[#9a2a1f]">{signed(parts.pass)}</b>
+                  {parts.lantern !== 0 && (
+                    <>
+                      {" "}
+                      · фонарь <b className="font-mono text-[#9a2a1f]">{signed(parts.lantern)}</b>
+                    </>
+                  )}
+                </>
+              ) : (
+                <b className={cx("font-mono", suspTotal > 0 ? "text-[#9a2a1f]" : "text-[#3d6b2a]")}>{signed(suspTotal)}</b>
+              )}{" "}
+              👁
             </p>
+          )}
+          {haul.jackpotSeconds !== undefined && haul.jackpotSeconds > 0 && (
+            <p className="font-bold text-[#8a5a00] sm:col-span-2">Джекпот: ≈ {fmtTime(haul.jackpotSeconds)} дохода</p>
           )}
         </div>
 
@@ -133,7 +155,11 @@ function HaulCardImpl({ scene }: { scene: Scene }) {
         )}
 
         <div className="mt-3 flex items-end justify-between gap-3">
-          <p className="text-[11px] italic text-[#5a4a35]">Люди наверху ничего не заметили. Ну, почти.</p>
+          {/* SC-4: «Тем временем наверху» — the human paper's line about this pass (engine pickHumanHeadline) */}
+          <div className="max-w-[60%] -rotate-[1.5deg] border border-[#b9a67f] bg-[#efe4c9] px-2 py-1 text-[#2a2018] shadow-[0_2px_5px_rgba(0,0,0,.35)]">
+            <p className="border-b border-[#2a2018]/40 font-serif text-[9px] font-bold uppercase tracking-[0.2em]">Тем временем наверху</p>
+            <p className="font-serif text-[12px] italic leading-snug">{haul.headline ?? "Люди наверху ничего не заметили. Ну, почти."}</p>
+          </div>
           <BrassButton size="lg" className="min-h-11 shrink-0" autoFocus onClick={() => act({ a: "dismiss" })}>
             Дальше
           </BrassButton>

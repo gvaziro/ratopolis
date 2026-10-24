@@ -3,14 +3,16 @@
 /**
  * Developer tools: only with NODE_ENV=development or `?dev` in the URL.
  * A floating 🛠 button opens a compact panel: time warp, give resources, open zones,
- * trigger events, and a live readout of game time, fps and the current scene.
+ * trigger events, shell checks (sample toasts, a render / engine crash), and a live readout of game time, fps and
+ * the current scene. In dev the fx buses are on `window.__rrFx`.
  */
 import { useEffect, useState, type ReactNode } from "react";
 import { EVENT_LINES } from "@/game/data/events";
 import { RESOURCES, RES_ORDER } from "@/game/data/resources";
 import { ZONES, ZONE_ORDER } from "@/game/data/zones";
+import { emitFx, emitUiFx } from "@/game/fx";
 import { useGame } from "@/game/store";
-import type { ResId, SceneEventId, ZoneId } from "@/game/types";
+import type { GameState, ResId, SceneEventId, ZoneId } from "@/game/types";
 import { cx } from "@/components/ui/kit";
 import { fmt, fmtTime } from "@/lib/format";
 
@@ -140,8 +142,46 @@ function Panel({ onClose }: { onClose: () => void }) {
           </button>
         ))}
       </Group>
+
+      <Group title="Проверить оболочку">
+        <button type="button" className={BTN} onClick={sampleToasts} title="Тост, разведчики, рекорд и пачка «Открыто»">
+          🍞 Тосты ×4
+        </button>
+        <button
+          type="button"
+          className={BTN}
+          onClick={() => useGame.setState((s) => ({ game: { ...s.game, shinies: [{ id: -1 } as GameState["shinies"][number]] } }))}
+          title="Битая блестяшка: рендер падает, должен выйти экран «Крысы перегрызли провод»"
+        >
+          💥 Крэш рендера
+        </button>
+        <button type="button" className={BTN} onClick={() => useGame.setState({ crashed: true, crashError: "DevPanel: пробный крэш движка" })}>
+          ⚙️ Крэш движка
+        </button>
+      </Group>
     </div>
   );
+}
+
+/** Four toasts of different kinds at once (placement checks: the grate, the market and the panel must stay clear). */
+function sampleToasts() {
+  emitFx([
+    { k: "toast", text: "Пробный тост: колония на связи", icon: "📣", tone: "info" },
+    { k: "scout", zone: "sewers", res: "coins", amount: 120, step: 1 },
+    { k: "record", what: "sewers", time: 754, prev: 902 },
+  ]);
+  emitUiFx({
+    k: "unlock",
+    items: [
+      { key: "j_pickpocket", tab: "jobs", text: "🎩 Новая работа: Карманник — приносит 🪙" },
+      { key: "b_pantry", tab: "buildings", text: "🥫 Можно строить Кладовку — лимит 🍞 +150" },
+    ],
+  });
+}
+
+/** Dev console handle for the fx buses: `__rrFx.emitFx([...])`, `__rrFx.emitUiFx({...})`. */
+if (process.env.NODE_ENV !== "production" && typeof window !== "undefined") {
+  (window as unknown as { __rrFx?: { emitFx: typeof emitFx; emitUiFx: typeof emitUiFx } }).__rrFx = { emitFx, emitUiFx };
 }
 
 function Group({ title, children }: { title: string; children: ReactNode }) {
