@@ -10,6 +10,7 @@ import { RESOURCES } from "@/game/data/resources";
 import { useGame } from "@/game/store";
 import type { ResId } from "@/game/types";
 import { fxBurst, markFxPoint } from "../fx/fxBus";
+import { uiX, uiY } from "./geometry";
 
 const Purse = memo(function Purse() {
   const purse = useGame(useShallow((s) => s.game.purse));
@@ -105,15 +106,6 @@ const Shinies = memo(function Shinies() {
     </>
   );
 });
-
-/** CO-8: the engine's 0..1 spot, remapped into x 0.22–0.78 × y 0.32–0.8 so a purse or shiny never hides under the
- * goal widget, the market or the zone pips (UI only: the engine's coordinates stay as they are). */
-function uiX(x: number): number {
-  return 0.22 + 0.56 * Math.max(0, Math.min(1, x));
-}
-function uiY(y: number): number {
-  return 0.32 + 0.48 * Math.max(0, Math.min(1, y));
-}
 
 export function BgEvents() {
   return (

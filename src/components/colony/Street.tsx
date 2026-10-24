@@ -19,6 +19,9 @@ const BOT = GY + 22; // near edge
 const HALF_T = 74;
 const HALF_B = 92;
 const MIN_GRATE_PX = 104;
+/** The grate's transparent tap area: top and full height (cut so it never reaches below the street). */
+const HIT_TOP = TOP - 26;
+const HIT_H = BOT - TOP + 56;
 
 interface Cobble {
   x: number;
@@ -202,21 +205,26 @@ export const PawHint = memo(function PawHint() {
 /** The grate itself: big iron bars against the bright street. */
 export function Grate() {
   const outerRef = useRef<SVGGElement>(null);
+  const hitRef = useRef<SVGRectElement>(null);
   const squashRef = useRef<SVGGElement>(null);
   const lucky = useGame((s) => s.game.buffs.luckyPawUntil > s.game.time);
   // CO-8: «Мегаполис» (1 000 rats) gilds the grate for good
   const gilded = useGame((s) => s.game.meta.achievements.colony_1000 !== undefined);
   const light = useColonyLight();
 
-  // keep the grate at least MIN_GRATE_PX wide on screen
-  useEffect(
-    () =>
-      onCamera((v) => {
-        const k = Math.max(1, MIN_GRATE_PX / (GRATE.w * v.s));
-        outerRef.current?.setAttribute("transform", k === 1 ? "" : `translate(${GX} ${GY}) scale(${k.toFixed(3)}) translate(${-GX} ${-GY})`);
-      }),
-    [],
-  );
+  // keep the grate at least MIN_GRATE_PX wide on screen; its tap area stays in the street (scaled up in the 🔭
+  // overview it would reach down over the burrow's top chambers and steal their taps)
+  useEffect(() => {
+    let kw = "";
+    return onCamera((v) => {
+      const k = Math.max(1, MIN_GRATE_PX / (GRATE.w * v.s));
+      const ks = k.toFixed(3);
+      if (ks === kw) return;
+      kw = ks;
+      outerRef.current?.setAttribute("transform", k === 1 ? "" : `translate(${GX} ${GY}) scale(${ks}) translate(${-GX} ${-GY})`);
+      hitRef.current?.setAttribute("height", Math.min(HIT_H, GY + (STREET_H - GY) / k - HIT_TOP).toFixed(1));
+    });
+  }, []);
 
   const squash = () => {
     const rm = useGame.getState().game.settings.reducedMotion;
@@ -273,8 +281,8 @@ export function Grate() {
         onKeyDown={onKey}
         style={{ cursor: "pointer", outline: "none" }}
       >
-        <rect x={GX - HALF_B - 26} y={TOP - 26} width={2 * HALF_B + 52} height={BOT - TOP + 56} fill="transparent" />
-        <g ref={squashRef} className="cv-fb">
+        <rect ref={hitRef} x={GX - HALF_B - 26} y={HIT_TOP} width={2 * HALF_B + 52} height={HIT_H} fill="transparent" />
+        <g ref={squashRef} className="cv-fb" pointerEvents="none">
           {lucky && <Glow x={GX} y={GY} r={140} kind="gold" className="cv-glow" />}
           <path d={`M${GX - HALF_T} ${TOP}H${GX + HALF_T}L${GX + HALF_B} ${BOT}H${GX - HALF_B}z`} fill={light === "day" ? "url(#cv-skylight)" : `url(#cv-skylight-${light})`} />
           {light === "night" && (

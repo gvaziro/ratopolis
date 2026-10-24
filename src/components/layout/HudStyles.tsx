@@ -3,7 +3,9 @@
 /**
  * Keyframes and helper classes for the HUD shell (header, «Наверху», resource bar, ticker, toasts,
  * offline report). Every HUD component renders <HudStyles/>; React 19 hoists and de-duplicates it by href.
- * `.hud-calm` on an ancestor (reduced motion) turns decorative loops off.
+ * `.hud-calm` on an ancestor (reduced motion) turns decorative loops off: every endless loop of the resource bar and
+ * of «Наверху» (walkers' legs, smoke, rain, the mini-scenes stand still in their resting pose). Walkers waiting off
+ * the street (visibility hidden) keep their legs paused in any mode.
  */
 const CSS = `
 @keyframes hud-pop{0%{transform:scale(.3);opacity:0}60%{transform:scale(1.12);opacity:1}100%{transform:scale(1)}}
@@ -99,9 +101,8 @@ const CSS = `
 .sk-ripple{transform-box:fill-box;transform-origin:center;animation:sk-ripple 1.3s ease-out infinite}
 .sk-shake{animation:sk-shake .12s linear infinite}
 .sk-board-blink{animation:sk-board 1s steps(2,jump-none) infinite}
-.hud-calm .sk-smoke,.hud-calm .sk-bigsmoke{animation-duration:12s}
-.hud-calm .sk-shake,.hud-calm .sk-flicker,.hud-calm .sk-ripple,.hud-calm .sk-board-blink{animation:none}
-.hud-calm .sk-rain{animation-duration:1.4s}
+.hud-calm :is(.sk-leg,.sk-bob,.sk-spin,.sk-smoke,.sk-bigsmoke,.sk-rain,.sk-flicker,.sk-tail,.sk-eyes,.sk-note,.sk-capsule,.sk-puff,.sk-glow,.sk-ripple,.sk-shake,.sk-board-blink){animation:none}
+g[visibility="hidden"] :is(.sk-leg,.sk-bob){animation-play-state:paused}
 `;
 
 export default function HudStyles() {

@@ -29,7 +29,7 @@ import {
 import { fmt } from "../../lib/format";
 import { check } from "./conditions";
 import { award, edictRank, gain, hasFreeSlot, jobUnlocked, news, normalizeJobs, spend, toast } from "./core";
-import { derive, eventValue, idleRats, medalCount, type Derived } from "./derive";
+import { converterPotential, derive, eventValue, idleRats, medalCount, type Derived } from "./derive";
 import { onZoneOpen } from "./events";
 import {
   buildingCost,
@@ -46,7 +46,7 @@ import {
 import { coronationLine, humanWeekday } from "./narrative";
 import { commissionStat } from "./progress";
 import { rand } from "./rng";
-import { offerCommissions } from "./commissions";
+import { abandonCommission, commissionPossible, offerCommissions } from "./commissions";
 import { KEPT_STAGES_MAX, applyRoyalLitter, newRun } from "./state";
 
 /* ================================================================ click */
@@ -486,6 +486,7 @@ export function contributeExpress(s: GameState, res: ResId | null, ctx: EngineCt
       if (s.express.stage >= 10) coronation(s, ctx);
     } else {
       s.express.wagons++;
+      s.meta.lifetime.wagons++;
       toast(ctx, `Вагон экспресса №${s.express.wagons}: +10% ко всему`, "🚃", "gold");
     }
   }
@@ -553,14 +554,18 @@ export function autoContributeUncapped(s: GameState, d: Derived, before: ResMap)
  * gross production (plus any overload above the cap), so the store refills to the cap every second and
  * purchases that cost up to 100% of the cap stay affordable. Uncapped ones are fed every tick by
  * autoContributeUncapped; this pass also completes the project (starts the dig / the next express stage).
+ * `span` = the seconds since the last pass (an offline step: 10–48 s), so a catch-up drains half of each step's
+ * production like online play; `eta` = the offline efficiency.
  */
-export function autoContribute(s: GameState, d: Derived, ctx: EngineCtx): void {
+export function autoContribute(s: GameState, d: Derived, ctx: EngineCtx, span = 1, eta = 1): void {
   for (const p of autoProjects(s)) {
     const { cost, prog } = projectState(s, p);
     for (const [r, need] of entries(remaining(cost, prog))) {
       const cap = d.caps[r];
       if (need <= 0 || !Number.isFinite(cap) || s.res[r] < 0.999 * cap) continue;
-      const surplus = Math.max(0, s.res[r] - Math.max(0.5 * cap, cap - 0.5 * Math.max(0, s.gross[r])));
+      // a full store stops its converters (⚙️ mechanics), so their gross reads 0: measure what they could make
+      const rate = Math.max(0, s.gross[r], converterPotential(s, d, r, eta));
+      const surplus = Math.max(0, s.res[r] - Math.max(0.5 * cap, cap - 0.5 * span * rate));
       const amt = Math.min(need, surplus);
       if (amt <= 0) continue;
       s.res[r] -= amt;
@@ -631,8 +636,7 @@ export function migrate(s: GameState, now: number, ctx: EngineCtx): GameState | 
   // remembered even without the edict: "Чертежи экспресса" bought on the migration screen keeps these stages;
   // at most KEPT_STAGES_MAX (5): stages 6–10 and the coronation (×1.25 crowns, before_noon) replay every run
   meta.expressKept = Math.min(KEPT_STAGES_MAX, Math.max(meta.expressKept, s.express.stage));
-  const ratingOrder = ["none", "bronze", "silver", "gold", "royal"] as const;
-  const bestRating = s.haulLog.reduce<(typeof ratingOrder)[number]>((b, h) => (ratingOrder.indexOf(h.rating) > ratingOrder.indexOf(b) ? h.rating : b), "none");
+  const bestRating = s.runBestRating;
   // EN-11 chronicle: the finished run, newest last, at most 20
   meta.history.push({
     district: s.meta.district,
@@ -699,6 +703,7 @@ export function buySeal(s: GameState, id: SealId, ctx: EngineCtx): boolean {
   s.meta.sealsOwned.push(id);
   s.meta.seal = id;
   toast(ctx, `${SEALS[id].name} скреплена воском и хвостом`, SEALS[id].icon, "gold");
+  afterSealChange(s, ctx);
   return true;
 }
 
@@ -707,13 +712,23 @@ export function setSeal(s: GameState, id: SealId, ctx: EngineCtx): boolean {
   if (!s.meta.sealsOwned.includes(id) || s.time >= 60 || s.meta.seal === id) return false;
   s.meta.seal = id;
   toast(ctx, `Действует ${SEALS[id].name.replace("Печать", "печать")}`, SEALS[id].icon, "info");
+  afterSealChange(s, ctx);
   return true;
+}
+
+/** Печать Тишины keeps the Cat and the Ratcatcher away: a commission that needs them is handed back / not offered. */
+function afterSealChange(s: GameState, ctx: EngineCtx): void {
+  const c = s.commissions;
+  if (!c) return;
+  if (c.active) {
+    if (!commissionPossible(s, c.active.id)) abandonCommission(s, ctx);
+  } else if (c.offered.some((id) => !commissionPossible(s, id))) offerCommissions(s);
 }
 
 /** Accept one of the King's offered commissions (EN-12): progress is measured from the current stat value. */
 export function acceptCommission(s: GameState, id: CommissionId, ctx: EngineCtx): boolean {
   const c = s.commissions;
-  if (!c || c.active || !c.offered.includes(id)) return false;
+  if (!c || c.active || !c.offered.includes(id) || !commissionPossible(s, id)) return false;
   c.active = { id, base: commissionStat(s, COMMISSIONS[id]) };
   // the King's errand starts the clock: its event is not left waiting for its usual long interval
   const soon = (k: "purse" | "downpour" | "royal_express", sec: number) => (s.timers[k] = Math.min(s.timers[k], s.time + sec));

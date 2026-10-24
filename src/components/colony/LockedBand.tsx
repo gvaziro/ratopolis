@@ -9,7 +9,7 @@ import { sfx } from "@/audio/sfx";
 import { ZONES } from "@/game/data/zones";
 import type { ZoneId } from "@/game/types";
 import { fmtInt } from "@/lib/format";
-import { expeditionFraction } from "@/game/engine/actions";
+import { currentExpedition, expeditionFraction } from "@/game/engine/actions";
 import { emitUiFx, onFx } from "@/game/fx";
 import { useGame } from "@/game/store";
 import { BAND_H, bandTop, nextLocked, seeded, W } from "./geometry";
@@ -71,13 +71,18 @@ const HINTS: Partial<Record<ZoneId, { x: number; y: number; r: number; kind: Glo
 
 /**
  * «🗺️ Экспедиция: Канализация — 62% · 🐀 9/12» on a brass plaque with a verdigris bar (as GoalWidget counts it);
- * a click opens the Map tab at the zone (CO-8).
+ * a click opens the Map tab at the zone (CO-8). Before the scouts find the way it counts towards that instead
+ * («🗺️ Разведка: Канализация · 🐀 3/12», as the goal row does) and is not a button while the Map tab is still hidden.
  */
 function ExpeditionPlaque({ zone, digging }: { zone: ZoneId; digging: boolean }) {
+  const scouting = useGame((s) => currentExpedition(s.game) !== zone);
   const pct = useGame((s) => Math.floor(expeditionFraction(s.game, zone) * 100));
-  const rats = useGame((s) => s.game.rats);
-  const need = ZONES[zone].expedition?.rats ?? 0;
-  const text = digging ? "⛏️ Копаем! Копаем!" : `🗺️ Экспедиция: ${ZONES[zone].name} — ${pct}% · 🐀 ${fmtInt(Math.min(rats, need))}/${fmtInt(need)}`;
+  const rats = useGame((s) => Math.floor(s.game.rats));
+  const mapOpen = useGame((s) => !!s.game.revealed.tab_map);
+  const need = (scouting ? ZONES[zone].mapRevealRats : ZONES[zone].expedition?.rats) ?? 0;
+  const frac = scouting ? (need > 0 ? Math.min(1, rats / need) : 1) : pct / 100;
+  const count = `🐀 ${fmtInt(Math.min(rats, need))}/${fmtInt(need)}`;
+  const text = digging ? "⛏️ Копаем! Копаем!" : scouting ? `🗺️ Разведка: ${ZONES[zone].name} · ${count}` : `🗺️ Экспедиция: ${ZONES[zone].name} — ${pct}% · ${count}`;
   const w = Math.max(220, text.length * 7.2 + 28);
   const x = W / 2 - w / 2;
   const y = BAND_H / 2 - 22;
@@ -85,18 +90,22 @@ function ExpeditionPlaque({ zone, digging }: { zone: ZoneId; digging: boolean })
   return (
     <g
       data-nodrag=""
-      pointerEvents="auto"
-      role="button"
-      tabIndex={0}
+      pointerEvents={mapOpen ? "auto" : undefined}
+      role={mapOpen ? "button" : "img"}
+      tabIndex={mapOpen ? 0 : undefined}
       aria-label={text}
-      style={{ cursor: "pointer" }}
-      onClick={open}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          open();
-        }
-      }}
+      style={mapOpen ? { cursor: "pointer" } : undefined}
+      onClick={mapOpen ? open : undefined}
+      onKeyDown={
+        mapOpen
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                open();
+              }
+            }
+          : undefined
+      }
     >
       <rect x={x} y={y} width={w} height={44} rx="6" fill="#2a2016" stroke="url(#cv-brass)" strokeWidth="3" />
       {[x + 8, x + w - 8].map((cx) => (
@@ -106,7 +115,7 @@ function ExpeditionPlaque({ zone, digging }: { zone: ZoneId; digging: boolean })
         {text}
       </text>
       <rect x={x + 14} y={y + 30} width={w - 28} height="5" rx="2.5" fill="#120e0b" />
-      <rect x={x + 14} y={y + 30} width={((w - 28) * pct) / 100} height="5" rx="2.5" fill="#4f9d8a" />
+      <rect x={x + 14} y={y + 30} width={(w - 28) * frac} height="5" rx="2.5" fill="#4f9d8a" />
       {[0.25, 0.5, 0.75].map((k) => (
         <rect key={k} x={x + 14 + (w - 28) * k - 0.5} y={y + 29} width="1" height="7" fill="#c9a25a" opacity=".7" />
       ))}

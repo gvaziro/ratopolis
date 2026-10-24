@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { exportString, SAVE_KEY, serialize } from "./engine/save";
+import { deserialize, exportString, isNewerSave, SAVE_KEY, serialize } from "./engine/save";
 import { createInitialState, SCHEMA_VERSION } from "./engine/state";
 import { stepHooks } from "./engine/step";
 import { onUiFx, type UiFx } from "./fx";
-import { useGame } from "./store";
+import { noteHidden, noteVisible, useGame } from "./store";
 import type { GameState } from "./types";
 
 /** In-memory localStorage that records writes. */
@@ -46,6 +46,8 @@ beforeEach(() => {
 
 afterEach(() => {
   stepHooks.before = null;
+  noteVisible();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -92,15 +94,15 @@ describe("store: corrupt and newer saves (EN-8)", () => {
     boot(ls);
     expect(useGame.getState().saveIssue).toBeNull();
     expect(useGame.getState().game.rats).toBe(12);
-    expect(ls.map.get(`${SAVE_KEY}:bak1`)).toBe(raw);
+    expect(ls.map.get(`${SAVE_KEY}:bak2`)).toBe(raw);
     useGame.getState().save();
-    expect(ls.writes.indexOf(`${SAVE_KEY}:bak1`)).toBeLessThan(ls.writes.indexOf(SAVE_KEY));
-    expect(useGame.getState().backups()).toEqual([{ slot: 1, at: g.lastSaved, rats: 12, crownsEver: 0 }]);
+    expect(ls.writes.indexOf(`${SAVE_KEY}:bak2`)).toBeLessThan(ls.writes.indexOf(SAVE_KEY));
+    expect(useGame.getState().backups()).toEqual([{ slot: 2, at: g.lastSaved, rats: 12, crownsEver: 0 }]);
   });
 });
 
 describe("store: backups (EN-8)", () => {
-  it("importSave writes bak1 first; restoreBackup brings the old colony back", () => {
+  it("importSave keeps the old colony in the copy first; restoreBackup brings it back (and keeps the other)", () => {
     const old = savedGame(1, 30);
     const ls = memoryStorage({ [SAVE_KEY]: serialize(old) });
     boot(ls);
@@ -109,14 +111,35 @@ describe("store: backups (EN-8)", () => {
     const other = savedGame(2, 99);
     ls.writes.length = 0;
     expect(useGame.getState().importSave(exportString(other))).toBe(true);
-    expect(ls.writes[0]).toBe(`${SAVE_KEY}:bak1`);
-    expect(ls.map.get(`${SAVE_KEY}:bak1`)).toBe(before);
+    expect(ls.writes[0]).toBe(`${SAVE_KEY}:bak2`);
+    expect(ls.map.get(`${SAVE_KEY}:bak2`)).toBe(before);
     expect(useGame.getState().game.rats).toBe(99);
-    expect(useGame.getState().backups()[0]).toMatchObject({ slot: 1, rats: 30 });
+    expect(useGame.getState().backups()[0]).toMatchObject({ slot: 2, rats: 30 });
+    // a rollback swaps: the old colony comes back, the imported one waits in the copy
+    expect(useGame.getState().restoreBackup(2)).toBe(true);
+    expect(useGame.getState().game.rats).toBe(30);
+    expect(useGame.getState().backups()[0]).toMatchObject({ slot: 2, rats: 99 });
     // the raw save file round-trips too
     expect(useGame.getState().importSaveFile(useGame.getState().rawSave()!)).toBe(true);
-    expect(useGame.getState().game.rats).toBe(99);
-    expect(useGame.getState().backups().map((b) => b.slot)).toEqual([1, 2]);
+    expect(useGame.getState().game.rats).toBe(30);
+  });
+
+  it("the copy taken before an import outlives the 5-minute rolling copies", () => {
+    const ls = memoryStorage({ [SAVE_KEY]: serialize(savedGame(1, 30)) });
+    boot(ls);
+    useGame.getState().save();
+    expect(useGame.getState().importSave(exportString(savedGame(2, 99)))).toBe(true);
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    for (let i = 0; i < 44; i++) {
+      now += 15_000; // 11 minutes of autosaves
+      useGame.getState().advance(150, true);
+      useGame.getState().save();
+    }
+    const b = useGame.getState().backups();
+    expect(b.map((x) => x.slot)).toEqual([1, 2]); // newest first: the rolling copy
+    expect(b.find((x) => x.slot === 1)?.rats).toBe(99);
+    expect(b.find((x) => x.slot === 2)?.rats).toBe(30);
     expect(useGame.getState().restoreBackup(2)).toBe(true);
     expect(useGame.getState().game.rats).toBe(30);
   });
@@ -138,6 +161,51 @@ describe("store: backups (EN-8)", () => {
     expect(useGame.getState().saveIssue).toBeNull();
     expect(useGame.getState().game.rats).toBe(10);
     expect(ls.map.get(`${SAVE_KEY}:bak1`)).toBe(good);
+  });
+});
+
+describe("store: saves while hidden, refused writes", () => {
+  it("saves while the tab is hidden stand for the hide time, so the next load credits the whole absence", () => {
+    const ls = memoryStorage({ [SAVE_KEY]: serialize(savedGame(12, 20)) });
+    boot(ls);
+    useGame.getState().advance(600, true);
+    const hideAt = Date.now();
+    noteHidden(hideAt);
+    let now = hideAt;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    // two hours of the interval saver and a close from the tab strip: the game stood still all along
+    for (let i = 0; i < 120; i++) {
+      now += 60_000;
+      expect(useGame.getState().save()).toBe(true);
+    }
+    const stored = deserialize(ls.map.get(SAVE_KEY)!);
+    expect(stored && !isNewerSave(stored) && stored.lastSaved).toBe(hideAt);
+    expect(useGame.getState().game.lastSaved).toBe(hideAt);
+    // the next visit (another tab, a reload) credits the two hours
+    useGame.setState({ ready: false });
+    useGame.getState().init();
+    expect(useGame.getState().offlineReport?.elapsed).toBeCloseTo(7200, 3);
+    // visible again: saves are stamped with the current time
+    noteVisible();
+    useGame.getState().save();
+    expect(useGame.getState().game.lastSaved).toBe(now);
+  });
+
+  it("a refused write makes save() return false and tells the player once", () => {
+    const ls = memoryStorage({ [SAVE_KEY]: serialize(savedGame(4, 10)) });
+    boot(ls);
+    expect(useGame.getState().save()).toBe(true);
+    const ui: UiFx[] = [];
+    const off = onUiFx((f) => ui.push(f));
+    ls.setItem = () => {
+      throw new Error("QuotaExceededError");
+    };
+    expect(useGame.getState().save()).toBe(false);
+    expect(useGame.getState().save()).toBe(false);
+    const toasts = ui.filter((f) => f.k === "toast");
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]).toMatchObject({ tab: "settings" });
+    off();
   });
 });
 

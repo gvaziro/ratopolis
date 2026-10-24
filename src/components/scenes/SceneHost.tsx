@@ -6,15 +6,19 @@
  * Scene bodies are separate chunks (next/dynamic, client only): every scene opens with seconds of warning or
  * rumble, and the chunks are fetched ahead anyway — trains on «К путям!» and when the Sewers / Metro open, the cat
  * when the Cellars open, the carriage and the piper (which come unannounced) once the game has settled in.
+ * A body chunk that will not load (offline, a deploy swapped the chunk names) is retried, and if it still fails the
+ * scene shows «Сцена не загрузилась» and the engine resolves it on its own clock — instead of the whole-game crash
+ * screen; the body gets a fresh loader, because React.lazy (under next/dynamic) remembers a failed import for good.
  */
 import dynamic from "next/dynamic";
-import { useEffect, type ComponentType } from "react";
+import { Component, useEffect, type ComponentType, type ErrorInfo, type ReactNode } from "react";
+import { BrassButton } from "@/components/ui/kit";
 import { onFx } from "@/game/fx";
 import { useGame } from "@/game/store";
 import type { Scene, SceneEventId } from "@/game/types";
 import { MarketChip } from "./MarketPopup";
 import SceneFrame from "./SceneFrame";
-import { actQuiet } from "./sceneUtils";
+import { act, actQuiet } from "./sceneUtils";
 
 const PHASE_LABEL: Record<string, string> = {
   warn: "Тревога",
@@ -40,6 +44,14 @@ function BodySkeleton() {
 }
 const loading = () => <BodySkeleton />;
 
+/** A body import, tried up to `tries` times a second apart (a dropped connection gets a moment to come back). */
+function retry<T>(load: () => Promise<T>, tries = 3): Promise<T> {
+  return load().catch((e: unknown) => {
+    if (tries <= 1) throw e;
+    return new Promise<T>((ok) => window.setTimeout(() => ok(retry(load, tries - 1)), 1000));
+  });
+}
+
 // the import() calls must stay literal (one chunk per body); the loaders below fetch the very same chunks early
 const loadTrain = () => import("./TrainScene");
 const loadCarriage = () => import("./CarriageScene");
@@ -47,21 +59,40 @@ const loadCat = () => import("./CatScene");
 const loadRatcatcher = () => import("./RatcatcherScene");
 const loadDownpour = () => import("./DownpourScene");
 
-const TrainScene = dynamic(() => import("./TrainScene"), { ssr: false, loading });
-const CarriageScene = dynamic(() => import("./CarriageScene"), { ssr: false, loading });
-const CatScene = dynamic(() => import("./CatScene"), { ssr: false, loading });
-const RatcatcherScene = dynamic(() => import("./RatcatcherScene"), { ssr: false, loading });
-const DownpourScene = dynamic(() => import("./DownpourScene"), { ssr: false, loading });
+type Chunk = "train" | "carriage" | "cat" | "ratcatcher" | "downpour";
 
-const BODIES: Record<SceneEventId, SceneBody> = {
-  carriage: CarriageScene,
-  capsule: TrainScene,
-  metro_train: TrainScene,
-  royal_express: TrainScene,
-  downpour: DownpourScene,
-  cat: CatScene,
-  ratcatcher: RatcatcherScene,
+/** Builds a body component; called again for a chunk whose load failed (a rejected lazy would fail forever). */
+const MAKE_BODY: Record<Chunk, () => SceneBody> = {
+  train: () => dynamic(() => retry(() => import("./TrainScene")), { ssr: false, loading }),
+  carriage: () => dynamic(() => retry(() => import("./CarriageScene")), { ssr: false, loading }),
+  cat: () => dynamic(() => retry(() => import("./CatScene")), { ssr: false, loading }),
+  ratcatcher: () => dynamic(() => retry(() => import("./RatcatcherScene")), { ssr: false, loading }),
+  downpour: () => dynamic(() => retry(() => import("./DownpourScene")), { ssr: false, loading }),
 };
+
+const bodies: Record<Chunk, SceneBody> = {
+  train: MAKE_BODY.train(),
+  carriage: MAKE_BODY.carriage(),
+  cat: MAKE_BODY.cat(),
+  ratcatcher: MAKE_BODY.ratcatcher(),
+  downpour: MAKE_BODY.downpour(),
+};
+
+const CHUNK: Record<SceneEventId, Chunk> = {
+  carriage: "carriage",
+  capsule: "train",
+  metro_train: "train",
+  royal_express: "train",
+  downpour: "downpour",
+  cat: "cat",
+  ratcatcher: "ratcatcher",
+};
+
+/** A failed chunk fetch (Turbopack / webpack ChunkLoadError, or the browser's own dynamic-import errors), not a bug. */
+function isChunkError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  return e.name === "ChunkLoadError" || /Loading chunk|Failed to load chunk|dynamically imported module|Importing a module script failed/i.test(e.message);
+}
 
 const prefetched = new Set<() => Promise<unknown>>();
 /** Fetch a scene chunk ahead of time (once; a failed fetch may be retried later). */
@@ -139,9 +170,66 @@ function SceneInstance({ id, seq }: { id: SceneEventId; seq: number }) {
         </>
       }
     >
-      <SceneBody />
+      <BodyGuard chunk={CHUNK[id]} seq={seq}>
+        <SceneBody />
+      </BodyGuard>
     </SceneFrame>
   );
+}
+
+/**
+ * Error boundary around one scene's body (SceneInstance is keyed by the scene seq, so each scene gets a fresh one).
+ * Only a chunk that failed to load is handled here; any other error goes on up to CrashGuard as before.
+ */
+class BodyGuard extends Component<{ chunk: Chunk; seq: number; children: ReactNode }, { error: unknown }> {
+  state: { error: unknown } = { error: null };
+
+  static getDerivedStateFromError(error: unknown) {
+    return { error: error ?? new Error("unknown") };
+  }
+
+  componentDidCatch(error: unknown, info: ErrorInfo) {
+    if (!isChunkError(error)) return;
+    console.warn("[ratropolis] scene chunk failed to load", error, info.componentStack);
+    // the next try (or the next scene of this kind) gets a fresh lazy loader
+    bodies[this.props.chunk] = MAKE_BODY[this.props.chunk]();
+    // nobody is playing this scene now: let the engine resolve it on its own clock (no grace waits)
+    if (useGame.getState().game.scene?.seq === this.props.seq) actQuiet({ a: "detach" });
+  }
+
+  private retry = () => {
+    if (useGame.getState().game.scene?.seq === this.props.seq) actQuiet({ a: "attach" });
+    this.setState({ error: null });
+  };
+
+  private skip = () => {
+    // auto-collect resolves what is left; the haul card lives in the missing chunk, so close it right away
+    act({ a: "skip" });
+    act({ a: "dismiss" });
+  };
+
+  render() {
+    const { error } = this.state;
+    if (error === null) return this.props.children;
+    // not ours: rethrow, CrashGuard freezes the loop and the saves as usual
+    if (!isChunkError(error)) throw error;
+    return (
+      <div className="absolute inset-0 flex items-center justify-center bg-[radial-gradient(ellipse_at_50%_40%,#2a211a,#14110f_70%)] p-4" role="alert">
+        <div className="flex max-w-sm flex-col items-center gap-2 rounded-lg border border-brass-dark bg-soot/85 px-4 py-3 text-center shadow-[0_6px_20px_rgba(0,0,0,.7)]">
+          <p className="font-display text-lg font-bold text-brass-light">Сцена не загрузилась</p>
+          <p className="text-xs leading-snug text-parchment-dim">Связь с машинным отделением оборвалась. Колония справится сама, без лап, — или попробуйте ещё раз.</p>
+          <div className="flex flex-wrap justify-center gap-2">
+            <BrassButton className="min-h-11" onClick={this.retry}>
+              Ещё раз
+            </BrassButton>
+            <BrassButton tone="ghost" className="min-h-11" onClick={this.skip}>
+              Пропустить
+            </BrassButton>
+          </div>
+        </div>
+      </div>
+    );
+  }
 }
 
 function PhaseBadge() {
@@ -155,6 +243,6 @@ function PhaseBadge() {
 function SceneBody() {
   const scene = useGame((s) => s.game.scene);
   if (!scene) return null;
-  const Body = BODIES[scene.id];
+  const Body = bodies[CHUNK[scene.id]];
   return <Body scene={scene} />;
 }

@@ -6,10 +6,12 @@
  * phones — right above the bottom sheet, measured from the panel's top edge (≤ 2; 1 with the sheet full; none
  * while a full-screen close-up runs). Both stand clear of Benedict's docked stall. The stack never takes clicks:
  * only ✕ and the action buttons do, so the grate and the colony stay playable underneath.
+ * While a modal dialog covers the layout (offline report, coronation, migration, save issue) the banners and toasts
+ * wait for it to close, their fuses paused, instead of playing out unseen underneath.
  * Fed by the engine fx bus (toast, vagrants, express stages, trains, scouts, records, commissions, medals, zones,
  * frenzy) and the UI bus (batched unlocks with «Открыть», generic toasts).
  */
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { COMMISSIONS } from "@/game/data/commissions";
 import { HEADLINES } from "@/game/data/headlines";
 import { ACHIEVEMENTS, EXPRESS_STAGES } from "@/game/data/meta";
@@ -70,6 +72,12 @@ const RECORD_WHAT: Record<RecordKey, string> = {
 
 let seq = 0;
 
+/**
+ * Fuse time left (ms) of toasts that went off screen (a scene on a phone, a modal, the full sheet's one-toast limit):
+ * back on screen they resume from it instead of restarting their whole life. `rev` ties it to the content it counted.
+ */
+const fuses = new Map<number, { rev: number; left: number }>();
+
 const DESK_MQ = "(min-width: 768px)";
 
 /** Phones with the full sheet have only a sliver of colony above it: one toast at a time there. */
@@ -98,7 +106,9 @@ export default function Toasts() {
   const sheet = useGame((s) => s.sheet);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [banners, setBanners] = useState<Banner[]>([]);
+  const rootRef = useRef<HTMLDivElement>(null);
   const stackRef = useRef<HTMLDivElement>(null);
+  const modal = useModalOpen(rootRef);
   // Benedict's docked stall sits in the colony's bottom-left corner: stand on top of it, not over it
   const stall = useGame((s) => !!s.game.market && !s.game.scene);
   useSheetAnchor(stackRef, stall);
@@ -139,6 +149,10 @@ export default function Toasts() {
           push({ icon: "🚂", text: `Крысиный экспресс, этап ${fx.stage}/10: «${name}» готов!`, tone: "gold", ms: TOAST_MS + 1000 });
           break;
         }
+        case "sceneStart":
+          // the train is here: its «К путям!» countdown is over (and must not come back after the scene)
+          if (fx.id === "capsule" || fx.id === "metro_train" || fx.id === "royal_express") setToasts((list) => list.filter((x) => !x.train));
+          break;
         case "trainSoon": {
           if (!useGame.getState().game.settings.trainToasts) break;
           const at = performance.now() + fx.inSec * 1000;
@@ -217,21 +231,27 @@ export default function Toasts() {
     setToasts((list) => list.map((t) => (t.id === id ? { ...t, leaving: true } : t)));
     window.setTimeout(() => setToasts((list) => list.filter((t) => t.id !== id)), OUT_MS);
   };
+  // a toast gone from the list (dismissed, pushed out by the stack limit, its train arrived) takes its kept fuse along
+  useEffect(() => {
+    const ids = new Set(toasts.map((t) => t.id));
+    for (const id of fuses.keys()) if (!ids.has(id)) fuses.delete(id);
+  }, [toasts]);
 
   const current = banners[0] ?? null;
   const nextBanner = () => setBanners((list) => list.slice(1));
   // phones: a close-up takes the whole screen — toasts wait for it to end (their fuses paused) instead of floating
-  // over the falling loot; with the sheet full only the newest one fits
+  // over the falling loot; with the sheet full only the newest one fits, shortened. Everywhere: a modal holds them all.
   const desk = useSyncExternalStore(
     subscribeDesk,
     () => window.matchMedia(DESK_MQ).matches,
     () => true,
   );
   const sceneUp = useGame((s) => !!s.game.scene);
-  const shown = desk ? toasts : sceneUp ? [] : sheet === "full" ? toasts.slice(-1) : toasts;
+  const compact = !desk && sheet === "full";
+  const shown = modal ? [] : desk ? toasts : sceneUp ? [] : compact ? toasts.slice(-1) : toasts;
 
   return (
-    <div className={cx(calm && "hud-calm")}>
+    <div ref={rootRef} className={cx(calm && "hud-calm")}>
       <HudStyles />
       <div
         ref={stackRef}
@@ -244,10 +264,11 @@ export default function Toasts() {
         role="status"
       >
         {shown.map((t) => (
-          <Toast key={t.id} t={t} onDismiss={() => dismiss(t.id)} />
+          <Toast key={t.id} t={t} compact={compact} onDismiss={() => dismiss(t.id)} />
         ))}
       </div>
-      {current && <BannerView key={current.id} b={current} onDone={nextBanner} />}
+      {/* mounted (and its timer started) only once nothing covers it */}
+      {current && !modal && <BannerView key={current.id} b={current} onDone={nextBanner} />}
     </div>
   );
 }
@@ -261,6 +282,8 @@ const DESK_BOTTOM = 56;
  * Writes the stack's `bottom` directly (no re-render), re-measured by ResizeObservers on the panel and the stall:
  * - phones: 8 px above the panel sheet's top edge, following the half/full transition, plus room for the market's
  *   folded pill (an expanded stall is the player's choice: the toasts then overlap its top instead of the grate);
+ *   with the sheet full the stack is also capped to the colony sliver, so it never climbs over the resource bar and
+ *   the header (their buttons stay tappable);
  * - md+: the bottom-14 line, or just above Benedict's docked stall when the colony is too narrow for both side by side.
  */
 function useSheetAnchor(ref: RefObject<HTMLDivElement | null>, stall: boolean) {
@@ -281,9 +304,16 @@ function useSheetAnchor(ref: RefObject<HTMLDivElement | null>, stall: boolean) {
       const hasStall = !!sr && sr.height > 0;
       if (!mq.matches) {
         const top = aside?.getBoundingClientRect().top ?? 0;
-        el.style.bottom = top > 0 ? `${Math.round(vh - top + 8 + (hasStall ? STALL_PX : 0))}px` : "";
+        const bottom = top > 0 ? Math.round(vh - top + 8 + (hasStall ? STALL_PX : 0)) : null;
+        el.style.bottom = bottom === null ? "" : `${bottom}px`;
+        const roof = useGame.getState().sheet === "full" ? document.querySelector("main > section")?.getBoundingClientRect().top : undefined;
+        const room = roof === undefined || bottom === null ? null : Math.max(0, Math.round(vh - bottom - roof - 8));
+        el.style.maxHeight = room === null ? "" : `${room}px`;
+        el.style.overflow = room === null ? "" : "hidden";
         return;
       }
+      el.style.maxHeight = "";
+      el.style.overflow = "";
       if (!sr || !hasStall) {
         el.style.bottom = "";
         return;
@@ -302,8 +332,39 @@ function useSheetAnchor(ref: RefObject<HTMLDivElement | null>, stall: boolean) {
       window.removeEventListener("resize", place);
       mq.removeEventListener("change", place);
       el.style.bottom = "";
+      el.style.maxHeight = "";
+      el.style.overflow = "";
     };
   }, [ref, stall]);
+}
+
+/** A child of the layout root that is a modal dialog: the offline report, a ceremony, a save issue (or its loader). */
+function modalIn(host: Element | null | undefined): boolean {
+  if (!host) return false;
+  for (const el of host.children) if (el.getAttribute("role") === "dialog" && el.getAttribute("aria-modal") === "true") return true;
+  return false;
+}
+
+/**
+ * Whether a modal dialog covers the layout. The overlays are children of the layout root (GameRoot), siblings of this
+ * component's root: a childList observer on that root alone, so the colony's busy subtree costs nothing.
+ */
+function useModalOpen(ref: RefObject<HTMLDivElement | null>): boolean {
+  const subscribe = useCallback(
+    (cb: () => void) => {
+      const host = ref.current?.parentElement;
+      if (!host) return () => {};
+      const mo = new MutationObserver(cb);
+      mo.observe(host, { childList: true });
+      return () => mo.disconnect();
+    },
+    [ref],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => modalIn(ref.current?.parentElement),
+    () => false,
+  );
 }
 
 /* ------------------------------------------------------------ toast */
@@ -315,17 +376,25 @@ const TONE: Record<Tone, string> = {
   gold: "border-gaslight/80 bg-gradient-to-b from-[#4a3818] to-panel text-parchment shadow-[0_0_14px_rgba(242,184,75,.35)]",
 };
 
-function Toast({ t, onDismiss }: { t: ToastItem; onDismiss: () => void }) {
+function Toast({ t, compact, onDismiss }: { t: ToastItem; compact: boolean; onDismiss: () => void }) {
   const dismissRef = useRef(onDismiss);
   useEffect(() => {
     dismissRef.current = onDismiss;
   });
 
-  // a merge (rev) restarts the countdown
+  // a toast back on screen resumes its fuse; a merge (rev) restarts it
+  const kept = fuses.get(t.id);
+  const left = kept && kept.rev === t.rev ? kept.left : t.ms;
   useEffect(() => {
-    const timer = window.setTimeout(() => dismissRef.current(), t.ms);
-    return () => window.clearTimeout(timer);
-  }, [t.ms, t.rev]);
+    const start = performance.now();
+    // «К путям!» also goes once its train is due: one the scene gap holds back does not sit at «0 с»
+    const life = t.train ? Math.min(left, t.train.at - start + 1500) : left;
+    const timer = window.setTimeout(() => dismissRef.current(), Math.max(0, life));
+    return () => {
+      window.clearTimeout(timer);
+      fuses.set(t.id, { rev: t.rev, left: Math.max(0, left - (performance.now() - start)) });
+    };
+  }, [t.id, t.rev, t.train, left]);
 
   const go = t.go;
   // the action sits in its own column beside ✕, so a toast stays one text block tall (keeps the colony clear on phones)
@@ -361,7 +430,7 @@ function Toast({ t, onDismiss }: { t: ToastItem; onDismiss: () => void }) {
         {t.icon}
       </span>
       <div className="flex min-h-10 min-w-0 flex-1 flex-col justify-center py-0.5">
-        {t.train ? <TrainToastBody train={t.train} /> : t.unlock ? <UnlockBody items={t.unlock} /> : <span>{t.text}</span>}
+        {t.train ? <TrainToastBody train={t.train} /> : t.unlock ? <UnlockBody items={t.unlock} compact={compact} /> : <span>{t.text}</span>}
       </div>
       {action && <div className="shrink-0 self-start pt-0.5">{action}</div>}
       <button
@@ -376,7 +445,7 @@ function Toast({ t, onDismiss }: { t: ToastItem; onDismiss: () => void }) {
       <span
         key={t.rev}
         className="absolute inset-x-0 bottom-0 h-[2px] origin-left bg-current opacity-30"
-        style={{ animation: t.leaving ? undefined : `hud-fuse ${t.ms}ms linear both` }}
+        style={{ animation: t.leaving ? undefined : `hud-fuse ${t.ms}ms linear ${Math.round(left - t.ms)}ms both` }}
       />
     </div>
   );
@@ -394,10 +463,13 @@ function ActionButton({ onClick, children }: { onClick: () => void; children: Re
   );
 }
 
-/** «Открыто!» for one item, «Открыто: 3 новинки» with the list for a batch; «Открыть» goes to the first. */
-function UnlockBody({ items }: { items: UnlockItem[] }) {
+/**
+ * «Открыто!» for one item, «Открыто: 3 новинки» with the list for a batch; «Открыть» goes to the first.
+ * Compact (a phone with the sheet full: one sliver of colony) lists the first item only.
+ */
+function UnlockBody({ items, compact }: { items: UnlockItem[]; compact: boolean }) {
   const n = items.length;
-  const shown = items.slice(0, 4);
+  const shown = items.slice(0, compact ? 1 : 4);
   return (
     <div>
       <b className="font-display text-[15px] leading-tight tracking-wide text-verdigris-light">

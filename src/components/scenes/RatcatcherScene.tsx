@@ -17,7 +17,7 @@ import { useGame } from "@/game/store";
 import type { Scene } from "@/game/types";
 import { fmt, fmtInt, plural } from "@/lib/format";
 import { ChoiceButton, Countdown, flourish, HazardStyles, piperStakes, useReduced, useTimeUp, type PiperStakes } from "./HazardKit";
-import { act, clamp, EMOJI_FONT, fonts, hash01, makeClock } from "./sceneUtils";
+import { act, clamp, EMOJI_FONT, fonts, hash01, makeClock, reducedNow } from "./sceneUtils";
 
 const FLY = 3.2; // seconds a note needs to reach the burrow
 const WIN_SHARE = 0.8;
@@ -281,7 +281,6 @@ const BURROW = { x: 0.13, y: 0.86 };
 const CONFETTI = ["#f2b84b", "#c4453a", "#7cc4b0", "#eadcc0", "#d98a5a", "#e39ab0"];
 
 function PiperFight({ scene }: { scene: Scene }) {
-  const reduced = useReduced();
   const count = Math.max(1, scene.taps?.count ?? 24);
   const dur = Math.max(FLY + 0.5, scene.taps?.duration ?? 15);
   const needed = Math.ceil(WIN_SHARE * count - 1e-9);
@@ -311,7 +310,6 @@ function PiperFight({ scene }: { scene: Scene }) {
     ro.observe(canvas);
 
     const F = fonts();
-    const k = reduced ? 0.3 : 1;
     const clock = makeClock(scene.phaseStart);
     const gap = count > 1 ? (dur - FLY) / (count - 1) : 0;
     const notes: Note[] = Array.from({ length: count }, (_, i) => ({
@@ -408,7 +406,8 @@ function PiperFight({ scene }: { scene: Scene }) {
       nPopped++;
       setPopped(nPopped);
       rings.push({ x: best.x, y: best.y, age: 0 });
-      const m = Math.round(22 * k);
+      // reduced motion is read per pop: a «Меньше анимации» toggle must not restart the fight (and drop the pops)
+      const m = Math.round(22 * (reducedNow() ? 0.3 : 1));
       for (let i = 0; i < m && bits.length < 200; i++) {
         const a = Math.random() * Math.PI * 2;
         const sp = 90 + Math.random() * 220;
@@ -599,7 +598,7 @@ function PiperFight({ scene }: { scene: Scene }) {
       offAim();
       finishRef.current = null;
     };
-  }, [scene.phaseStart, count, dur, needed, reduced]);
+  }, [scene.phaseStart, count, dur, needed]);
 
   // the engine clock ran out first (tab hiccup): report what we have
   useEffect(() => {

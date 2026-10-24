@@ -18,10 +18,14 @@ export const ESCAPE_EVENT = "rr-escape";
 
 const BUY_CYCLE: BuyMode[] = [1, 10, "max"];
 
+/** Inputs that take no text: a focused slider or checkbox (⚙ volume, the Jobs ratios) must not swallow the hotkeys. */
+const NON_TEXT_INPUTS = new Set(["range", "checkbox", "radio", "button", "submit", "reset", "color", "file"]);
+
 function typing(el: Element | null): boolean {
   if (!el || !(el instanceof HTMLElement)) return false;
   const tag = el.tagName;
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+  if (tag === "INPUT") return !NON_TEXT_INPUTS.has((el as HTMLInputElement).type);
+  return tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
 }
 
 function modalOpen(): boolean {

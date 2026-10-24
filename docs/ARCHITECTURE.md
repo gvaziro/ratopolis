@@ -16,7 +16,7 @@ src/game/types.ts          контракт типов (id, состояние, 
 src/game/data/*.ts         таблицы контента: resources, jobs, buildings, upgrades, zones, meta (указы, медали, экспресс), events (вагоны, тайминги), headlines, sources (где взять), commissions (поручения Короля)
 src/game/engine/*.ts       чистый движок без DOM: state, derive, economy, events, actions, step, offline, save, formulas, conditions, rng, hints (подсказки), piles (обходчик), narrative (коронация, переселение), progress (медали, поручения)
 src/game/store.ts          Zustand-стор: useGame(selector), useDerived(), действия игрока
-src/game/useGameLoop.ts    rAF-цикл 10 Гц, автосейв, офлайн при скрытой вкладке
+src/game/useGameLoop.ts    rAF-цикл 10 Гц, автосейв, офлайн при скрытой вкладке; часы стоят под церемонией (store.ceremony)
 src/game/useSampled.ts     подписка на срез стора не чаще hz раз в секунду (v2)
 src/game/fx.ts             шина эффектов: onFx/emitFx (из движка), onUiFx/emitUiFx (из UI: тряска, вспышки, всплывающие числа)
 src/audio/sfx.ts           синтез звуков (API ниже)
@@ -27,7 +27,7 @@ src/components/colony/     ColonyView (SVG-срез подземелья, реш
 src/components/fx/         FxLayer (всплывающие числа и частицы поверх всего экрана)
 src/components/panels/     SidePanel (вкладки) + BuildingsTab, JobsTab, UpgradesTab, MapTab, ScheduleTab, MigrationTab, MedalsTab, SettingsTab
 src/components/scenes/     SceneHost (крупный план событий) + примитивы catch/piles/taps/timing/choice, MarketPopup
-src/components/modals/     OfflineModal, CoronationOverlay
+src/components/modals/     OfflineModal, SaveIssueModal (оба next/dynamic из GameRoot), CoronationOverlay → Celebration, MigrationOverlay → MigrationCeremony (оболочки решают, когда открыть; шоу — ленивые чанки), CeremonyLoading (тёмный фон-диалог, пока грузится чанк)
 src/components/dev/        DevPanel (только NODE_ENV=development или ?dev в URL)
 scripts/balance-sim.ts     headless-симулятор баланса (npm run sim)
 ```
@@ -143,15 +143,15 @@ setSetting("reducedMotion", v)                // заодно сбрасывае
 // безопасность сохранений (EN-8, SH-1)
 crashed: boolean;  crashError: string | null;  resetCrash(): void        // перечитать последнее сохранение и снять крэш
 saveIssue: null | {kind:"corrupt"; quarantineKey: string} | {kind:"newer"; version: number} | {kind:"locked"};
-backups(): {slot: 1|2; at: number; rats: number; crownsEver: number}[]   // bak1 = новее; at = epoch ms записи той копии
-restoreBackup(slot: 1|2): boolean
+backups(): {slot: 1|2; at: number; rats: number; crownsEver: number}[]   // новые сверху; at = epoch ms записи той копии
+restoreBackup(slot: 1|2, expectedAt?: number): boolean   // expectedAt ≠ bakmeta[slot].at → false, хранилище не тронуто
 rawSave(): string | null                      // строка из localStorage как есть (JSON) — для «Скачать сохранение»
 importSaveFile(text: string): boolean         // принимает и сырой JSON (rawSave), и «RATRO1:…»; копия делается до импорта
 takeOverTab(): void                           // при saveIssue "locked": «Играть здесь»
 startFresh(): void                            // новая колония (настройки сохраняются); недоступно при "newer"/"locked"
 ```
 
-Типы `SaveIssue` и `BackupInfo` экспортируются из стора. Пока `crashed` или `saveIssue !== null`, игра не тикает, действия игрока игнорируются, `save()` ничего не пишет. Порча сохранения: сырая строка копируется в `quarantineKey` (`<key>:corrupt:<ms>`), основной ключ не трогается до выбора игрока. Ключи копий: `<key>:bak1`, `<key>:bak2`, мета `<key>:bakmeta`. Копии: раз в 5 мин (из `save()`), перед `importSave`/`importSaveFile`, `hardReset`, `startFresh`, `restoreBackup` и перед первой перезаписью сохранения старой схемы. Вкладки: Web Lock `ratropolis:<key>` + BroadcastChannel того же имени. На свежем сейве `settings.reducedMotion` берётся из `prefers-reduced-motion`, `reducedMotionFromOS = true`. Для крэша в dev: `__rr.getState()` / тест-хук `stepHooks.before` в `engine/step.ts`.
+Типы `SaveIssue` и `BackupInfo` экспортируются из стора. Пока `crashed` или `saveIssue !== null`, игра не тикает, действия игрока игнорируются, `save()` ничего не пишет. Порча сохранения: сырая строка копируется в `quarantineKey` (`<key>:corrupt:<ms>`), основной ключ не трогается до выбора игрока. Ключи копий: `<key>:bak1`, `<key>:bak2`, мета `<key>:bakmeta`. Слот 1 — скользящая копия раз в 5 мин (из `save()`); слот 2 — копия перед `importSave`/`importSaveFile`, `hardReset`, `startFresh`, `restoreBackup` и перед первой перезаписью сохранения старой схемы, скользящая копия его не трогает (откат к слоту 2 меняет две колонии местами). Вкладки: Web Lock `ratropolis:<key>` + BroadcastChannel того же имени. На свежем сейве `settings.reducedMotion` берётся из `prefers-reduced-motion`, `reducedMotionFromOS = true`. Для крэша в dev: `__rr.getState()` / тест-хук `stepHooks.before` в `engine/step.ts`.
 
 ### `src/game/useSampled.ts`
 
@@ -184,7 +184,7 @@ useSampled<T>(selector: (s: GameStore) => T, hz = 3, eq = shallow): T
 | SceneAction | `{a:"taps"; cleared; fastMs?}` | время от первого до последнего вентиля | SC-6 / EN-11 |
 | HaulSummary | `headline?: string` | «Тем временем наверху» | ждёт EN-6 / SC-4 |
 | HaulSummary | `suspicionParts?: {pass; lantern; total}` | разбивка подозрения | ждёт EN-5 / SC-3 |
-| HaulSummary | `jackpotSeconds?: number` | джекпот в секундах пассивного дохода (≤ 180, есть только при джекпоте) | EN-1 (готово) / SC-3 |
+| HaulSummary | `jackpotSeconds?: number` | джекпот в секундах пассивного дохода (≤ `HOOK_JACKPOT_CAP_SEC`, есть только при джекпоте) | EN-1 (готово) / SC-3 |
 | EdictDef | `decree: string`, `ranks?: {cost; effect}[]` | указ-грамота; ранги II/III (ranks[0] = II) | PA-6 |
 | AchievementDef | `progress?: {stat; goal}`, `group?: "colony"\|"events"\|"meta"\|"secret"` | счётные медали, разделы кабинета | PA-7 |
 
@@ -222,13 +222,13 @@ resourceSources(s, res): { icon; label; kind: "job"|"building"|"click"|"event"; 
 
 ```ts
 steamBreakdown(s, d): { stock; buffer; gross; stokers; slots; convEff; consumers: {id; name; icon; perSec}[]; steamEff; fix: "boiler"|"miners"|"stokers"|null }
-suspicionInfo(s, d): { pct; perMin; activeOnly: true; etaSec: number|null; reducers: {label; amount}[] }
+suspicionInfo(s, d): { pct; perMin; activeOnly: true; threshold; etaSec: number|null; reducers: {label; amount}[] }
 converterBottleneck(s, d, job): ConverterBottleneck | null   // {job, eff, kind:"full"|"input", res, text, supplier?, need?, supplierLocked?, building?}
 jobValuePerRat(s, d, job): { value; surplus; capped: ResId[] }
 inputRunway(s, d, job): { res; seconds } | null
 ratsAcc(n): "крысу" | "крыс" | "крысы"     // «отправьте 3 крыс»
 ```
-`steamBreakdown` — CO-4 (fix: нет котла/мест → boiler, кочегары голодают → miners, есть свободные места → stokers). `suspicionInfo` — SH-3: perMin = 1%·suspicionMult только при активной игре (офлайн 0), etaSec = (100 − p)/perMin·60 (47% → 3180 с). `converterBottleneck` — логика JobsTab.bottleneck(), перенесённая в движок (PA-4), null при ≥ 95% или без рабочих. `jobValuePerRat` — рыночная ценность выхода одной крысы в секунду (📜💍 по 50, 💨 0, при текущей эффективности конвертера), `capped` — выходы, упёршиеся в лимит (их вклад 0), `surplus` — работа даёт 🍞, а крошек > 50% сверх прокорма (PA-4). `inputRunway` — через сколько секунд кончится падающий вход конвертера (PA-4).
+`steamBreakdown` — CO-4 (fix: нет котла/мест → boiler, кочегары голодают → miners, есть свободные места → stokers). `suspicionInfo` — SH-3: perMin = 1%·suspicionMult (×3 под поручением «Щепки от дудки») только при активной игре (офлайн 0), threshold — порог Крысолова района (100, Мэйфэр 80), etaSec = (threshold − p)/perMin·60 (47% → 3180 с), 0 — Крысолов уже идёт. `converterBottleneck` — логика JobsTab.bottleneck(), перенесённая в движок (PA-4), null при ≥ 95% или без рабочих. `jobValuePerRat` — рыночная ценность выхода одной крысы в секунду (📜💍 по 50, 💨 0, при текущей эффективности конвертера), `capped` — выходы, упёршиеся в лимит (их вклад 0), `surplus` — работа даёт 🍞, а крошек > 50% сверх прокорма (PA-4). `inputRunway` — через сколько секунд кончится падающий вход конвертера (PA-4).
 
 ### Покупки — `engine/economy.ts`, `engine/formulas.ts`
 
@@ -255,9 +255,9 @@ scoutResource(s, d, zone): ResId | null        // что принесут сле
 trainDropRes(s, r): ResId                      // во что превращается выпадение r, пока r не открыт (🔔🛤️ → ⚙️, 💍 → 🪙); 🔔💍 открыты с Метро
 incomeValue(s): number                         // Σ ema_r × курс_r — мерило потолка джекпота
 // data/events.ts
-METRO_BASE_CARS = 4; RANDOM_CAR_WEIGHTS; HOOK_JACKPOT = {hit: 2.5, perfect: 4, royalHit: 4, royalPerfect: 6}; HOOK_JACKPOT_CAP_SEC = 180
+METRO_BASE_CARS = 4; RANDOM_CAR_WEIGHTS; HOOK_JACKPOT = {hit: 2.5, perfect: 4, royalHit: 4, royalPerfect: 6}; HOOK_JACKPOT_CAP_SEC = 120 (баланс 24.10)
 // data/buildings.ts, data/upgrades.ts, data/zones.ts, engine/derive.ts
-MILESTONE_JOB_BOOST = 1.2; MILESTONES; TINKERS_MULT = 1.6; ZONE_FROM («из Канализации»); milestonesReached(level)
+MILESTONE_JOB_BOOST = 1.2; MILESTONES; TINKERS_MULT = 1.75; ZONE_FROM («из Канализации»); milestonesReached(level)
 ```
 Пар (💨) теперь `excludeGlobal`: кочегар даёт ровно 3 × jobYield 💨/с. Метро: +50 жилья, Подвалы — 50 крыс. Указ `express_blueprints` хранит ≤ 5 этапов (`KEPT_STAGES_MAX`). Новость этапа экспресса — «Этап «…»: {👤}», заголовок коронации — из `coronationLine`.
 
@@ -337,6 +337,41 @@ markCrashed(error)   // CrashScreen: ошибка рендера замораж�
 Новые поля: `GameState.recentLines` (кольцо из 4 последних реплик на событие), `GameState.coronatedAt` (−1 до коронации), `Timers.filler`, `Meta.cheeseCars`, `Scene.lineIdx`, `Scene.lanternSusp` (фактическая прибавка подозрения от фонаря). `HaulSummary.suspicionParts = { pass, lantern, total }`: total — всё изменение от начала прохода, lantern — фактическая прибавка (×`suspicionMult`). Газета не повторяет строку в пределах 9 последних (`news()` пропускает повтор). Медали со счётчиком (`ACHIEVEMENTS[id].progress`) выдаются housekeeping при достижении цели. «Ещё до обеда» — коронация до 10:00.
 
 UI (stage 2 [B], доделано интегратором): PA-5 (заколоченная контора, тосты «Открыто», честное свечение «Переселения»), PA-6 (ранги, печати, черта района, превью переселения, строки этапов, «Поручения Короля», рекорды на карте), PA-7 (кабинет медалей по разделам, прогресс, без спойлеров, «Журнал путейца», бестиарий с репликами, летопись забегов), SH-4 (`useHotkeys`, событие окна `rr-escape`, «Фон», «Подсказки», «Размер текста», «Клавиши», контраст `--muted`/`text-danger`), SH-5 (`modals/MigrationOverlay.tsx`, строка коронации из `coronationLine`), SH-6 (`app/icon.svg`, `icon1.tsx` 192/512, `apple-icon.tsx`, `opengraph-image.tsx`, `manifest.ts`, метаданные), SC-4 (варианты: баннер, тон поезда, физика «float/flutter», сырный вагон, реплики сцены, вырезка из газеты), SC-5 (великан на перроне, рука кондуктора с фонарём, вставка «Наверху» `scenes/UpstairsInset.tsx`, удар прибытия, доплер, звенящая тишина), SC-6 (без заставки у Кота/Крысолова, клавиши 1/2, лапа-проигрыш, кольцо попадания и сердцебиение, вентили-штурвалы), CO-5 (`colony/Traffic.tsx`, свет по часам, дождь), CO-6 (поклажа, жители камер, без кучек, облик от улучшений), CO-7 (интерактивная подсказка камеры, сигналы у края, полёт иконки, леса, «ПАТЕНТ!»), CO-8 (силуэт следующей зоны, табличка экспедиции, золотая решётка, корона-курсор).
+
+### Ревизия v2 (24.10.2026): изменённые и новые API
+
+```ts
+// store.ts
+save(): boolean                          // false — запись не удалась (хранилище закрыто/полно) или сохранение на паузе; первый отказ — тост со ссылкой на «Настройки»
+noteHidden(at: number); noteVisible()    // экспорт модуля (не стора): пока часы стоят, каждое сохранение помечено моментом остановки (вызывает useGameLoop)
+restoreBackup(slot, expectedAt?)         // см. выше: слот 1 — скользящий, слот 2 — «до импорта/отката/сброса»
+abandonCommission(): void                // вернуть активное поручение Королю без грамоты; три новых предложения
+runSeq: number                           // UI: +1 при подмене игры целиком (adopt: импорт, откат, «Начать заново», сброс; resetCrash; захват вкладки). GameRoot: key = `${meta.migrations}:${runSeq}`
+ceremony: boolean; setCeremony(on)       // церемония открыта (счётчик: часы стоят до закрытия последней). Ставят CoronationOverlay и MigrationOverlay
+// engine/commissions.ts
+abandonCommission(s, ctx?): boolean      // также при Печати Тишины, если активное поручение стало невозможным
+// engine/events.ts
+WHISTLE_FLOOR = 5; whistle(s, ctx)       // поезд ≤ 5 с — отказ без платы; иначе раньше на min(60, left − 5) с
+metroCarCount(d): number                 // вагонов в поезде Метро, 3..11 (trainComposition, табло «Расписания», симулятор)
+// engine/derive.ts, engine/economy.ts
+converterPotential(s, d, r, eta?)        // сколько конвертеры дали бы r без потолка склада («Автовзнос» полного ресурса)
+OFFLINE_SLICE = 2                        // офлайн фазы 1–3 tickEconomy идут кусками ≤ 2 с
+// data/events.ts
+EVENT_TIMING.backgroundStarve = 60       // фоновое событие, просроченное на 60 с, стартует и под защитой поезда; поезд ждёт ≥ 40 с
+// data/sources.ts
+JOB_FROM; EventSource.noSilence          // «из механиков»; источник скрыт под Печатью Тишины
+// engine/hints.ts
+suspicionInfo(...).threshold; подсказки `hungry:<job>` (только фокус), `housing:store`
+```
+
+- Новые поля: `GameState.runBestRating` (лучший улов забега, для летописи и `migrate()`), `meta.lifetime.wagons` (вагоны за все забеги, медаль «Хвост за горизонтом» — 15).
+- Ранги указов (`EDICTS[id].ranks[k].effect`) — **полные формулировки**: карточка указа показывает текст ранга вместо базового.
+- `useGameLoop`: часы «держатся» (`heldAt`), пока вкладка скрыта или открыта церемония; когда вкладка видна и церемоний нет, удержанное время засчитывается (> 60 с — `catchUp` с отчётом, меньше — `advance`). Удержание до 60 с, в котором была церемония, — просто пауза без зачёта: поезд или событие, подошедшие под церемонией, ждут игрока, а не разыгрываются автосбором. Во время крэша/`saveIssue` удержание переносится на «сейчас» (выход из остановки перечитывает сохранение).
+- Колония: оверлей внутри колонии с атрибутом `data-wheel-scroll` забирает колесо мыши себе (колония не панорамируется; Ctrl+колесо по-прежнему зумит). `colony/layout.ts`: `tipBox`, `railBox` (размещение подсказки камеры и рейки зон); `geometry.ts`: `uiX`/`uiY`.
+- `fx/fxBus.ts`: `flightStart(target)` → `done()`, `flightPending(target)`, `onLand(fn)` — камера ждёт прилёта иконки покупки и подпрыгивает при посадке; `inColony(p)`, `clampToColony(p, pad?, padBottom?)` — частицы для камер вне экрана не рисуются, вспышка вехи прижимается к краю колонии.
+- Сцены: `SceneHost` строит тело каждой сцены через `next/dynamic` с повтором загрузки (3 попытки); `BodyGuard` ловит только ошибки загрузки чанка («Сцена не загрузилась» · «Ещё раз» / «Пропустить», движок тем временем решает сцену сам), прочие ошибки уходят в CrashGuard. `sceneUtils.nearestStanding(locked, j)`, `TimingBar` prop `royal`, `UpstairsInset` prop `className`.
+- `panels/alerts.ts`: `firstSentence(text)` не режет внутри скобок и «кавычек».
+- AudioDirector: при `crashed`/`saveIssue` гул поезда, пыхтение и фон останавливаются.
 
 ## Правила параллельной работы
 

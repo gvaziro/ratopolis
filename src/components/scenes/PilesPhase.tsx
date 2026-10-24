@@ -23,7 +23,7 @@ import type { ResId, Scene } from "@/game/types";
 import { fmt, fmtInt, fmtPct } from "@/lib/format";
 import { BrassButton, Stamp, cx } from "@/components/ui/kit";
 import { TrainDust } from "./TrainBackdrop";
-import { act, clamp, hash01, keyboardUsed, makeClock, noteKeyboard, shake } from "./sceneUtils";
+import { act, clamp, hash01, keyboardUsed, makeClock, nearestStanding, noteKeyboard, shake } from "./sceneUtils";
 
 /** Narrowest pile slot before the strip wraps into another row (375 px phones: 6 piles in a row, 7+ → two rows). */
 const MIN_SLOT = 56;
@@ -246,9 +246,10 @@ function PilesPhaseImpl({ scene }: { scene: Scene }) {
       if (el) {
         const p = hostXY(el, 0.7);
         if (p) dust(p.host, p.x, p.y, 7, 110);
-        // the boot came down on the pile with the keyboard focus: hand the focus to the next pile still standing
+        // the boot came down on the pile with the keyboard focus: hand the focus to the nearest pile still standing
+        // (either way — in a wrapped strip a later pile in a short last row is swept before the end of row one)
         if (document.activeElement === el) {
-          const next = views.findIndex((_, m) => m > j && !isLocked[m]);
+          const next = nearestStanding(isLocked, j);
           const target = next >= 0 ? pileEls.current[next] : footRef.current?.querySelector("button");
           target?.focus();
         }
@@ -601,7 +602,16 @@ function PilesPhaseImpl({ scene }: { scene: Scene }) {
           <span className="min-w-0 flex-1 text-[11px] text-parchment-dim md:text-xs">
             {carts > 0 ? `Вагонеток на узкоколейке: ${fmtInt(carts)}` : "Узкоколейки нет — таскаем лапами"} · автосбор {fmtPct(sc.auto)}
           </span>
-          <BrassButton size="lg" className="min-h-11" disabled={sent} onClick={() => api.current?.send()}>
+          <BrassButton
+            size="lg"
+            className="min-h-11"
+            disabled={sent}
+            onKeyDown={(e) => {
+              // the focus lands here when the last pile is swept: a Space still held from digging must not send
+              if ((e.key === " " || e.key === "Enter") && e.repeat) e.preventDefault();
+            }}
+            onClick={() => api.current?.send()}
+          >
             Готово
           </BrassButton>
         </div>

@@ -11,6 +11,8 @@ export interface EventSource {
   when: Cond;
   /** Hidden again once this holds (capsules stop when the Metro opens). */
   until?: Cond;
+  /** Never comes under Печать Тишины (the Cat, the Ratcatcher). */
+  noSilence?: true;
 }
 
 const metro: Cond = { zone: "metro" };
@@ -27,8 +29,8 @@ const SHINIES: EventSource = { icon: "✨", label: "блестяшки", kind: "
 const PURSE: EventSource = { icon: "👛", label: "кошельки", kind: "event", when: visitors };
 const MARKET: EventSource = { icon: "🧺", label: "лавка Бенедикта", kind: "event", when: cellars };
 const FLOTSAM: EventSource = { icon: "🌊", label: "Ливень: плавучий мусор", kind: "event", when: sewers };
-const CAT: EventSource = { icon: "🥊", label: "победа над Котом", kind: "event", when: cellars };
-const PIPER: EventSource = { icon: "🎶", label: "сломанная дудка Крысолова", kind: "event", when: metro };
+const CAT: EventSource = { icon: "🥊", label: "победа над Котом", kind: "event", when: cellars, noSilence: true };
+const PIPER: EventSource = { icon: "🎶", label: "сломанная дудка Крысолова", kind: "event", when: metro, noSilence: true };
 const EXPRESS: EventSource = { icon: "👑", label: "Королевский экспресс", kind: "event", when: { building: "express_depot", gte: 1 } };
 
 export const EVENT_SOURCES: Partial<Record<ResId, EventSource[]>> = {
@@ -59,6 +61,22 @@ export const JOB_PLURAL: Record<JobId, string> = {
   smelter: "Плавильщики",
   smith: "Кузнецы",
   appraiser: "Оценщики",
+};
+
+/** «из механиков»: where rats are taken from (genitive plural after «из»). */
+export const JOB_FROM: Record<JobId, string> = {
+  idle: "из бездельников",
+  forager: "из собирателей",
+  pickpocket: "из карманников",
+  scavenger: "из барахольщиков",
+  mechanic: "из механиков",
+  cheese_thief: "из сырных воришек",
+  scholar: "из книжников",
+  coal_miner: "из угольщиков",
+  stoker: "из кочегаров",
+  smelter: "из плавильщиков",
+  smith: "из кузнецов",
+  appraiser: "из оценщиков",
 };
 
 /** «в карманники»: where to send rats (accusative plural after «в»). */

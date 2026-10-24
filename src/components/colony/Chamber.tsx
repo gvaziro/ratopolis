@@ -16,12 +16,12 @@ import { emitUiFx, onFx } from "@/game/fx";
 import { derivedOf, useGame } from "@/game/store";
 import type { BuildingId, GameState, ZoneId } from "@/game/types";
 import { fmtInt } from "@/lib/format";
-import { fxBurst } from "../fx/fxBus";
+import { flightPending, fxBurst, inColony, onLand } from "../fx/fxBus";
 import { BuildingArt } from "./buildingArt";
 import { toScreen, wasDrag } from "./camera";
 import { artLevel, BUILDING_SLOT, shade } from "./geometry";
 import { Glow, type GlowKind } from "./parts";
-import { registerCull, registerPoke } from "./registry";
+import { registerCull, registerCullItems, registerPoke } from "./registry";
 
 export const NICHE = "M-88 0V-108Q-88 -148 -48 -148H48Q88 -148 88 -108V0Z";
 const ZONE_GLOW: Record<ZoneId, GlowKind> = { burrow: "warm", sewers: "teal", cellars: "warm", metro: "red", terminal: "gold" };
@@ -138,10 +138,14 @@ export const Chamber = memo(function Chamber({ id, onTip }: { id: BuildingId; on
   const zoneOpen = useGame((s) => !!s.game.zones[slot.zone]);
   const mood = useGame((s) => chamberMood(s.game, id));
   const [initialBuilt] = useState(level > 0);
+  // the first build's scaffolding and «БУМ!» leave the DOM once played (the hammer's loop would tap on unseen)
+  const [firstPlayed, setFirstPlayed] = useState(false);
+  const firstBuilt = level > 0 && !initialBuilt;
   const [ring, setRing] = useState(0);
   const [flash, setFlash] = useState(0);
   const rootRef = useRef<SVGGElement>(null);
   const bodyRef = useRef<SVGGElement>(null);
+  const artRef = useRef<SVGGElement>(null);
   const lvl = artLevel(id, level);
   const art = useMemo(() => <BuildingArt id={id} lvl={lvl} />, [id, lvl]);
   const shown = zoneOpen && (visible || level > 0);
@@ -166,13 +170,25 @@ export const Chamber = memo(function Chamber({ id, onTip }: { id: BuildingId; on
         380,
       );
     });
+    const target = `building:${id}`;
+    // the bounce and its dust (none over the panel when the chamber is off-screen: EdgePings shows that buy)
+    const land = () => {
+      animate(rm() ? BOUNCE_SOFT : BOUNCE, 520);
+      const p = toScreen(slot.cx, slot.floor - 8);
+      if (inColony(p)) fxBurst(p.x, p.y, "dust", 12, 1.4);
+    };
+    const offLand = onLand((t) => {
+      if (t === target) land();
+    });
     const offFx = onFx((fx) => {
       if (fx.k !== "buy" && fx.k !== "milestone" && fx.k !== "tier") return;
       if (fx.building !== id) return;
       if (fx.k === "buy") {
-        animate(rm() ? BOUNCE_SOFT : BOUNCE, 520);
-        const p = toScreen(slot.cx, slot.floor - 8);
-        fxBurst(p.x, p.y, "dust", 12, 1.4);
+        // CO-7: a card buy sends its icon flying here right after this fx — the chamber bounces when it lands;
+        // a buy from the chamber tip (or with reduced motion: no flight) bounces at once
+        queueMicrotask(() => {
+          if (!flightPending(target)) land();
+        });
         return;
       }
       seq++;
@@ -185,24 +201,39 @@ export const Chamber = memo(function Chamber({ id, onTip }: { id: BuildingId; on
         window.clearTimeout(flashTimer);
         flashTimer = window.setTimeout(() => setFlash(0), 800);
         const p = toScreen(slot.cx, slot.floor - 120);
-        emitUiFx({ k: "float", text: "Камера расширена!", x: p.x, y: p.y, color: "#e8c983", big: true });
-        emitUiFx({ k: "shake", px: 2, ms: 220 });
+        if (inColony(p)) {
+          emitUiFx({ k: "float", text: "Камера расширена!", x: p.x, y: p.y, color: "#e8c983", big: true });
+          emitUiFx({ k: "shake", px: 2, ms: 220 });
+        }
       }
     });
     return () => {
       offPoke();
+      offLand();
       offFx();
       window.clearTimeout(ringTimer);
       window.clearTimeout(flashTimer);
     };
   }, [id, slot]);
 
-  // gears, pistons and steam pause while the chamber is far off-screen
+  useEffect(() => {
+    if (!firstBuilt) return;
+    const t = window.setTimeout(() => setFirstPlayed(true), 1800);
+    return () => window.clearTimeout(t);
+  }, [firstBuilt]);
+
+  // gears, pistons and steam pause while the chamber is far off-screen, and piece by piece while only its top shows
   useEffect(() => {
     const el = rootRef.current;
     if (!shown || !el) return;
-    return registerCull(el, slot.floor - 170, slot.floor + 12);
-  }, [shown, slot]);
+    const offAll = registerCull(el, slot.floor - 170, slot.floor + 12);
+    const artRoot = artRef.current?.firstElementChild;
+    const offItems = lvl > 0 && artRoot instanceof SVGGElement ? registerCullItems(artRoot, slot.floor) : null;
+    return () => {
+      offItems?.();
+      offAll();
+    };
+  }, [shown, slot, lvl]);
 
   if (!shown) return null;
 
@@ -229,7 +260,9 @@ export const Chamber = memo(function Chamber({ id, onTip }: { id: BuildingId; on
         <path d={NICHE} fill="transparent" />
         {built ? (
           <g className={initialBuilt ? undefined : "cv-pop cv-pop-late"}>
-            <g className={dim ? "cv-idle" : undefined}>{art}</g>
+            <g ref={artRef} className={dim ? "cv-idle" : undefined}>
+              {art}
+            </g>
           </g>
         ) : (
           <g opacity=".42" pointerEvents="none">
@@ -259,7 +292,7 @@ export const Chamber = memo(function Chamber({ id, onTip }: { id: BuildingId; on
           </g>
         </g>
       )}
-      {built && !initialBuilt && (
+      {firstBuilt && !firstPlayed && (
         // CO-7: 0.7 s of scaffolding — two planks, a rope and a tapping hammer — before the art pops
         <g className="cv-scaffold" pointerEvents="none">
           <rect x="-62" y="-118" width="10" height="118" fill="#8a6438" stroke="#3a2a1a" strokeWidth="1.5" />
@@ -274,7 +307,7 @@ export const Chamber = memo(function Chamber({ id, onTip }: { id: BuildingId; on
           </g>
         </g>
       )}
-      {built && !initialBuilt && (
+      {firstBuilt && !firstPlayed && (
         <g transform="translate(0 -86)" pointerEvents="none" style={{ animationDelay: ".7s" }}>
           <text className="cv-boom font-display" style={{ animationDelay: ".7s" }} fontSize="26" textAnchor="middle" fill="#ffd34d" stroke="#2a1a0c" strokeWidth="1.2" fontWeight="700">
             БУМ!

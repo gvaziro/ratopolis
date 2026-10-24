@@ -11,7 +11,7 @@ import { useGame } from "@/game/store";
 import type { ZoneId } from "@/game/types";
 import { BAND_H, bandTop, COLS, DECOR_SLOTS, ROW_FLOOR, seeded, shade, SHAFT_X, W } from "./geometry";
 import { Barrel, BarrelEnd, Candle, CheeseWheel, Glow, Lantern, Sign, Steam, Suitcase } from "./parts";
-import { registerCull } from "./registry";
+import { registerCull, registerCullItems } from "./registry";
 
 const X0 = -2000;
 const XW = W + 4000;
@@ -475,11 +475,18 @@ const RELICS: Record<ZoneId, () => ReactNode> = {
 export const ZoneBand = memo(function ZoneBand({ zone }: { zone: ZoneId }) {
   const open = useGame((s) => !!s.game.zones[zone]);
   const ref = useRef<SVGGElement>(null);
-  // drips, waves, gas jets and steam pause while the band is far off-screen
+  const decorRef = useRef<SVGGElement>(null);
+  // drips, waves, gas jets and steam pause while the band is far off-screen, and item by item while only a part shows
   useEffect(() => {
     const el = ref.current;
     if (!open || !el) return;
-    return registerCull(el, bandTop(zone), bandTop(zone) + BAND_H);
+    const offBand = registerCull(el, bandTop(zone), bandTop(zone) + BAND_H);
+    const decor = decorRef.current?.firstElementChild;
+    const offItems = decor instanceof SVGGElement ? registerCullItems(decor, bandTop(zone)) : null;
+    return () => {
+      offItems?.();
+      offBand();
+    };
   }, [open, zone]);
   if (!open) return null;
   const Decor = DECOR[zone];
@@ -487,7 +494,9 @@ export const ZoneBand = memo(function ZoneBand({ zone }: { zone: ZoneId }) {
   return (
     <g ref={ref} transform={`translate(0 ${bandTop(zone)})`}>
       <Rock zone={zone} />
-      <Decor />
+      <g ref={decorRef}>
+        <Decor />
+      </g>
       <g opacity=".5" pointerEvents="none">
         <Relic />
       </g>

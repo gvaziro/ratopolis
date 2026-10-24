@@ -180,7 +180,9 @@ const Stratum = memo(function Stratum({ z, stage, fresh, rats, record }: { z: Zo
         ) : (
           <p className="px-2.5 pb-2 pt-1 text-[11px] leading-snug text-parchment-dim">
             {stage === "next"
-              ? `Разведчики покажут путь, когда в колонии будет ${fmtInt(def.mapRevealRats)} 🐀 (сейчас ${rats}).`
+              ? `Разведчики покажут путь, когда в колонии будет ${fmtInt(def.mapRevealRats)} 🐀 (сейчас ${rats})${
+                  (def.expedition?.rats ?? 0) > def.mapRevealRats ? `; для похода нужно ${fmtInt(def.expedition!.rats)} 🐀` : ""
+                }.`
               : "Глубже не спускался ни один хвост. Говорят, там гудит земля."}
           </p>
         )}

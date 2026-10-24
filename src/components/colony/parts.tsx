@@ -132,8 +132,13 @@ export function Defs() {
 
 export type GlowKind = "warm" | "teal" | "red" | "gold" | "white" | "blue";
 
+/**
+ * A radial glow. An animated one (cv-glow animates opacity, which beats the attribute) takes its `opacity` from a
+ * wrapping group, so the two multiply: a faint hint glow stays faint and a dimmer lamp stays dimmer.
+ */
 export function Glow({ x, y, r, kind = "warm", className, opacity = 1 }: { x: number; y: number; r: number; kind?: GlowKind; className?: string; opacity?: number }) {
-  return <circle cx={x} cy={y} r={r} fill={`url(#cv-glow-${kind})`} className={className} opacity={opacity} />;
+  const c = <circle cx={x} cy={y} r={r} fill={`url(#cv-glow-${kind})`} className={className} opacity={className ? undefined : opacity} />;
+  return className && opacity !== 1 ? <g opacity={opacity}>{c}</g> : c;
 }
 
 /** A matchbox lying on its long side. (x, y) = bottom-left. */

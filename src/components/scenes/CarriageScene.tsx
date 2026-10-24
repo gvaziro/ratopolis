@@ -149,8 +149,9 @@ export default function CarriageScene({ scene }: { scene: Scene }) {
       {scene.phase === "catch" && (
         <CatchCanvasCore key={`c${scene.phaseStart}`} scene={scene} mode="fall" onDone={onDone} onCatch={onCatch} drawBack={drawBack} onFrame={onFrame} className="absolute inset-0" />
       )}
-      {scene.phase === "catch" && <UpstairsInset n={1} perCar={6} clock={clock} reduced={reduced} cab />}
-      {hint && <CatchHint />}
+      {/* phones: parked on the wet floor below the catch line, clear of the grate where the loot drops in */}
+      {scene.phase === "catch" && <UpstairsInset n={1} perCar={6} clock={clock} reduced={reduced} cab className="absolute bottom-1.5 right-2" />}
+      {hint && <CatchHint reduced={reduced} />}
     </div>
   );
 }
@@ -188,15 +189,19 @@ function CarriageBackdrop() {
   );
 }
 
-function CatchHint() {
+/** First-carriage hint; with reduced motion the text stays still and the paw does not swipe. */
+function CatchHint({ reduced }: { reduced: boolean }) {
   return (
     <div className="pointer-events-none absolute inset-x-0 top-[36%] z-10 flex flex-col items-center gap-1">
-      <div className="rounded-lg border border-brass bg-soot/80 px-4 py-2 text-center font-display text-2xl font-bold text-brass-light shadow-[0_6px_20px_rgba(0,0,0,.7)]" style={{ animation: "rr-hint 1.1s ease-in-out infinite" }}>
+      <div
+        className="rounded-lg border border-brass bg-soot/80 px-4 py-2 text-center font-display text-2xl font-bold text-brass-light shadow-[0_6px_20px_rgba(0,0,0,.7)]"
+        style={reduced ? undefined : { animation: "rr-hint 1.1s ease-in-out infinite" }}
+      >
         Лови! Зажми и веди!
       </div>
       <p className="text-xs text-parchment-dim">Проведите лапой (мышью или пальцем) по падающей добыче</p>
       <div className="relative h-14 w-56">
-        <span className="absolute left-1/2 top-1/2 -ml-4 -mt-4 text-3xl" style={{ animation: "rr-paw 1.4s ease-in-out infinite" }}>
+        <span className="absolute left-1/2 top-1/2 -ml-4 -mt-4 text-3xl" style={reduced ? undefined : { animation: "rr-paw 1.4s ease-in-out infinite" }}>
           🐾
         </span>
       </div>

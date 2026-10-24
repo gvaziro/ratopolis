@@ -44,7 +44,7 @@ import {
   type TrainVariantId,
   type ZoneId,
 } from "../types";
-import { plural } from "../../lib/format";
+import { fmtTime, plural } from "../../lib/format";
 import { check } from "./conditions";
 import { addAmounts, award, gain, gainAll, news, pushNews, stun, toast } from "./core";
 import { eventValue, type Derived } from "./derive";
@@ -144,21 +144,30 @@ export function tickEvents(s: GameState, d: Derived, dt: number, input: TickInpu
     }
     const gapOk = t - s.timers.lastSceneEnd >= T.minSceneGap;
     const trainSoon = nt !== null && nt.at - t < T.trainGuard;
-    if (!gapOk || trainSoon) return;
-
-    if (input.active && s.timers.ratcatcherAt <= t) {
-      if (d.silence) s.timers.ratcatcherAt = Infinity;
-      else {
-        startRatcatcher(s, d, ctx);
-        return;
+    if (!gapOk) return;
+    // a train always close (a fast Royal Express: Биг-Бен, the railway seal) would starve the background events for
+    // good: one overdue by T.backgroundStarve goes first anyway, and the train waits a guard interval for it
+    const due = (at: number) => at <= t && (!trainSoon || at <= t - T.backgroundStarve);
+    const start = (fn: () => void) => {
+      if (trainSoon && nt) {
+        const at = Math.max(nt.at, t + T.trainGuard);
+        if (s.timers.whistleUsedFor === nt.at) s.timers.whistleUsedFor = at;
+        s.timers[nt.id] = at;
       }
+      fn();
+    };
+
+    if (input.active && s.timers.ratcatcherAt <= t && d.silence) s.timers.ratcatcherAt = Infinity;
+    if (input.active && due(s.timers.ratcatcherAt)) {
+      start(() => startRatcatcher(s, d, ctx));
+      return;
     }
     if (s.zones.cellars && input.active && !d.silence) {
-      if (s.timers.catForcedAt <= t) {
-        startCat(s, d, ctx);
+      if (due(s.timers.catForcedAt)) {
+        start(() => startCat(s, d, ctx));
         return;
       }
-      if (s.timers.cat <= t) {
+      if (!trainSoon && s.timers.cat <= t) {
         s.timers.cat = t + T.catCheck;
         if (s.suspicion >= 30 && chance(s, ((s.suspicion - 20) / 100) * d.catMult)) {
           startCat(s, d, ctx);
@@ -166,12 +175,12 @@ export function tickEvents(s: GameState, d: Derived, dt: number, input: TickInpu
         }
       }
     }
-    if (s.zones.sewers && input.active && s.timers.downpour <= t) {
-      startDownpour(s, d, ctx);
+    if (s.zones.sewers && input.active && due(s.timers.downpour)) {
+      start(() => startDownpour(s, d, ctx));
       return;
     }
-    if (s.timers.carriage <= t) {
-      startCarriage(s, d, ctx);
+    if (due(s.timers.carriage)) {
+      start(() => startCarriage(s, d, ctx));
       return;
     }
   }
@@ -567,6 +576,11 @@ export function pickVariant(s: GameState): TrainVariantId {
   return "normal";
 }
 
+/** Cars of a metro train: METRO_BASE_CARS plus platform posts, edicts and the railway seal (Блумсбери −1), 3..11. */
+export function metroCarCount(d: Derived): number {
+  return Math.max(3, Math.min(11, METRO_BASE_CARS + d.trainExtraCars));
+}
+
 function trainComposition(s: GameState, d: Derived, id: TrainId, variant: TrainVariantId): TrainCarKind[] {
   if (id === "capsule") return Array.from({ length: d.capsuleCount }, () => "capsule" as const);
   const v = TRAIN_VARIANTS[variant];
@@ -575,7 +589,7 @@ function trainComposition(s: GameState, d: Derived, id: TrainId, variant: TrainV
   if (id === "metro_train") {
     // v2 (EN-2): a base train is 4 cars (engine, tender 70%, the rest random); platform posts, edicts, the railway
     // seal add more, the Блумсбери district takes one away (never below 3)
-    const total = Math.max(3, Math.min(11, METRO_BASE_CARS + d.trainExtraCars));
+    const total = metroCarCount(d);
     const cars: TrainCarKind[] = ["engine"];
     // EN-6: the Edinburgh mail runs its mail cars right behind the engine
     for (const k of v.forcedCars ?? []) if (cars.length < total) cars.push(k);
@@ -687,9 +701,14 @@ function startTrain(s: GameState, d: Derived, id: TrainId, ctx: EngineCtx): void
   if (id === "capsule") s.timers.capsule = s.time + jitter(s, d.intervals.capsule, T.capsuleJitter);
   else if (id === "metro_train") s.timers.metro_train = s.time + jitter(s, d.intervals.metro, T.metroJitter);
   else s.timers.royal_express = s.time + d.intervals.express;
-  // carriage keeps away from trains
-  s.timers.carriage = Math.max(s.timers.carriage, s.time + 60);
+  // carriage keeps away from trains (an overdue one stays overdue: it comes after the scene, see tickEvents)
+  if (s.timers.carriage > s.time) s.timers.carriage = Math.max(s.timers.carriage, s.time + 60);
   beginScene(s, sc, ctx);
+}
+
+/** «Авария у рельсов!» / «Авария между шпал!» (HaulCard highlights notes with «Авария»). */
+function crashText(sc: Scene): string {
+  return `Авария ${sc.position === "ties" ? "между шпал" : "у рельсов"}!`;
 }
 
 function catchDuration(sc: Scene): number {
@@ -706,7 +725,7 @@ function beginCatch(s: GameState, d: Derived, sc: Scene, ctx: EngineCtx): void {
     if (risk > 0 && chance(s, risk)) {
       sc.crash = true;
       const n = stun(s, 0.03, 90, "crash");
-      toast(ctx, `Авария на шпалах! ${n} ${plural(n, "крыса напугана", "крысы напуганы", "крыс напуганы")}`, "💥", "bad");
+      toast(ctx, `${crashText(sc)} ${n} ${plural(n, "крыса напугана", "крысы напуганы", "крыс напуганы")}`, "💥", "bad");
     }
     s.trainPrefs.lastNets = [...sc.nets];
   }
@@ -1050,7 +1069,7 @@ function finishTrain(s: GameState, d: Derived, sc: Scene, ctx: EngineCtx): void 
     h.suspicionParts = { pass, lantern: sc.lanternSusp ?? 0, total };
     h.title = sc.id === "capsule" ? `Капсулы №${s.stats.capsules}` : sc.id === "metro_train" ? `Улов поезда №${s.stats.trains}` : `Королевский экспресс №${s.stats.expresses}`;
     if (sc.multiplier > 1) h.notes.push(`Первый раз: добыча ×${sc.multiplier}`);
-    if (sc.crash) h.notes.push("Авария на шпалах!");
+    if (sc.crash) h.notes.push(crashText(sc));
     if (sc.jackpot) h.notes.push("ДЖЕКПОТ: чемодан с полки!");
     if (sc.announce) {
       h.notes.push(sc.announce);
@@ -1061,6 +1080,7 @@ function finishTrain(s: GameState, d: Derived, sc: Scene, ctx: EngineCtx): void 
       news(s, "train_royal", {}, ctx);
     }
     if (RATING_ORDER.indexOf(h.rating) > RATING_ORDER.indexOf(s.meta.bestRating)) s.meta.bestRating = h.rating;
+    if (RATING_ORDER.indexOf(h.rating) > RATING_ORDER.indexOf(s.runBestRating)) s.runBestRating = h.rating;
     if (sc.id !== "capsule") {
       const gold = h.rating === "gold" || h.rating === "royal";
       if (gold) {
@@ -1440,22 +1460,31 @@ export function netCost(s: GameState, d: Derived): number {
 
 /* ================================================================ whistle */
 
+/** The whistle never brings a train closer than this many seconds (its «К путям!» warning still has to play). */
+export const WHISTLE_FLOOR = 5;
+
+/**
+ * «Свистнуть стрелочнику»: the next train comes up to a minute sooner, never closer than WHISTLE_FLOOR s, for 10% of
+ * the coins, once per train. A train already WHISTLE_FLOOR s away or less cannot come sooner: refused, nothing paid.
+ */
 export function whistle(s: GameState, ctx: EngineCtx): boolean {
   const nt = nextTrain(s);
   if (!nt || s.scene) return false;
   if (s.timers.whistleUsedFor === nt.at) return false;
+  const left = nt.at - s.time;
+  if (left <= WHISTLE_FLOOR) return false;
+  const gain = Math.min(60, left - WHISTLE_FLOOR);
   const cost = Math.floor(s.res.coins * 0.1);
   s.res.coins -= cost;
-  const newAt = Math.max(s.time + 5, nt.at - 60);
+  const newAt = nt.at - gain;
   s.timers[nt.id] = newAt;
   s.timers.whistleUsedFor = newAt;
-  toast(ctx, `Стрелочник подмазан (−${fmtShort(cost)} 🪙): поезд на минуту раньше`, "🎺", "info");
+  toast(ctx, `Стрелочник подмазан (−${fmtShort(cost)} 🪙): поезд ${gain >= 60 ? "на минуту" : `на ${fmtTime(gain)}`} раньше`, "🎺", "info");
   return true;
 }
 
 /* ================================================================ offline */
 
-/** Expected loot of trains/capsules that passed while away (auto-collect only, no crashes). */
 /**
  * After an absence the run clock has jumped past every event timer. Push the overdue ones a little into
  * the future so the returning player is not greeted by a downpour or a cat in the first second; trains
@@ -1466,20 +1495,31 @@ export function rescheduleAfterAbsence(s: GameState): void {
   const tm = s.timers;
   tm.lastSceneEnd = t;
   if (tm.carriage <= t) tm.carriage = t + between(s, [40, 90]);
-  for (const id of TRAIN_IDS) if (tm[id] <= t) tm[id] = t + 45 + randRange(s, 0, 30);
+  // not only the overdue ones: a train due within 45 s would skip the «К путям!» warning under the absence report
+  for (const id of TRAIN_IDS) if (tm[id] < t + 45) tm[id] = t + 45 + randRange(s, 0, 30);
   if (tm.downpour <= t) tm.downpour = t + between(s, T.downpourInterval) * 0.5;
   if (tm.cat <= t) tm.cat = t + T.catCheck;
   if (tm.catForcedAt <= t) tm.catForcedAt = t + T.catCheck;
   if (tm.ratcatcherAt <= t) tm.ratcatcherAt = t + T.ratcatcherDelay + 20;
 }
 
+/**
+ * Expected loot of the trains/capsules that ran during the last `seconds` (auto-collect only, no crashes; called after
+ * the catch-up steps, so s.time is the end of the absence). Each kind counts only the time its line ran: a zone
+ * opened mid-absence starts its line then, and capsules run until the Metro opened.
+ */
 export function offlineTrains(s: GameState, d: Derived, seconds: number, eta: number): { count: number; loot: Amounts } {
   const loot: Amounts = {};
   let count = 0;
+  const start = s.time - seconds;
+  const openedAt = (z: ZoneId) => (s.zones[z] ? (s.zoneOpenedAt[z] ?? start) : Infinity);
   for (const id of TRAIN_IDS) {
-    if (!trainActive(s, id)) continue;
+    let ran: number;
+    if (id === "capsule") ran = Math.min(s.time, openedAt("metro")) - Math.max(start, openedAt("sewers"));
+    else if (id === "metro_train") ran = s.time - Math.max(start, openedAt("metro"));
+    else ran = trainActive(s, id) ? seconds : 0;
     const interval = id === "capsule" ? d.intervals.capsule : id === "metro_train" ? d.intervals.metro : d.intervals.express;
-    const n = Math.min(30, Math.floor(seconds / interval));
+    const n = Math.min(30, Math.floor(Math.max(0, ran) / interval));
     if (n <= 0) continue;
     for (let i = 0; i < n; i++) {
       const sc = buildTrain(s, d, id);
@@ -1489,7 +1529,8 @@ export function offlineTrains(s: GameState, d: Derived, seconds: number, eta: nu
       for (const it of sc.items) if (!it.spark) loot[it.res] = (loot[it.res] ?? 0) + it.value * a * eta;
     }
     count += n;
-    s.timers[id] = s.time + randRange(s, 5, interval);
+    // the next one somewhere in its interval, but never sooner than the «К путям!» warning (45 s)
+    if (trainActive(s, id)) s.timers[id] = s.time + 45 + randRange(s, 0, Math.max(30, interval - 45));
   }
   // the sceneSeq advanced while building expectation scenes; harmless
   return { count, loot };

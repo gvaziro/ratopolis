@@ -251,8 +251,13 @@ function SaveSection() {
   const exportRef = useRef<HTMLTextAreaElement>(null);
 
   const saveNow = () => {
-    useGame.getState().save();
-    setSaveNote({ ok: true, text: `Сохранено в ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}. Летопись в безопасности.` });
+    // false: storage blocked or full (or saving paused by an open save issue)
+    const ok = useGame.getState().save();
+    setSaveNote(
+      ok
+        ? { ok: true, text: `Сохранено в ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}. Летопись в безопасности.` }
+        : { ok: false, text: "Браузер не даёт записать летопись — скачайте файл сохранения ниже." },
+    );
   };
 
   const doExport = () => {
@@ -428,19 +433,27 @@ function SaveFiles() {
   );
 }
 
-/** «Откатить к копии»: the rolling backups (every 5 min and before imports and resets), newest first. */
+/** «Откатить к копии»: the backups (the rolling 5-minute copy and the one kept from before an import or reset), newest first. */
 function Rollback() {
-  // every save may have rotated the copies: re-read them then (cheap, ~every 15 s)
+  // every save may have refreshed the copies: re-read them then (cheap, ~every 15 s)
   useGame((s) => s.game.lastSaved);
   const backups = useGame.getState().backups();
-  const [confirm, setConfirm] = useState<1 | 2 | null>(null);
+  // the copy the player picked, by slot and save time: a copy refreshed meanwhile is another copy, and closes the question
+  const [confirm, setConfirm] = useState<{ slot: BackupInfo["slot"]; at: number } | null>(null);
   const [note, setNote] = useState<Note>(null);
 
   const restore = (b: BackupInfo) => {
     const when = clockAt(b.at);
     setConfirm(null);
+    // the slot may have been rewritten since this row was drawn: never restore a copy the player did not pick
+    const still = useGame.getState().backups().some((x) => x.slot === b.slot && x.at === b.at);
+    if (!still) {
+      setNote({ ok: false, text: "Летописец как раз обновил копии — выберите ещё раз." });
+      return;
+    }
+    // restoreBackup re-checks the slot's time itself (expectedAt) before touching anything
     setNote(
-      useGame.getState().restoreBackup(b.slot)
+      useGame.getState().restoreBackup(b.slot, b.at)
         ? { ok: true, text: `Колония откатилась к копии от ${when}. Прежняя спрятана в копию — можно вернуть.` }
         : { ok: false, text: "Эта копия не читается. Попробуйте другую." },
     );
@@ -458,8 +471,9 @@ function Rollback() {
               <span className="min-w-0 flex-1 text-xs leading-tight text-parchment">
                 <b className="font-mono tabular text-brass-light">{clockAt(b.at)}</b> · {ratsLabel(b.rats)}
                 {b.crownsEver > 0 && <span className="text-gaslight"> · 👑 {fmtInt(b.crownsEver)}</span>}
+                <span className="block text-[10.5px] text-parchment-dim">{b.slot === 1 ? "копия каждые 5 минут" : "до последнего импорта, отката или сброса"}</span>
               </span>
-              {confirm === b.slot ? (
+              {confirm?.slot === b.slot && confirm.at === b.at ? (
                 <span className="flex gap-1.5">
                   <BrassButton tone="danger" size="sm" onClick={() => restore(b)} className="min-h-10">
                     Да, откатить
@@ -469,7 +483,7 @@ function Rollback() {
                   </BrassButton>
                 </span>
               ) : (
-                <BrassButton tone="verdigris" size="sm" onClick={() => setConfirm(b.slot)} className="min-h-10">
+                <BrassButton tone="verdigris" size="sm" onClick={() => setConfirm({ slot: b.slot, at: b.at })} className="min-h-10">
                   Откатить
                 </BrassButton>
               )}

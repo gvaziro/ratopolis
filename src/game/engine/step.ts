@@ -52,12 +52,14 @@ export function step(s: GameState, dt: number, input: TickInput, ctx: EngineCtx)
 
   tickEvents(s, d, dt, input, ctx);
 
-  // housekeeping once per game second
+  // housekeeping once per game second; the Foreman every 2 s, smart assignment every 5 s (a crossing of the period
+  // boundary, not floor(time) % n: offline steps of 12/24/48 s would keep the same parity and run every step or never)
   if (Math.floor(s.time) !== Math.floor(prevTime) || dt >= 1) {
+    const every = (period: number) => dt >= period || Math.floor(s.time / period) !== Math.floor(prevTime / period);
     housekeeping(s, d, input, ctx);
-    if (s.upgrades.foreman && Math.floor(s.time) % 2 === 0) foremanTick(s, d, ctx);
-    if (s.autoContribute) autoContribute(s, d, ctx);
-    if (s.assignMode === "smart" && s.upgrades.tube_orders && Math.floor(s.time) % 5 === 0) smartAssign(s, d);
+    if (s.upgrades.foreman && every(2)) foremanTick(s, d, ctx);
+    if (s.autoContribute) autoContribute(s, d, ctx, Math.max(1, dt), input.offline?.eta ?? 1);
+    if (s.assignMode === "smart" && s.upgrades.tube_orders && every(5)) smartAssign(s, d);
   }
   return d;
 }

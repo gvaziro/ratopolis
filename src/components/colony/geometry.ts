@@ -100,6 +100,18 @@ export function nextLocked(s: GameState): ZoneId | null {
   return null;
 }
 
+/**
+ * CO-8: the engine's 0..1 spot of a purse or shiny, remapped into x 0.22–0.78 × y 0.32–0.8 of the colony view so it
+ * never hides under the goal widget, the market or the zone pips (UI only: the engine's coordinates stay as they are).
+ * Everything that places or reads those spots (BgEvents, the pips' loot dot, FxLayer's reward floats) goes through these.
+ */
+export function uiX(x: number): number {
+  return 0.22 + 0.56 * Math.max(0, Math.min(1, x));
+}
+export function uiY(y: number): number {
+  return 0.32 + 0.48 * Math.max(0, Math.min(1, y));
+}
+
 /* ------------------------------------------------------------ rat routing */
 
 export interface Pt {

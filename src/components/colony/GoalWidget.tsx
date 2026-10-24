@@ -217,10 +217,12 @@ function computeGoals(s: GameState, d: Derived, full: Set<ResId>): Goal[] {
     } else {
       const nz = nextLocked(s);
       if (nz) {
+        // two thresholds, both named: the scouts find the way at mapRevealRats, the expedition itself takes more
         const need = ZONES[nz].mapRevealRats;
+        const crew = ZONES[nz].expedition?.rats ?? 0;
         out.push({
           icon: "🗺️",
-          name: `${ZONES[nz].name}: нужно ${fmtInt(need)} 🐀 (сейчас ${fmtInt(s.rats)})`,
+          name: `${ZONES[nz].name}: разведка при ${fmtInt(need)} 🐀 (сейчас ${fmtInt(s.rats)})${crew > need ? `, поход — ${fmtInt(crew)} 🐀` : ""}`,
           eta: -2,
           frac: round50(need > 0 ? s.rats / need : 1),
           tab: "map",
@@ -504,7 +506,8 @@ export const GoalWidget = memo(function GoalWidget() {
         </button>
         {open && (
           <div
-            className="mt-1 w-64 max-w-[calc(100vw-48px)] overflow-y-auto rounded-lg border border-line bg-soot-2/95 p-1.5 shadow-[0_6px_18px_rgba(0,0,0,.55)]"
+            data-wheel-scroll=""
+            className="mt-1 w-64 max-w-[calc(100vw-48px)] overflow-y-auto overscroll-contain rounded-lg border border-line bg-soot-2/95 p-1.5 shadow-[0_6px_18px_rgba(0,0,0,.55)]"
             style={{ maxHeight: Math.max(140, lay.ch - top - 56) }}
           >
             <div className="mb-1 px-1 font-display text-xs font-bold tracking-wide text-brass-light">Цели колонии</div>

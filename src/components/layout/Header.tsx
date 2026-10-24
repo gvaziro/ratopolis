@@ -208,9 +208,11 @@ function suspicionColor(p: number): string {
 function Suspicion() {
   const shown = useGame((s) => !!s.game.revealed.suspicion);
   const pct = useGame((s) => Math.floor(s.game.suspicion));
+  // the district's ratcatcher threshold (100%, Мэйфэр 80%): the colour and the alarm count towards it
+  const threshold = useGame((s) => derivedOf(s.game).ratcatcherAt);
   if (!shown) return null;
-  const color = suspicionColor(pct);
-  const alarm = pct >= 80;
+  const color = suspicionColor(Math.min(100, (pct * 100) / Math.max(1, threshold)));
+  const alarm = pct >= threshold - 20;
   return (
     <FloatTip tip={<SuspicionTip />} width={270}>
       <span className="flex min-h-10 cursor-default items-center gap-1 whitespace-nowrap font-mono text-[12px] tabular sm:text-[13px]">
@@ -238,10 +240,13 @@ function SuspicionTip() {
     return {
       pct: Math.floor(i.pct),
       perMin: i.perMin,
+      threshold: i.threshold,
       eta: i.etaSec === null ? -1 : Math.round(i.etaSec),
       reducers: i.reducers.map((r) => `${r.label} ${r.amount}`).join(", "),
     };
   }, 2);
+  // the Ratcatcher is on his way (etaSec 0) or the threshold is reached
+  const coming = info.pct >= info.threshold || info.eta === 0;
   return (
     <span className="block">
       <span className="block font-bold text-brass-light">👁 Подозрение людей: {info.pct}%</span>
@@ -252,7 +257,7 @@ function SuspicionTip() {
       ) : (
         <span className="block">Пока не растёт: наверху колонию ещё не замечают.</span>
       )}
-      {info.pct >= 100 ? (
+      {coming ? (
         <span className="block font-bold text-danger-light">Крысолов уже на пороге!</span>
       ) : (
         info.eta > 0 && (
@@ -262,8 +267,10 @@ function SuspicionTip() {
         )
       )}
       <span className="mt-1 block text-parchment-dim">Снижают: {info.reducers}.</span>
-      <span className="mt-1 block text-parchment-dim">Чем выше, тем чаще заглядывает Кот, а на 100% является Крысолов с дудочкой.</span>
-      {info.pct >= 80 && info.pct < 100 && <span className="block text-danger-light">Наверху уже шепчутся о крысолове!</span>}
+      <span className="mt-1 block text-parchment-dim">
+        Чем выше, тем чаще заглядывает Кот, а на {info.threshold}% является Крысолов с дудочкой.
+      </span>
+      {!coming && info.pct >= info.threshold - 20 && <span className="block text-danger-light">Наверху уже шепчутся о крысолове!</span>}
     </span>
   );
 }

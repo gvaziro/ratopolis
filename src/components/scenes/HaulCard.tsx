@@ -13,9 +13,12 @@ import { useGame } from "@/game/store";
 import type { Scene } from "@/game/types";
 import { fmt, fmtInt, fmtPct, fmtTime } from "@/lib/format";
 import { BrassButton, cx } from "@/components/ui/kit";
-import { act, clamp, easeOutCubic, shake } from "./sceneUtils";
+import { act, clamp, easeOutCubic, keyboardUsed, shake } from "./sceneUtils";
 
 const signed = (v: number) => (v >= 0 ? `+${fmt(v)}` : fmt(v));
+
+/** Within this long after the card shows, Space / Enter on «Дальше» are taken as carried over from the catch or the piles. */
+const CARRY_MS = 400;
 
 /** Number rolling up from 0 to `value` in 1.2 s with an ease-out (DOM text, no React re-renders). */
 function RollUp({ value, delay = 0, prefix = "+" }: { value: number; delay?: number; prefix?: string }) {
@@ -47,6 +50,13 @@ function HaulCardImpl({ scene }: { scene: Scene }) {
   const showSusp = useGame((s) => !!s.game.zones.cellars || !!s.game.revealed.suspicion);
   const [stamp, setStamp] = useState(false);
   const approved = haul?.rating === "gold" || haul?.rating === "royal";
+  // «Дальше» takes the focus only from a keyboard player (a mouse player may be busy in the side panel)
+  const [kbdFocus] = useState(keyboardUsed);
+  const shownAt = useRef(0);
+
+  useEffect(() => {
+    shownAt.current = performance.now();
+  }, []);
 
   useEffect(() => {
     sfx.typewriter();
@@ -160,7 +170,17 @@ function HaulCardImpl({ scene }: { scene: Scene }) {
             <p className="border-b border-[#2a2018]/40 font-serif text-[9px] font-bold uppercase tracking-[0.2em]">Тем временем наверху</p>
             <p className="font-serif text-[12px] italic leading-snug">{haul.headline ?? "Люди наверху ничего не заметили. Ну, почти."}</p>
           </div>
-          <BrassButton size="lg" className="min-h-11 shrink-0" autoFocus onClick={() => act({ a: "dismiss" })}>
+          <BrassButton
+            size="lg"
+            className="min-h-11 shrink-0"
+            autoFocus={kbdFocus}
+            onKeyDown={(e) => {
+              // a Space held for the paw (auto-repeat) or Enter / Space mashed on the last pile must not close the card
+              // unread: a prevented keydown neither arms the button for keyup nor clicks it
+              if ((e.key === " " || e.key === "Enter") && (e.repeat || performance.now() - shownAt.current < CARRY_MS)) e.preventDefault();
+            }}
+            onClick={() => act({ a: "dismiss" })}
+          >
             Дальше
           </BrassButton>
         </div>

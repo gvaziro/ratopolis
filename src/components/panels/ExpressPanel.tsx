@@ -11,6 +11,7 @@ import { EXPRESS_STAGE_LINES, EXPRESS_STAGES } from "@/game/data/meta";
 import { commissionProgress } from "@/game/engine/progress";
 import { expressCost } from "@/game/engine/actions";
 import { entries, isComplete } from "@/game/engine/formulas";
+import { KEPT_STAGES_MAX } from "@/game/engine/state";
 import { useGame } from "@/game/store";
 import type { CommissionId, GameState, ResId } from "@/game/types";
 import { useSampled } from "@/game/useSampled";
@@ -74,7 +75,7 @@ export default function ExpressPanel() {
           {crowned
             ? "Король коронован, но Лондон велик: каждый новый вагон даёт ещё +10% ко всему производству."
             : `Каждый этап — +20% ко всему производству (кроме 📜 и 💍).${stage === 9 ? " Последний рывок — и коронация!" : ""}`}
-          {m.kept ? " Указ «Чертежи экспресса»: этапы переживут переселение." : ""}
+          {m.kept ? ` Указ «Чертежи экспресса»: первые ${KEPT_STAGES_MAX} этапов переживут переселение.` : ""}
         </p>
 
         {!crowned && EXPRESS_STAGE_LINES[stage] && (
@@ -163,6 +164,8 @@ function Commissions() {
     const m: CommissionModel = { offered: c.offered, active: commissionProgress(s.game), done: c.done, charters: s.game.charters, tails: 1 + s.game.meta.migrations };
     return JSON.stringify(m);
   }, 3, Object.is);
+  // «Отказаться» asks once more (the progress is lost); the question is about this very commission
+  const [abandonAsk, setAbandonAsk] = useState<CommissionId | null>(null);
   if (!json) return null;
   const m = JSON.parse(json) as CommissionModel;
   const mult = Math.min(1.5, Math.pow(1.05, m.charters));
@@ -186,9 +189,36 @@ function Commissions() {
             <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-black/40">
               <div className="h-full rounded-full bg-gaslight" style={{ width: Math.round((m.active.cur / m.active.goal) * 100) + "%" }} />
             </div>
-            <p className="mt-0.5 text-right font-mono text-[11px] tabular text-brass-light">
-              {m.active.cur} / {m.active.goal}
-            </p>
+            <div className="mt-0.5 flex flex-wrap items-center justify-end gap-1.5">
+              {abandonAsk === m.active.id ? (
+                <>
+                  <span className="mr-auto text-[11px] leading-tight text-parchment-dim">Вернуть без грамоты? Взамен — три новых.</span>
+                  <BrassButton
+                    tone="danger"
+                    size="sm"
+                    className="min-h-10"
+                    onClick={() => {
+                      setAbandonAsk(null);
+                      useGame.getState().abandonCommission();
+                    }}
+                  >
+                    Да, отказаться
+                  </BrassButton>
+                  <BrassButton tone="ghost" size="sm" className="min-h-10" onClick={() => setAbandonAsk(null)}>
+                    Нет
+                  </BrassButton>
+                </>
+              ) : (
+                <>
+                  <BrassButton tone="ghost" size="sm" className="mr-auto min-h-10" onClick={() => setAbandonAsk(m.active!.id)}>
+                    Отказаться
+                  </BrassButton>
+                  <span className="font-mono text-[11px] tabular text-brass-light">
+                    {m.active.cur} / {m.active.goal}
+                  </span>
+                </>
+              )}
+            </div>
           </div>
         ) : (
           <div className="space-y-1.5">

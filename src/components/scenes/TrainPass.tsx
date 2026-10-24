@@ -7,7 +7,9 @@
  * SC-4: the variant tints the train, the Cheddar car is painted cheese-yellow.
  * SC-5: the arrival hits — half speed for 0.45 s, a pale flash, a thump, a sideways gust of dust; a doppler as the engine
  * passes the middle; at the last car the rumble cuts to a ringing silence (rumbleCut + tinnitus), a drip, flickering
- * lamps. Phones get a «Наверху» inset with the human train above. Reduced motion: no slow-mo, flash, streaks or gust.
+ * lamps. Phones get a «Наверху» inset with the human train above (in the tag column, so the hook's count-in tag stays
+ * in view under it). Reduced motion: no slow-mo, flash, streaks or gust (read when the arrival happens, so toggling it
+ * mid-pass does not replay the arrival).
  */
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { sfx } from "@/audio/sfx";
@@ -22,7 +24,7 @@ import TimingBar, { type TimingResult } from "./TimingBar";
 import { TrainDust } from "./TrainBackdrop";
 import { UpstairsInset } from "./UpstairsInset";
 import { createTrainPainter, type TrainPainter } from "./TrainPainter";
-import { act, shake } from "./sceneUtils";
+import { act, reducedNow, shake } from "./sceneUtils";
 
 type HookUi = "hidden" | "open" | "thrown";
 
@@ -41,6 +43,7 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
   const hookCar = hookOwned && !capsule ? sc.hookCar : -1;
   // the engine scales the jackpot (HOOK_JACKPOT ×4 perfect / ×2.5 hit, royal car ×6 / ×4) by the crew position's hook factor
   const hm = CREW_POSITIONS[sc.position].hook;
+  const royalHook = hookCar >= 0 && sc.cars[hookCar]?.kind === "royal";
 
   const control = useRef<CatchControl>(newCatchControl());
   const painter = useRef<TrainPainter | null>(null);
@@ -54,8 +57,9 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
   const [hookState, setHookState] = useState<HookUi>("hidden");
   const [carIdx, setCarIdx] = useState(0);
   const [jackpot, setJackpot] = useState<TimingResult | null>(null);
-  // the arrival flash is the first one (pale); the jackpot's flashes count on from it
-  const [flash, setFlash] = useState(() => (!capsule && !reduced ? 1 : 0));
+  // the arrival flash is the first one (pale); the jackpot's flashes count on from it. The style is fixed when a flash
+  // fires: deriving it from `jackpot` restarted the animation (a stray pale flash) when the jackpot text went away
+  const [flash, setFlash] = useState(() => ({ n: !capsule && !reduced ? 1 : 0, strong: false }));
   const [arrival, setArrival] = useState(!capsule && !reduced);
   const [departed, setDeparted] = useState(false);
   const variant = sc.variant ? TRAIN_VARIANTS[sc.variant] : null;
@@ -72,7 +76,7 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
       sfx.whistle(royal);
       // SC-5 arrival impact: hit-stop at half speed, a pale flash and a thump
       sfxCue("thump");
-      if (!reduced) {
+      if (!reducedNow()) {
         control.current.slowUntil = performance.now() + 450;
       }
     }
@@ -82,7 +86,7 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
       window.clearTimeout(gust);
       if (!capsule) sfx.chuffStop();
     };
-  }, [capsule, royal, reduced]);
+  }, [capsule, royal]);
 
   const drawBack = useCallback(
     (g: CanvasRenderingContext2D, w: number, h: number, t: number, dt: number) => {
@@ -188,7 +192,7 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
         sfx.jackpot();
         shake(10, 600);
         setJackpot(r);
-        if (!reduced) setFlash((f) => f + 1);
+        if (!reduced) setFlash((f) => ({ n: f.n + 1, strong: true }));
         control.current.burst?.(0.5, 0.42, "#f5d76e", 34, true);
         control.current.burst?.(0.5, 0.42, "#f5a3ff", 10, true);
         window.setTimeout(() => setJackpot(null), 1900);
@@ -205,8 +209,8 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
   return (
     <div className="absolute inset-0">
       <CatchCanvasCore scene={sc} mode="train" onDone={onDone} control={control} drawBack={drawBack} onFrame={onFrame} onSpawn={capsule ? onSpawn : undefined} className="absolute inset-0" />
-      {def && (
-        <div className="pointer-events-none absolute left-2 top-2 flex flex-col items-start gap-1 md:left-3 md:top-3">
+      <div className="pointer-events-none absolute left-2 top-2 flex flex-col items-start gap-1 md:left-3 md:top-3">
+        {def && (
           <div className="flex items-center gap-1.5 rounded border border-brass-dark/70 bg-soot/75 px-2 py-1 text-xs shadow">
             <span className="text-base leading-none">{def.icon}</span>
             <span className="font-display font-bold text-brass-light">{def.name}</span>
@@ -215,24 +219,26 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
             </span>
             {carIdx === hookCar && hookState !== "thrown" && <span className="text-gaslight">🪝</span>}
           </div>
-          {hookSoon && target && (
-            <div className="relative">
-              {!reduced && <span className="absolute inset-0 rounded border-2 border-gaslight" style={{ animation: "rr-scene-ping .5s cubic-bezier(0,0,.2,1) 3" }} />}
-              <div className="relative flex items-center gap-1.5 rounded border border-gaslight bg-[#3a2a0e]/90 px-2 py-1 text-xs font-bold text-gaslight shadow-[0_0_14px_rgba(242,184,75,.45)]">
-                🪝 Цель близко: <span className="text-base leading-none">{target.icon}</span> {target.name}
-              </div>
+        )}
+        {/* phones only (md:hidden); stacked here, the count-in tag below never ends up under it */}
+        {!capsule && <UpstairsInset n={n} perCar={sc.perCar} clock={clock} reduced={reduced} cab={false} className="relative" />}
+        {hookSoon && target && (
+          <div className="relative">
+            {!reduced && <span className="absolute inset-0 rounded border-2 border-gaslight" style={{ animation: "rr-scene-ping .5s cubic-bezier(0,0,.2,1) 3" }} />}
+            <div className="relative flex items-center gap-1.5 rounded border border-gaslight bg-[#3a2a0e]/90 px-2 py-1 text-xs font-bold text-gaslight shadow-[0_0_14px_rgba(242,184,75,.45)]">
+              🪝 Цель близко: <span className="text-base leading-none">{target.icon}</span> {target.name}
             </div>
-          )}
-        </div>
-      )}
+          </div>
+        )}
+      </div>
       {hookState !== "hidden" && (
         <div className="pointer-events-none absolute inset-x-0 bottom-[3%] z-10 flex justify-center px-3">
-          <TimingBar onThrow={onThrow} hm={hm} title={royal ? "Крюк — на королевский вагон!" : "Крюк — на багажную полку!"} />
+          <TimingBar onThrow={onThrow} hm={hm} royal={royalHook} title={royal ? "Крюк — на королевский вагон!" : "Крюк — на багажную полку!"} />
         </div>
       )}
       {jackpot && <Jackpot perfect={jackpot === "perfect"} hm={hm} royal={royal} reduced={reduced} />}
-      {flash > 0 && (
-        <div key={flash} className="pointer-events-none absolute inset-0 z-20 bg-[#fff6dc]" style={{ animation: jackpot ? "rr-flash .4s ease-out forwards" : "rr-flash-soft .45s ease-out forwards" }} />
+      {flash.n > 0 && (
+        <div key={flash.n} className="pointer-events-none absolute inset-0 z-20 bg-[#fff6dc]" style={{ animation: flash.strong ? "rr-flash .4s ease-out forwards" : "rr-flash-soft .45s ease-out forwards" }} />
       )}
       {arrival && (
         <div className="pointer-events-none absolute inset-y-0 left-0 w-[60%] -scale-x-100">
@@ -240,7 +246,6 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
         </div>
       )}
       {departed && !reduced && <div className="pointer-events-none absolute inset-0 z-10 bg-[radial-gradient(ellipse_at_50%_0%,rgba(255,214,140,.22),transparent_60%)]" style={{ animation: "rr-flicker .9s ease-in-out 2" }} />}
-      {!capsule && <UpstairsInset n={n} perCar={sc.perCar} clock={clock} reduced={reduced} cab={false} />}
     </div>
   );
 }

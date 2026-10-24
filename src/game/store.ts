@@ -22,6 +22,7 @@ import {
   setSeal,
   toggleSatiety,
 } from "./engine/actions";
+import { abandonCommission } from "./engine/commissions";
 import { derive, type Derived } from "./engine/derive";
 import { clickPurse, clickShiny, marketDeal, onZoneOpen, sceneAction, whistle } from "./engine/events";
 import type { Hint } from "./engine/hints";
@@ -56,7 +57,10 @@ export type { TabId } from "./types";
 /** Why the save is not being written (SH-1 dialogs). While set, the game neither ticks nor saves. */
 export type SaveIssue = null | { kind: "corrupt"; quarantineKey: string } | { kind: "newer"; version: number } | { kind: "locked" };
 
-/** A rolling backup slot (bak1 = newest). `at` = epoch ms when that save was written. */
+/**
+ * A backup slot. 1: the rolling copy (every 5 min of play); 2: the copy taken before an import, a rollback,
+ * «Начать заново», a reset or a schema upgrade, which the rolling copy never overwrites. `at` = epoch ms of that save.
+ */
 export interface BackupInfo {
   slot: 1 | 2;
   at: number;
@@ -71,6 +75,18 @@ export interface GameStore {
   offlineReport: OfflineReport | null;
   /** Real-time ms of the last player input (pointer/keyboard). */
   lastInputAt: number;
+  /**
+   * Bumped whenever the game is replaced wholesale (an import, a rollback, «Начать заново», a reset, a crash reload,
+   * a tab take-over). UI only: GameRoot keys the HUD and the colony on it so their first-mount snapshots start afresh.
+   */
+  runSeq: number;
+  /**
+   * A ceremony (the coronation show, the migration card) is open. useGameLoop holds the game clock meanwhile, so no
+   * train or event plays out under it; a ceremony up to a minute is a pause, a longer one is credited as an absence.
+   */
+  ceremony: boolean;
+  /** A ceremony opened (true) or closed (false); counted, so overlapping ceremonies hold the clock until the last. */
+  setCeremony: (on: boolean) => void;
 
   /* ---- UI state (not saved in GameState) */
   tab: TabId;
@@ -93,9 +109,14 @@ export interface GameStore {
   resetCrash: () => void;
   /** A UI render error: freeze ticks and saves like an engine crash (CrashScreen). */
   markCrashed: (error: string) => void;
-  /** Rolling backups (every 5 min and before import / reset / a schema migration), newest first. */
+  /** The backups (slot 1 rolling every 5 min, slot 2 kept from before an import / rollback / reset), newest first. */
   backups: () => BackupInfo[];
-  restoreBackup: (slot: 1 | 2) => boolean;
+  /**
+   * Roll back to a backup slot (the current colony goes to slot 2 first, so restoring slot 2 swaps the two).
+   * `expectedAt`: the BackupInfo.at the player confirmed; when the slot has been rewritten since, nothing is touched
+   * and false is returned.
+   */
+  restoreBackup: (slot: 1 | 2, expectedAt?: number) => boolean;
   /** The stored save string as is (for «Скачать сохранение»), null when there is none. */
   rawSave: () => string | null;
   /** Import a downloaded save file (raw JSON) or an export string; a backup is taken first. */
@@ -115,7 +136,8 @@ export interface GameStore {
   /** Catch up a long absence (tab hidden > 60 s). */
   catchUp: (seconds: number) => void;
   noteInput: () => void;
-  save: () => void;
+  /** Write the save; false when it could not be written (blocked storage, quota) or saving is paused. */
+  save: () => boolean;
   dismissOffline: () => void;
 
   /* ---- player actions */
@@ -147,6 +169,8 @@ export interface GameStore {
   setSeal: (id: SealId) => void;
   /** Accept one of the King's offered commissions. */
   acceptCommission: (id: CommissionId) => void;
+  /** Hand the active commission back to the King (no charter); three new ones are offered. */
+  abandonCommission: () => void;
   /** «Сделать» on the elder's hint: perform h.action, then focus(h.tab, h.target). */
   applyHint: (h: Hint) => void;
   /** Default crew position for future trains (Расписание tab). */
@@ -198,6 +222,26 @@ const BACKUP_EVERY_MS = 5 * 60_000;
 /** Real time of the last rolling backup (the first one comes 5 min after load). */
 let lastBackupAt = 0;
 
+/**
+ * Wall time (ms) since which the game has stood still: the tab is hidden, so no frame ticks it, while the interval
+ * saver, beforeunload and a «Играть здесь» take-over still save. Those saves are stamped with this time, not
+ * "now", so the next load credits the whole absence. Set by useGameLoop (noteHidden / noteVisible).
+ */
+let frozenSince: number | null = null;
+
+/** The tab went hidden at `at` (ms): saves from now on are stamped `at`. */
+export function noteHidden(at: number): void {
+  frozenSince = at;
+}
+
+/** The tab is visible again and its absence has been caught up: saves are stamped with the current time again. */
+export function noteVisible(): void {
+  frozenSince = null;
+}
+
+/** The player has been told once that the browser refuses to store the save. */
+let saveFailTold = false;
+
 function lsGet(key: string): string | null {
   try {
     return localStorage.getItem(key);
@@ -227,20 +271,31 @@ function readBakMeta(key: string): BakMeta {
 }
 
 /**
- * Copy the stored save (or `raw`) to `${key}:bak1`, shifting bak1 → bak2. Unreadable or newer-version saves are
- * never copied (a corrupt save must not push a good backup out).
+ * Copy the stored save (or `raw`) to `${key}:bak<slot>`. Unreadable or newer-version saves are never copied
+ * (a corrupt save must not push a good backup out).
  */
-function makeBackup(key: string, raw?: string | null): void {
+function backupTo(key: string, slot: BackupInfo["slot"], raw?: string | null): void {
   const src = raw ?? lsGet(key);
   if (!src) return;
   const st = deserialize(src);
   if (!st || isNewerSave(st)) return;
+  if (!lsSet(`${key}:bak${slot}`, src)) return;
   const metas = readBakMeta(key);
-  const b1 = lsGet(`${key}:bak1`);
-  if (b1 !== null && lsSet(`${key}:bak2`, b1) && metas["1"]) metas["2"] = metas["1"];
-  if (!lsSet(`${key}:bak1`, src)) return;
-  metas["1"] = { at: st.lastSaved || Date.now(), rats: st.rats, crownsEver: st.meta.crownsEver };
+  metas[slot === 1 ? "1" : "2"] = { at: st.lastSaved || Date.now(), rats: st.rats, crownsEver: st.meta.crownsEver };
   lsSet(`${key}:bakmeta`, JSON.stringify(metas));
+}
+
+/** The rolling copy (slot 1): save() every 5 min. */
+function rollBackup(key: string): void {
+  backupTo(key, 1);
+}
+
+/**
+ * The colony as it was before an import / rollback / «Начать заново» / reset / schema upgrade (slot 2). The UI
+ * promises it can be brought back, so the 5-minute rolling copy never overwrites it; only the next such action does.
+ */
+function pinBackup(key: string, raw?: string | null): void {
+  backupTo(key, 2, raw);
 }
 
 interface Loaded {
@@ -283,7 +338,7 @@ function loadFromStorage(key: string, now: number): Loaded {
     return { game: freshGame(now), report: null, issue: { kind: "corrupt", quarantineKey }, fx, uiFx };
   }
   const v = savedVersion(raw);
-  if (v !== null && v < SCHEMA_VERSION) makeBackup(key, raw);
+  if (v !== null && v < SCHEMA_VERSION) pinBackup(key, raw);
   let s: GameState = parsed;
   let report: OfflineReport | null = null;
   try {
@@ -343,10 +398,13 @@ export const useGame = create<GameStore>((set, get) => {
     emitFx(ctx.fx);
   };
 
-  /** Replace the game with a loaded/restored one and resume play. */
+  /** Replace the game with a loaded/restored one and resume play (runSeq: the HUD and colony remount). */
   const adopt = (game: GameState, report: OfflineReport | null = null) => {
-    set({ game, offlineReport: report, crashed: false, crashError: null, saveIssue: null });
+    set({ game, offlineReport: report, crashed: false, crashError: null, saveIssue: null, runSeq: get().runSeq + 1 });
   };
+
+  /** Open ceremonies (setCeremony); `ceremony` is true while any is open. */
+  let ceremonies = 0;
 
   /**
    * Ask for the per-slot Web Lock (browser only). "try": only if free (page load); "wait": queue behind the holder,
@@ -369,7 +427,16 @@ export const useGame = create<GameStore>((set, get) => {
       if (mode === "wait") {
         // the other tab saved just before letting go: continue from its save
         const loaded = loadFromStorage(key, Date.now());
-        set({ game: loaded.game, offlineReport: null, crashed: false, crashError: null, saveIssue: loaded.issue, lastInputAt: Date.now() });
+        // a hidden tab hands over a save stamped at its hide time: show the absence that load credited
+        set({
+          game: loaded.game,
+          offlineReport: loaded.report,
+          crashed: false,
+          crashError: null,
+          saveIssue: loaded.issue,
+          lastInputAt: Date.now(),
+          runSeq: get().runSeq + 1,
+        });
         emitFx(loaded.fx);
         for (const f of loaded.uiFx) emitUiFx(f);
       } else if (get().saveIssue?.kind === "locked") set({ saveIssue: null });
@@ -415,6 +482,12 @@ export const useGame = create<GameStore>((set, get) => {
     ready: false,
     offlineReport: null,
     lastInputAt: 0,
+    runSeq: 0,
+    ceremony: false,
+    setCeremony: (on) => {
+      ceremonies = Math.max(0, ceremonies + (on ? 1 : -1));
+      if (get().ceremony !== ceremonies > 0) set({ ceremony: ceremonies > 0 });
+    },
     tab: "buildings",
     buyMode: 1,
     setTab: (tab) => set({ tab }),
@@ -449,7 +522,7 @@ export const useGame = create<GameStore>((set, get) => {
         return;
       }
       const loaded = loadFromStorage(saveKey(), Date.now());
-      set({ game: loaded.game, offlineReport: loaded.report, crashed: false, crashError: null, saveIssue: loaded.issue });
+      set({ game: loaded.game, offlineReport: loaded.report, crashed: false, crashError: null, saveIssue: loaded.issue, runSeq: get().runSeq + 1 });
       emitFx(loaded.fx);
       for (const f of loaded.uiFx) emitUiFx(f);
     },
@@ -462,18 +535,20 @@ export const useGame = create<GameStore>((set, get) => {
         const m = metas[String(slot) as "1" | "2"];
         if (m && lsGet(`${key}:bak${slot}`)) out.push({ slot, at: m.at, rats: m.rats, crownsEver: m.crownsEver });
       }
-      return out;
+      return out.sort((a, b) => b.at - a.at);
     },
 
-    restoreBackup: (slot) => {
+    restoreBackup: (slot, expectedAt) => {
       const issue = get().saveIssue;
       if (issue?.kind === "newer" || issue?.kind === "locked") return false;
       const key = saveKey();
+      // the copy the player confirmed has been rewritten since (the rolling backup, another rollback): touch nothing
+      if (expectedAt !== undefined && readBakMeta(key)[slot === 1 ? "1" : "2"]?.at !== expectedAt) return false;
       const raw = lsGet(`${key}:bak${slot}`);
       if (!raw) return false;
       const s = deserialize(raw);
       if (!s || isNewerSave(s)) return false;
-      if (!issue) makeBackup(key); // keep the current save too (skipped when unreadable)
+      if (!issue) pinBackup(key); // keep the current save too (skipped when unreadable): restoring slot 2 swaps the two
       s.lastSaved = Date.now();
       lastBackupAt = Date.now();
       adopt(s);
@@ -495,7 +570,7 @@ export const useGame = create<GameStore>((set, get) => {
       const issue = get().saveIssue;
       if (issue?.kind === "newer" || issue?.kind === "locked") return;
       const key = saveKey();
-      makeBackup(key);
+      pinBackup(key);
       lastBackupAt = Date.now();
       adopt(freshGame(Date.now(), get().game.settings));
       get().save();
@@ -568,20 +643,31 @@ export const useGame = create<GameStore>((set, get) => {
 
     save: () => {
       const g = get().game;
-      if (!get().ready || blocked()) return;
+      if (!get().ready || blocked()) return false;
       const key = saveKey();
       const now = Date.now();
       if (now - lastBackupAt >= BACKUP_EVERY_MS) {
-        makeBackup(key);
+        rollBackup(key);
         lastBackupAt = now;
       }
+      // the wall time this state stands for: a hidden tab's game stopped at its hide time
+      const stamp = frozenSince ?? now;
+      let raw: string | null = null;
       try {
-        const s = { ...g, lastSaved: now };
-        localStorage.setItem(key, serialize(s));
-        set({ game: { ...g, lastSaved: s.lastSaved } });
+        raw = serialize({ ...g, lastSaved: stamp });
       } catch {
-        /* storage full or blocked: ignore */
+        /* unserializable state: reported like a refused write */
       }
+      if (raw === null || !lsSet(key, raw)) {
+        // storage blocked for the site or full: say so once instead of letting a reload start a fresh colony
+        if (!saveFailTold) {
+          saveFailTold = true;
+          emitUiFx({ k: "toast", text: "Браузер не даёт записать летопись — скачайте файл сохранения в настройках", icon: "📜", tab: "settings" });
+        }
+        return false;
+      }
+      set({ game: { ...g, lastSaved: stamp } });
+      return true;
     },
 
     dismissOffline: () => set({ offlineReport: null }),
@@ -655,6 +741,10 @@ export const useGame = create<GameStore>((set, get) => {
       mutate((s, _d, ctx) => {
         acceptCommission(s, id, ctx);
       }),
+    abandonCommission: () =>
+      mutate((s, _d, ctx) => {
+        abandonCommission(s, ctx);
+      }),
     applyHint: (h) => {
       const a = h.action;
       if (a?.kind === "assign") get().assignJob(a.job, a.n);
@@ -694,7 +784,7 @@ export const useGame = create<GameStore>((set, get) => {
       if (issue?.kind === "newer" || issue?.kind === "locked") return false;
       const s = importAny(str);
       if (!s || isNewerSave(s)) return false;
-      makeBackup(saveKey());
+      pinBackup(saveKey());
       lastBackupAt = Date.now();
       s.lastSaved = Date.now();
       adopt(s);
@@ -705,7 +795,7 @@ export const useGame = create<GameStore>((set, get) => {
       const issue = get().saveIssue;
       if (issue?.kind === "newer" || issue?.kind === "locked") return;
       const key = saveKey();
-      makeBackup(key);
+      pinBackup(key);
       lastBackupAt = Date.now();
       try {
         localStorage.removeItem(key);

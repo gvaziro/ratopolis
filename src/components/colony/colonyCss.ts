@@ -113,7 +113,7 @@ export const COLONY_CSS = `
 @keyframes cv-vibrate{from{transform:translateX(-1px)}to{transform:translateX(1px)}}
 .cv-rm .cv-drip,.cv-rm .cv-ripple,.cv-rm .cv-steam,.cv-rm .cv-mote,.cv-rm .cv-clump,.cv-rm .cv-fall,.cv-rm .cv-wave,.cv-rm .cv-vibrate,.cv-rm .cv-frenzy,.cv-rm .cv-avral,.cv-rm .cv-flash{animation:none}
 .cv-rm .cv-steam,.cv-rm .cv-drip,.cv-rm .cv-mote,.cv-rm .cv-clump,.cv-rm .cv-fall,.cv-rm .cv-flash{opacity:0}
-[data-off] *,.cv-covered *{animation-play-state:paused!important}
+[data-off],[data-off] *,.cv-covered *{animation-play-state:paused!important}
 .cv-rm :is(${DECOR}){animation-play-state:paused}
 @media (prefers-reduced-motion:reduce){.cv-root:not(.cv-motion) :is(${DECOR}){animation-play-state:paused}}
 .cv-plate{transform:scale(var(--plate-k,1));transform-box:fill-box;transform-origin:100% 100%}

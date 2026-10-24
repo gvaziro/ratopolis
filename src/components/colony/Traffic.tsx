@@ -52,6 +52,7 @@ export const Traffic = memo(function Traffic() {
     const spokes = spokesRef.current;
     if (!boot || !wheel || !spokes) return;
     let raf = 0;
+    let timer = 0;
     let nextAt = performance.now() + 4000 + Math.random() * 5000;
     let act: {
       kind: Actor;
@@ -76,15 +77,29 @@ export const Traffic = memo(function Traffic() {
       return top < STREET_H;
     };
 
+    // between actors the loop sleeps on a timer (no frame callbacks for the 9–22 s of empty street)
+    const sleep = (ms: number) => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = 0;
+        if (!raf) raf = requestAnimationFrame(frame);
+      }, Math.max(0, ms));
+    };
+
     const frame = (now: number) => {
-      raf = requestAnimationFrame(frame);
-      if (colonyPaused()) return;
+      raf = 0;
+      if (colonyPaused()) {
+        // under a scene or in a hidden tab an actor keeps its clock (and ends unseen); an empty street naps
+        if (act) raf = requestAnimationFrame(frame);
+        else sleep(1000);
+        return;
+      }
       const g = useGame.getState().game;
       const calm = g.settings.reducedMotion;
       if (!act) {
-        if (now < nextAt) return;
+        if (now < nextAt) return sleep(nextAt - now);
         nextAt = now + nextGap();
-        if (g.scene || !streetVisible()) return;
+        if (g.scene || !streetVisible()) return sleep(nextAt - now);
         if (Math.random() < 0.5) {
           // a boot lands anywhere along the street but not on the grate
           let x = -80 + Math.random() * 880;
@@ -111,6 +126,7 @@ export const Traffic = memo(function Traffic() {
             dimmed: false,
           };
       }
+      raf = requestAnimationFrame(frame);
       const t = now - act.t0;
       if (act.kind === "boot") {
         const down = 220;
@@ -191,9 +207,10 @@ export const Traffic = memo(function Traffic() {
         }
       }
     };
-    raf = requestAnimationFrame(frame);
+    sleep(nextAt - performance.now());
     return () => {
       cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
       if (raysRef.current) raysRef.current.style.opacity = "";
     };
   }, []);

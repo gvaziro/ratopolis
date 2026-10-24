@@ -15,7 +15,7 @@ import { cx, Stamp } from "@/components/ui/kit";
 import { sfxCue } from "@/game/fx";
 import { useGame } from "@/game/store";
 import type { CatchResult, Scene } from "@/game/types";
-import { fmtInt } from "@/lib/format";
+import { fmtInt, plural } from "@/lib/format";
 import CatchCanvas from "./CatchCanvas";
 import { Countdown, HazardStyles, makeTapLimiter, useReduced, useTimeUp } from "./HazardKit";
 import { act, hash01, shake, WATER_FRAC } from "./sceneUtils";
@@ -207,7 +207,8 @@ function Valve({
     if (el) el.style.transform = `rotate(${turns * TURN_DEG + extra}deg)`;
   };
   const C = 2 * Math.PI * 46;
-  const label = preClosed ? "Вентиль задраен водяным колесом" : closed ? "Вентиль задраен" : `Вентиль ${i + 1}: ещё ${hp - turns} оборотов`;
+  const turnsLeft = hp - turns;
+  const label = preClosed ? "Вентиль задраен водяным колесом" : closed ? "Вентиль задраен" : `Вентиль ${i + 1}: ещё ${turnsLeft} ${plural(turnsLeft, "оборот", "оборота", "оборотов")}`;
   return (
     <button
       type="button"
@@ -261,7 +262,8 @@ function Valve({
         }
       }}
       className={cx(
-        "absolute z-10 -translate-x-1/2 -translate-y-1/2 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-brass-light",
+        // touch-none: otherwise a circular swipe turns into a pan after the touch slop and pointercancel eats the turns
+        "absolute z-10 -translate-x-1/2 -translate-y-1/2 touch-none rounded-full outline-none focus-visible:ring-2 focus-visible:ring-brass-light",
         active && !closed ? "cursor-pointer hover:brightness-110" : "cursor-default",
       )}
       style={{ left: `${VALVE_X[i] * 100}%`, top: `${VALVE_Y * 100}%`, width: "clamp(80px, 24vw, 124px)", height: "clamp(80px, 24vw, 124px)" }}
@@ -438,6 +440,11 @@ interface Ripple {
 
 function WaterCanvas({ sharedRef, reduced }: { sharedRef: RefObject<Shared>; reduced: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
+  // read per frame: re-running the effect on a «Меньше анимации» toggle would reset the water level
+  const reducedRef = useRef(reduced);
+  useEffect(() => {
+    reducedRef.current = reduced;
+  }, [reduced]);
 
   useEffect(() => {
     const canvas = ref.current;
@@ -463,8 +470,8 @@ function WaterCanvas({ sharedRef, reduced }: { sharedRef: RefObject<Shared>; red
     const elapsed = g0.scene ? Math.max(0, g0.time - g0.scene.phaseStart) : 0;
     let level = g0.scene?.phase === "catch" ? CALM_LEVEL : Math.min(LEVEL_MAX, LEVEL0 + FLOOD_RATE * 3 * elapsed);
 
-    const k = reduced ? 0.3 : 1;
-    const drops: Drop[] = Array.from({ length: Math.round(150 * k) }, () => ({ x: Math.random() * 1.25, y: Math.random(), v: 0.8 + Math.random() * 0.7, l: Math.random() }));
+    const k = () => (reducedRef.current ? 0.3 : 1);
+    const drops: Drop[] = Array.from({ length: 150 }, () => ({ x: Math.random() * 1.25, y: Math.random(), v: 0.8 + Math.random() * 0.7, l: Math.random() }));
     const droplets: Droplet[] = [];
     const ripples: Ripple[] = [];
     const spawn = (x: number, y: number, n: number, up: number) => {
@@ -474,7 +481,7 @@ function WaterCanvas({ sharedRef, reduced }: { sharedRef: RefObject<Shared>; red
         droplets.push({ x: x + (Math.random() - 0.5) * 14, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, age: 0, life: 0.45 + Math.random() * 0.4, r: 1.4 + Math.random() * 2.4 });
       }
     };
-    sharedRef.current.splash = (nx, ny, n) => spawn(nx * W, ny * H, Math.max(1, Math.round(n * k)), 230);
+    sharedRef.current.splash = (nx, ny, n) => spawn(nx * W, ny * H, Math.max(1, Math.round(n * k())), 230);
 
     const wave = (x: number, t: number, calm: boolean) =>
       calm ? Math.sin(x * 0.022 + t * 2.3) * 4 + Math.sin(x * 0.053 + t * 3.6) * 2 : Math.sin(x * 0.02 + t * 2.7) * 5 + Math.sin(x * 0.047 - t * 3.4) * 3;
@@ -513,8 +520,8 @@ function WaterCanvas({ sharedRef, reduced }: { sharedRef: RefObject<Shared>; red
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
       g.clearRect(0, 0, W, H);
 
-      // rain streaks (lighter once the storm passes)
-      const count = Math.round(drops.length * (calm ? 0.4 : 1));
+      // rain streaks (lighter once the storm passes, and with reduced motion); the rest fall unseen
+      const count = Math.round(drops.length * k() * (calm ? 0.4 : 1));
       g.strokeStyle = "rgba(190,215,228,.36)";
       g.lineWidth = 1.2;
       g.beginPath();
@@ -584,7 +591,7 @@ function WaterCanvas({ sharedRef, reduced }: { sharedRef: RefObject<Shared>; red
           g.arc(x + Math.sin(t * 9 + f * 1.7) * w * 0.9, yb - 2 + Math.cos(t * 7 + f) * 2, 2.5 + o * 3, 0, Math.PI * 2);
           g.fill();
         }
-        if (Math.random() < dt * 14 * o * k) spawn(x, yb, 1, 160);
+        if (Math.random() < dt * 14 * o * k()) spawn(x, yb, 1, 160);
       }
 
       // the water body
@@ -670,7 +677,7 @@ function WaterCanvas({ sharedRef, reduced }: { sharedRef: RefObject<Shared>; red
       ro.disconnect();
       sh.splash = null;
     };
-  }, [sharedRef, reduced]);
+  }, [sharedRef]);
 
   return <canvas ref={ref} className="pointer-events-none absolute inset-0 block h-full w-full" aria-hidden />;
 }

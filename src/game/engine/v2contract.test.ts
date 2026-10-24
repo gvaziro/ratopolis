@@ -148,8 +148,8 @@ describe("purchase legibility (EN-4 helpers)", () => {
     expect(buyBuilding(s, d, "trash_chute", 1, ctx)).toBe(1);
     step(s, TICK, { active: false }, ctx);
     expect(gain.crumbs!).toBeCloseTo(s.gross.crumbs - before.crumbs, 9);
-    // level 10 doubles the chute: 9 × 0.5 → 10 × 0.5 × 2
-    expect(gain.crumbs!).toBeCloseTo((10 * 0.5 * 2 - 9 * 0.5) * d.tierMult * d.global * d.temp, 9);
+    // level 10 doubles the chute: 9 × 0.6 → 10 × 0.6 × 2 (EN-13: +0.6 🍞/с per level)
+    expect(gain.crumbs!).toBeCloseTo((10 * 0.6 * 2 - 9 * 0.6) * d.tierMult * d.global * d.temp, 9);
   });
 
   it("paybackSeconds and buildingCostFor", () => {

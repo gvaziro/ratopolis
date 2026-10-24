@@ -616,8 +616,9 @@ const CSS = `
 .rr-calm .rr-spin, .rr-calm .rr-puff, .rr-calm .rr-sway, .rr-calm .rr-tick, .rr-calm .rr-focus { animation: none !important; }
 .rr-calm .rr-focus { box-shadow: 0 0 0 2px var(--gaslight); }
 @media (prefers-reduced-motion: reduce) {
-  .rr-breathe, .rr-sheen::after, .rr-blink, .rr-glow, .rr-ping, .rr-dig, .rr-spin, .rr-puff, .rr-sway, .rr-tick, .rr-focus { animation: none !important; }
-  .rr-focus { box-shadow: 0 0 0 2px var(--gaslight); }
+  html:not([data-motion="on"]) :is(.rr-breathe, .rr-blink, .rr-glow, .rr-ping, .rr-dig, .rr-spin, .rr-puff, .rr-sway, .rr-tick, .rr-focus),
+  html:not([data-motion="on"]) .rr-sheen::after { animation: none !important; }
+  html:not([data-motion="on"]) .rr-focus { box-shadow: 0 0 0 2px var(--gaslight); }
 }
 `;
 

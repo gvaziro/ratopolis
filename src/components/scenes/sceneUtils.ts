@@ -70,6 +70,21 @@ export const clamp = (v: number, lo = 0, hi = 1): number => (v < lo ? lo : v > h
 export const lerp = (a: number, b: number, k: number): number => a + (b - a) * k;
 export const easeOutCubic = (k: number): number => 1 - Math.pow(1 - clamp(k), 3);
 
+/**
+ * Index of the slot nearest to `j` that is not `locked` (the higher one on a tie), or -1 when none is left.
+ * PilesPhase hands the keyboard focus on with it when the boot sweeps the focused pile.
+ */
+export function nearestStanding(locked: readonly boolean[], j: number): number {
+  let best = -1;
+  for (let m = 0; m < locked.length; m++) {
+    if (locked[m] || m === j) continue;
+    const d = Math.abs(m - j);
+    const bd = Math.abs(best - j);
+    if (best < 0 || d < bd || (d === bd && m > best)) best = m;
+  }
+  return best;
+}
+
 /** Deterministic pseudo-random in [0, 1) — stable visuals without Math.random during render. */
 export function hash01(a: number, b = 0): number {
   let h = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + 0x9e3779b9) | 0;

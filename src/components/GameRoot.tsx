@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect, useRef } from "react";
 import { onUiFx } from "@/game/fx";
 import { useGame } from "@/game/store";
@@ -15,15 +16,24 @@ import NewsTicker from "./layout/NewsTicker";
 import ResourceBar from "./layout/ResourceBar";
 import SkyStrip from "./layout/SkyStrip";
 import Toasts from "./layout/Toasts";
+import CeremonyLoading from "./modals/CeremonyLoading";
 import CoronationOverlay from "./modals/CoronationOverlay";
 import MigrationOverlay from "./modals/MigrationOverlay";
-import OfflineModal from "./modals/OfflineModal";
-import SaveIssueModal from "./modals/SaveIssueModal";
 import SidePanel from "./panels/SidePanel";
 import MarketPopup from "./scenes/MarketPopup";
 import SceneHost from "./scenes/SceneHost";
 import { cx } from "./ui/kit";
 import { useHotkeys } from "./useHotkeys";
+
+// SH-5: dialogs most sessions never open load on demand; their shells (or the store flags below) decide when
+const OfflineModal = dynamic(() => import("./modals/OfflineModal"), {
+  ssr: false,
+  loading: () => <CeremonyLoading label="Пока вас не было" z="z-[80]" tint="bg-black/70" />,
+});
+const SaveIssueModal = dynamic(() => import("./modals/SaveIssueModal"), {
+  ssr: false,
+  loading: () => <CeremonyLoading label="Летопись колонии" z="z-[90]" tint="bg-black/80" />,
+});
 
 /**
  * Top-level game layout.
@@ -31,6 +41,7 @@ import { useHotkeys } from "./useHotkeys";
  * Mobile (< 768 px): the side panel is a bottom sheet — «half» (colony 55%) or «full» (colony 15%, no sky strip),
  * toggled by the panel (store.sheet). Benedict's market docks inside the colony window.
  * CrashGuard wraps the layout (the loop stays outside it); SaveIssueModal covers it while a save problem is open.
+ * The overlays are direct children of the layout root: Toasts watches that list to hold its banners under a modal.
  */
 export default function GameRoot() {
   useGameLoop();
@@ -45,9 +56,12 @@ export default function GameRoot() {
     if (ready) useGame.getState().flushInitFx();
   }, [ready]);
   // a new run remounts the HUD and the colony, so their first-mount snapshots (built chambers, open zones,
-  // shown resources) are taken afresh and the build/reveal animations play in every run
-  const runKey = useGame((s) => s.game.meta.migrations);
+  // shown resources) are taken afresh and the build/reveal animations play in every run; runSeq does the same when
+  // the game is replaced wholesale (an import, a rollback, «Начать заново», a crash reload, a tab take-over)
+  const runKey = useGame((s) => `${s.game.meta.migrations}:${s.runSeq}`);
   const sheet = useGame((s) => s.sheet);
+  const offline = useGame((s) => s.offlineReport !== null);
+  const saveIssue = useGame((s) => s.saveIssue !== null);
   const calm = useGame((s) => s.game.settings.reducedMotion);
   const fromOS = useGame((s) => s.game.settings.reducedMotionFromOS);
   // SH-4: the panel, header, resource bar and ticker grow with «Размер текста» (CSS zoom); the colony does not
@@ -96,10 +110,10 @@ export default function GameRoot() {
           <NewsTicker />
         </div>
         <Toasts />
-        <OfflineModal />
+        {offline && <OfflineModal />}
         <CoronationOverlay />
         <MigrationOverlay />
-        <SaveIssueModal />
+        {saveIssue && <SaveIssueModal />}
         <FxLayer />
         <AudioDirector />
         <DevPanel />

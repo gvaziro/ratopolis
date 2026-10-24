@@ -371,6 +371,31 @@ export function resMult(s: GameState, d: Derived, r: ResId, withTemp = true): nu
   return m;
 }
 
+/**
+ * What the converters that make r (⚙️ mechanics, 💨 stokers) would turn out per second with room in the store:
+ * tickEconomy stops them at a full store, so s.gross reads 0 exactly then. Inputs short of a second's worth scale
+ * it down; the cap is ignored. `eta` = the offline efficiency (1 online).
+ */
+export function converterPotential(s: GameState, d: Derived, r: ResId, eta = 1): number {
+  const workforce = s.rats > 0 ? 1 - stunnedRats(s) / s.rats : 1;
+  let out = 0;
+  for (const j of JOB_IDS) {
+    const def = JOBS[j];
+    const v = def.produces[r] ?? 0;
+    const rate = s.jobs[j] * d.jobSpeed[j] * workforce * eta;
+    if (v <= 0 || rate <= 0) continue;
+    let e = 1;
+    let converter = false;
+    for (const [c, vc] of Object.entries(def.consumes) as [ResId, number][]) {
+      if (!(vc > 0)) continue;
+      converter = true;
+      e = Math.min(e, s.res[c] / (rate * vc));
+    }
+    if (converter) out += rate * v * d.jobYield[j] * resMult(s, d, r, true) * Math.max(0, Math.min(1, e));
+  }
+  return out;
+}
+
 /** Event value base: V_r = max(EMA_r, floor_r * 4^(z-1)). */
 export function eventValue(s: GameState, d: Derived, r: ResId): number {
   return Math.max(s.ema[r], RESOURCES[r].floor * Math.pow(4, d.z - 1));

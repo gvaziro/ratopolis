@@ -186,12 +186,15 @@ function Layer({ W, pan, fit, children }: { W: number; pan?: number; fit: string
 
 /**
  * Sways the `data-pan` layers (CSS transforms on whole SVGs: composited, no repaint) and drifts the
- * `data-drift` clouds (attribute writes only when they moved a quarter unit). One rAF for the strip.
+ * `data-drift` clouds (attribute writes only when they moved a quarter unit). One rAF for the strip; it sleeps
+ * (no frames scheduled at all) while the tab is hidden or the strip is folded away, and wakes where it left off.
  */
 function usePanLoop(wrapRef: RefObject<HTMLDivElement | null>, W: number, pxPerUnit: number, calm: boolean, paused: boolean) {
   const live = useRef({ W, pxPerUnit, calm, paused });
+  const wakeRef = useRef<() => void>(() => {});
   useEffect(() => {
     live.current = { W, pxPerUnit, calm, paused };
+    wakeRef.current();
   }, [W, pxPerUnit, calm, paused]);
 
   useEffect(() => {
@@ -209,13 +212,16 @@ function usePanLoop(wrapRef: RefObject<HTMLDivElement | null>, W: number, pxPerU
       if (attr === "style") (el as SVGSVGElement).style.transform = v;
       else el.setAttribute("transform", v);
     };
+    const asleep = () => document.hidden || live.current.paused;
     const loop = (now: number) => {
+      raf = 0;
+      // folded away (phone, full sheet) or a background tab: nothing to move, and no frame until it shows again
+      if (asleep()) return;
       const root = wrapRef.current;
-      const { W: w, pxPerUnit: ppu, calm: still, paused } = live.current;
+      const { W: w, pxPerUnit: ppu, calm: still } = live.current;
       cloudT += ((now - last) / 1000) * (still ? 0.4 : 1);
       last = now;
-      // folded away (phone, full sheet) or a background tab: nothing to move
-      if (root && !paused && !document.hidden) {
+      if (root) {
         // layers only change on re-render; refresh the lists twice a second
         if (frame++ % 30 === 0) {
           pans = Array.from(root.querySelectorAll<SVGSVGElement>("svg[data-pan]"));
@@ -231,7 +237,20 @@ function usePanLoop(wrapRef: RefObject<HTMLDivElement | null>, W: number, pxPerU
       }
       raf = requestAnimationFrame(loop);
     };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
+    // the clouds carry on from where they were: the sleep does not count as drift time
+    const wake = () => {
+      if (raf || asleep()) return;
+      last = performance.now();
+      frame = 0;
+      raf = requestAnimationFrame(loop);
+    };
+    wakeRef.current = wake;
+    document.addEventListener("visibilitychange", wake);
+    wake();
+    return () => {
+      cancelAnimationFrame(raf);
+      document.removeEventListener("visibilitychange", wake);
+      wakeRef.current = () => {};
+    };
   }, [wrapRef]);
 }

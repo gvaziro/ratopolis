@@ -24,7 +24,7 @@ export const RANDOM_CAR_WEIGHTS = { third: 30, dining: 15, mail: 15, first: 15, 
 export const HOOK_JACKPOT = { hit: 2.5, perfect: 4, royalHit: 4, royalPerfect: 6 } as const;
 
 /** A jackpot never pays more than this many seconds of the colony's passive market-value income (+2 💍 on top). */
-export const HOOK_JACKPOT_CAP_SEC = 180;
+export const HOOK_JACKPOT_CAP_SEC = 120;
 
 /** Capsule drops once the cellars are open. */
 export const CAPSULE_DROPS_CELLARS = { coins: 0.35, buttons: 0.2, wire: 0.2, gears: 0.15, cheese: 0.1 };
@@ -119,6 +119,8 @@ export const PURSE_OUTCOMES = [
 export const EVENT_TIMING = {
   minSceneGap: 20,
   trainGuard: 40,
+  /** A background event overdue this long starts even with a train under trainGuard (the train waits for it). */
+  backgroundStarve: 60,
   carriageFirst: 210,
   carriageInterval: [100, 160],
   carriageIntervalCapsule: [200, 300],

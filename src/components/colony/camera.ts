@@ -344,6 +344,13 @@ export class CameraController {
   };
 
   private wheel = (e: WheelEvent): void => {
+    // overlays marked data-wheel-scroll (the goal list, the tips) take the wheel: they scroll, the colony stays put
+    const sc = !e.ctrlKey && e.target instanceof Element ? e.target.closest("[data-wheel-scroll]") : null;
+    if (sc) {
+      const room = e.deltaY < 0 ? sc.scrollTop : e.deltaY > 0 ? sc.scrollHeight - sc.clientHeight - sc.scrollTop : 0;
+      if (room < 1) e.preventDefault();
+      return;
+    }
     e.preventDefault();
     const unit = e.deltaMode === 1 ? 18 : e.deltaMode === 2 ? view.ch : 1;
     if (e.ctrlKey) {

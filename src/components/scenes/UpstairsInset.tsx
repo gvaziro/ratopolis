@@ -1,13 +1,33 @@
 "use client";
 
 /**
- * SC-5: below md, a 168×60 «Наверху» inset under the car tag: a tiny side-view human train crossing right→left over
- * the whole pass (static with reduced motion); `cab` draws a hansom cab instead (CarriageScene).
+ * SC-5: below md, a 168×60 «Наверху» inset: a tiny side-view human train crossing right→left over the whole pass
+ * (static with reduced motion); `cab` draws a hansom cab instead (CarriageScene). `className` places it: TrainPass
+ * stacks it in its tag column under the car tag ("relative"), the carriage parks it on the floor, clear of the grate.
  */
-export function UpstairsInset({ n, perCar, clock, reduced, cab }: { n: number; perCar: number; clock: string; reduced: boolean; cab: boolean }) {
+import { cx } from "@/components/ui/kit";
+
+export function UpstairsInset({
+  n,
+  perCar,
+  clock,
+  reduced,
+  cab,
+  className = "absolute left-2 top-11",
+}: {
+  n: number;
+  perCar: number;
+  clock: string;
+  reduced: boolean;
+  cab: boolean;
+  className?: string;
+}) {
   const dur = Math.max(1, n * perCar);
   return (
-    <div className="pointer-events-none absolute left-2 top-11 z-10 w-[168px] overflow-hidden rounded border border-brass-dark/70 bg-gradient-to-b from-[#9fb7c9] to-[#d9c9a3] shadow md:hidden" style={{ height: 60 }}>
+    <div
+      className={cx("pointer-events-none z-10 w-[168px] overflow-hidden rounded border border-brass-dark/70 bg-gradient-to-b from-[#9fb7c9] to-[#d9c9a3] shadow md:hidden", className)}
+      style={{ height: 60 }}
+    >
       <svg viewBox="0 0 168 60" className="absolute inset-0 h-full w-full" aria-hidden>
         <rect x="0" y="44" width="168" height="16" fill="#4a4038" />
         <rect x="0" y="43" width="168" height="2" fill="#2a2420" />

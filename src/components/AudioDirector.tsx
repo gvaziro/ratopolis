@@ -10,7 +10,7 @@
 import { useEffect } from "react";
 import { sfx } from "@/audio/sfx";
 import { emitUiFx, onFx, onUiFx, sfxCue, type UiFx } from "@/game/fx";
-import { useGame } from "@/game/store";
+import { useGame, type GameStore } from "@/game/store";
 import type { BuildingId, Fx, GameState, SceneEventId } from "@/game/types";
 
 const UNLOCK_EVENTS = ["pointerdown", "pointerup", "touchend", "keydown", "click"] as const;
@@ -19,6 +19,12 @@ const clamp01 = (x: number): number => (x < 0 ? 0 : x > 1 ? 1 : x);
 
 /** Building levels at which the machinery pulses reach full density. */
 const MACHINERY_FULL = 150;
+
+/**
+ * Nothing ticks while a save issue is open (another tab holds the colony, a corrupt or newer save) or the engine
+ * crashed: the scene phase freezes, so its rumble and the soundscape must fall silent instead of droning on.
+ */
+const halted = (s: GameStore): boolean => s.saveIssue !== null || s.crashed;
 
 export default function AudioDirector() {
   useUnlock();
@@ -100,6 +106,8 @@ function useFxSounds(): void {
           break;
         case "drop":
           if (fx.big) sfx.jingle();
+          // a tapped shiny (the only drop with `frac`, and no click Fx before it) always tinks, whatever clicked last
+          else if (fx.frac) sfx.coin();
           else if (afterAutoClick) {
             if (now - lastAutoCoin > 2000) {
               lastAutoCoin = now;
@@ -240,15 +248,15 @@ function sceneIntro(id: SceneEventId, later: (ms: number, fn: () => void) => voi
 /**
  * Train / capsule rumble from the scene phase:
  * rumble → grows 0.2 → 0.8 toward phaseEnds (while the prep UI is mounted it drives the ramp itself);
- * catch → full while the cars pass, then fades with the last one; anything else → silence.
+ * catch → full while the cars pass, then fades with the last one; anything else, or a halted game → silence.
  * A `rumbleCut` cue (the train is gone) holds it at zero until this driver stops it.
  */
 function useRumble(): void {
   useEffect(() => {
     let on = false;
     let kind: string | null = null;
-    const drive = (g: GameState) => {
-      const sc = g.scene;
+    const drive = (g: GameState, stop: boolean) => {
+      const sc = stop ? null : g.scene;
       const train = sc && (sc.id === "capsule" || sc.id === "metro_train" || sc.id === "royal_express") && (sc.phase === "rumble" || sc.phase === "catch") ? sc : null;
       if (!train) {
         if (on) {
@@ -281,8 +289,10 @@ function useRumble(): void {
         sfx.rumbleStart(i);
       } else sfx.rumbleSet(i);
     };
-    drive(useGame.getState().game);
-    const unsub = useGame.subscribe((s) => drive(s.game));
+    // rumbleStop also mutes TrainRumble's own rumbleSet() calls, which go on under a halted game
+    const now = useGame.getState();
+    drive(now.game, halted(now));
+    const unsub = useGame.subscribe((s) => drive(s.game, halted(s)));
     return () => {
       unsub();
       if (on) sfx.rumbleStop();
@@ -292,13 +302,21 @@ function useRumble(): void {
 
 /**
  * The background soundscape follows the colony: one layer per open zone, the cellar clock once a clock tower
- * stands, machinery pulses thickening with the building levels, ducked while a close-up is on screen.
+ * stands, machinery pulses thickening with the building levels, ducked while a close-up is on screen; silent while
+ * the game is halted (it starts again from the current state when that clears).
  * Only real changes reach the audio module (the store publishes 10×/s).
  */
 function useAmbience(): void {
   useEffect(() => {
     let last = "";
-    const apply = (g: GameState) => {
+    const apply = (g: GameState, stop: boolean) => {
+      if (stop) {
+        if (last !== "halted") {
+          last = "halted";
+          sfx.ambienceStop();
+        }
+        return;
+      }
       let levels = 0;
       for (const id in g.buildings) levels += g.buildings[id as BuildingId] || 0;
       const st = {
@@ -315,8 +333,9 @@ function useAmbience(): void {
       last = key;
       sfx.ambience(st);
     };
-    apply(useGame.getState().game);
-    const unsub = useGame.subscribe((s) => apply(s.game));
+    const now = useGame.getState();
+    apply(now.game, halted(now));
+    const unsub = useGame.subscribe((s) => apply(s.game, halted(s)));
     return () => {
       unsub();
       sfx.ambienceStop();

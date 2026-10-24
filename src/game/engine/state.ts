@@ -1,6 +1,7 @@
+import { EVENT_TIMING } from "../data/events";
 import { HEADLINES } from "../data/headlines";
 import { FOREMAN_UPGRADES, ratMemoryUpgrades } from "../data/upgrades";
-import { WEEKDAYS_FULL, districtLoc } from "../data/zones";
+import { WEEKDAYS_FULL, districtLoc, districtTrait } from "../data/zones";
 import { RANKED, byRank, edictRank } from "./ranks";
 import {
   BUILDING_IDS,
@@ -87,7 +88,7 @@ export function defaultMeta(): Meta {
     district: 0,
     trophies: [],
     bestRating: "none",
-    lifetime: { ...zeroStats(), playSeconds: 0, coinsEver: 0 },
+    lifetime: { ...zeroStats(), playSeconds: 0, coinsEver: 0, wagons: 0 },
     seenEvents: [],
     expressKept: 0,
     edictRank: {},
@@ -185,6 +186,7 @@ export function newRun(meta: Meta, settings: Settings, seed: number, now: number
     charters: 0,
     recentLines: {},
     coronatedAt: -1,
+    runBestRating: "none",
   };
 
   const e = meta.edicts;
@@ -196,13 +198,15 @@ export function newRun(meta: Meta, settings: Settings, seed: number, now: number
     s.zoneOpenedAt.sewers = 0;
     s.timers.capsule = 300;
     s.timers.downpour = 480; // same as onZoneOpen("sewers"): the downpour would otherwise never be scheduled
-    // rank II: the Cellars too (the same timers as onZoneOpen("cellars"), without its random market roll)
+    // rank II: the Cellars too (the same timers as onZoneOpen("cellars"); the market at the middle of the district's
+    // interval instead of its random roll: Боро-маркет's stall comes sooner)
     if (edictRank(s, "old_tunnels") >= 2) {
+      const mi = districtTrait(meta.district).mods.marketInterval ?? EVENT_TIMING.marketInterval;
       s.zones.cellars = true;
       s.zoneOpenedAt.cellars = 0;
       s.timers.catForcedAt = 420;
       s.timers.cat = 60;
-      s.timers.market = 540;
+      s.timers.market = (mi[0] + mi[1]) / 2;
     }
   }
   if (e.express_blueprints) s.express.stage = Math.min(KEPT_STAGES_MAX, meta.expressKept);

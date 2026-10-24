@@ -1,4 +1,5 @@
 import type { UpgradeDef, UpgradeId } from "../types";
+import { CREW_POSITIONS, HOOK_JACKPOT, HOOK_JACKPOT_CAP_SEC } from "./events";
 
 /** «Гильдия жестянщиков»: T1 production multiplier (v2 EN-2: ×2 → ×1.6; EN-13 may retune within 1.6–2.0). */
 export const TINKERS_MULT = 1.75;
@@ -38,14 +39,14 @@ export const UPGRADES: Record<UpgradeId, UpgradeDef> = {
     icon: "🛏️",
     cost: { crumbs: 600, buttons: 40 },
     effect: "Гнёзда дают +3 жилья вместо +2",
-    unlock: { building: "nest", gte: 5 },
+    unlock: { building: "nest", gte: 7 },
     flavor: "В тесноте, да не в обиде.",
   },
   nimble_tails: {
     id: "nimble_tails",
     name: "Ловкие хвосты",
     icon: "🪝",
-    cost: { coins: 150 },
+    cost: { coins: 200 },
     effect: "Карманники ×2",
     kind: "yield",
     unlock: { job: "pickpocket", gte: 3 },
@@ -248,7 +249,7 @@ export const UPGRADES: Record<UpgradeId, UpgradeDef> = {
     name: "Крюк-кошка",
     icon: "⚓",
     cost: { brass: 30, wire: 15000 },
-    effect: "Мини-игра «Крюк» в поездах: точный бросок срывает чемодан (джекпот ×5…×8 × позиция бригады: у стены ×0.5, между шпал ×1.5)",
+    effect: `Мини-игра «Крюк» в поездах: точный бросок срывает чемодан (×${HOOK_JACKPOT.hit}…×${HOOK_JACKPOT.perfect}, королевский вагон до ×${HOOK_JACKPOT.royalPerfect}; не больше ${HOOK_JACKPOT_CAP_SEC / 60} мин дохода, +2 💍) × позиция бригады: у стены ×${CREW_POSITIONS.wall.hook}, между шпал ×${CREW_POSITIONS.ties.hook}`,
     unlock: { stat: "trains", gte: 3 },
     flavor: "Рыболовный крючок на шнурке от ботинка.",
   },

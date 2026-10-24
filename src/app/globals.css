@@ -1,6 +1,12 @@
 @import "tailwindcss";
 
-/* Victorian-steampunk palette: soot, brass, copper, verdigris, gaslight. */
+/*
+ * Victorian-steampunk palette: soot, brass, copper, verdigris, gaslight.
+ * Text tokens reach WCAG AA (4.5:1) on every panel background (soot … panel-3); the tightest pair is on --panel-3:
+ * parchment 10.2, parchment-dim 4.8, muted 4.6, brass 5.8, brass-light 8.6, verdigris 4.6, verdigris-light 6.8,
+ * gaslight 7.7, good 6.4, danger-light 4.5, copper-light 5.1. --copper, --brass-dark and --danger are fill and border
+ * tokens (text uses their -light kin; .text-danger is remapped below); --line is for rules only.
+ */
 :root {
   --soot: #14110f;
   --soot-2: #1b1613;
@@ -13,12 +19,12 @@
   --brass-dark: #7d5f2c;
   --copper: #b8693d;
   --copper-light: #d98a5a;
-  --verdigris: #4f9d8a;
+  --verdigris: #52a490; /* a touch lighter than the v1 #4f9d8a: 4.6:1 as text on --panel-3 */
   --verdigris-light: #7cc4b0;
   --gaslight: #f2b84b;
   --parchment: #eadcc0;
   --parchment-dim: #a8977a;
-  --muted: #9c8b70; /* SH-4: ≥ 4.5:1 on --panel */
+  --muted: #a3937a; /* SH-4: ≥ 4.5:1 on every panel, --panel-3 included (#9c8b70 was 4.2 there) */
   --danger: #c4453a;
   --danger-light: #e8705f;
   --steam: #cfd6d6;

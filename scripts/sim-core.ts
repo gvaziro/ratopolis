@@ -5,7 +5,7 @@
  * Spec: docs/GDD.md 15.14.
  */
 import { BUILDINGS } from "../src/game/data/buildings";
-import { CREW_POSITIONS, METRO_BASE_CARS, TRAIN_CARS } from "../src/game/data/events";
+import { CREW_POSITIONS, TRAIN_CARS } from "../src/game/data/events";
 import { CONVERTERS, JOBS } from "../src/game/data/jobs";
 import { EDICTS, EXPRESS_BASE, SEALS } from "../src/game/data/meta";
 import { edictRank } from "../src/game/engine/ranks";
@@ -34,7 +34,7 @@ import {
 } from "../src/game/engine/actions";
 import { check } from "../src/game/engine/conditions";
 import { derive, eventValue, resMult, stunnedRats, type Derived } from "../src/game/engine/derive";
-import { clickPurse, clickShiny, isTrainScene, marketDeal, sceneAction, trainActive, trainDropRes } from "../src/game/engine/events";
+import { clickPurse, clickShiny, isTrainScene, marketDeal, metroCarCount, sceneAction, trainActive, trainDropRes } from "../src/game/engine/events";
 import {
   buildingCost,
   canAfford,
@@ -231,7 +231,7 @@ export function eventRates(s: GameState, d: Derived, active: boolean): ResMap {
   }
   const trainA = Math.min(0.9, (d.trainAutoBase + (active ? 0.15 : 0)) * CREW_POSITIONS.rails.auto);
   if (trainActive(s, "metro_train")) {
-    const cars = Math.min(11, METRO_BASE_CARS + d.trainExtraCars);
+    const cars = metroCarCount(d);
     const k = collect(trainA) / d.intervals.metro;
     const m = { mult: d.trainValueMult };
     carLoot(s, d, "engine", k, out, m);
@@ -521,6 +521,8 @@ export class Bot {
   debug: ((msg: string) => void) | null = null;
   stats: BotStats = { storageStall: 0, maxStorageStall: 0, maxStorageStallAt: 0, lastGoalAt: 0, maxGoalGap: 0, maxGoalGapAt: 0, purchases: 0 };
   private visibleCount = 0;
+  /** The building the bot skipped a purchase to save for at its last decision. */
+  private waitedFor: BuildingId | null = null;
 
   constructor(kind: BotKind, seed: number) {
     this.kind = kind;
@@ -537,6 +539,7 @@ export class Bot {
     this.lastTop = null;
     this.stats = { storageStall: 0, maxStorageStall: 0, maxStorageStallAt: 0, lastGoalAt: 0, maxGoalGap: 0, maxGoalGapAt: 0, purchases: 0 };
     this.visibleCount = 0;
+    this.waitedFor = null;
   }
 
   /** Whether the player counts as "active" for the scheduler (harmful events, suspicion). */
@@ -864,7 +867,7 @@ export class Bot {
     this.goal(s);
   }
 
-  /** A scouting payout (EN-4) is a beat too: it counts as a new goal for the "ожидание новой цели" metric. */
+  /** A scouting payout (EN-4) or a zone opening is a beat too: it counts as a new goal for the "ожидание новой цели" metric. */
   noteScout(s: GameState): void {
     this.goal(s);
   }
@@ -913,13 +916,15 @@ export class Bot {
       for (const a of adds) s.buildings[a]++;
       const saveEff = s.steamEff;
       let d2 = derive(s);
-      if (d2.steamNeed > 0) {
-        s.steamEff = steamEffFor(s, d2, base.jobs, rats);
-        d2 = derive(s);
-      }
       const rats2 = Math.min(d2.housing, rats + (d2.housing - d.housing) * (s.rats >= d.housing - 1 ? 0.8 : 0));
       // buildings that cannot change the job plan (no slots/housing/job bonus/caps) reuse the baseline plan
       const replan = adds.some((a) => BUILDINGS[a].effects.some((e) => PLAN_EFFECTS.has(e.t)));
+      if (d2.steamNeed > 0) {
+        // steam share under the plan the purchase leads to: new stoker slots (a boiler) feed the press and clocktower
+        const plan2 = replan ? planJobs(s, d2, Math.floor(rats2), this.w, this.deficit) : base.jobs;
+        s.steamEff = steamEffFor(s, d2, plan2, rats2);
+        d2 = derive(s);
+      }
       const r2 = this.value(s, d2, rats2, replan ? undefined : base.jobs);
       s.steamEff = saveEff;
       for (const a of adds) s.buildings[a]--;
@@ -998,7 +1003,8 @@ export class Bot {
 
     // resources reserved for a rushed project and for pending priority targets
     const reserve = zeroRes();
-    if (this.rush && proj) for (const [r, v] of entries(proj.rem)) reserve[r] += v;
+    const rushed = zeroRes();
+    if (this.rush && proj) for (const [r, v] of entries(proj.rem)) rushed[r] += v;
     // a pending target only reserves what cannot be earned again before its slowest resource arrives
     // (if waiting can never make it affordable — a resource nobody produces — holding the rest is pointless)
     const hold = (c: Candidate) => {
@@ -1006,7 +1012,11 @@ export class Bot {
       for (const [r, v] of entries(c.cost)) reserve[r] += Math.max(0, v - Math.max(0, base.all[r]) * c.tta);
     };
     if (pendingAcc) hold(pendingAcc);
-    const fits = (cost: Amounts) => entries(cost).every(([r, v]) => s.res[r] + 1e-9 >= v + reserve[r]);
+    // a rushed project holds everything it still needs, except from a small purchase (≤ 2% of what the project still
+    // needs of each resource it shares): nobody stops buying a 15K-coin chute while saving 3M for the Terminal
+    const small = (cost: Amounts) => entries(cost).every(([r, v]) => !(rushed[r] > 0) || v <= 0.02 * rushed[r]);
+    const held = (cost: Amounts, r: ResId) => reserve[r] + (small(cost) ? 0 : rushed[r]);
+    const fits = (cost: Amounts) => entries(cost).every(([r, v]) => s.res[r] + 1e-9 >= v + held(cost, r));
 
     // priority targets: housing for the project's rat requirement, buildings that enable a missing project resource
     const prio: Candidate[] = [];
@@ -1052,8 +1062,19 @@ export class Bot {
     if (affordable[0] === best) return [...best.extra, best.id];
     // save for the best unless it is far away; otherwise take a good affordable alternative
     const alt = affordable[0];
-    if (best.tta < 45 && !best.locked.length && alt.score > best.score * 1.2) return [];
-    return alt.score <= Math.max(best.score * 2.5, 600) ? [...alt.extra, alt.id] : [];
+    // waiting only pays when the best will fit once affordable (not held back by a rushed project or a pending
+    // target), and a passive player who already waited a whole check-in for it takes the alternative
+    const blocked = entries(best.cost).some(([r]) => held(best.cost, r) > 0);
+    const stale = this.kind === "passive" && this.waitedFor === best.id;
+    if (best.tta < 45 && !best.locked.length && !blocked && !stale && alt.score > best.score * 1.2) {
+      this.waitedFor = best.id;
+      return [];
+    }
+    this.waitedFor = null;
+    // an alternative is measured against the best purchase that is not held back: next to a bargain the rushed project
+    // keeps out of reach for now, every other building would look like junk and the colony would buy nothing
+    const ref = blocked ? (ranked.find((c) => !entries(c.cost).some(([r]) => held(c.cost, r) > 0)) ?? best) : best;
+    return alt.score <= Math.max(ref.score * 2.5, 600) ? [...alt.extra, alt.id] : [];
   }
 
   /** Buildings that start production of a project resource nobody makes yet (workshop → gears, library → blueprints…). */
@@ -1259,6 +1280,13 @@ export interface RunReport {
   maxHousingStallAt: number;
   /** The same, per expedition zone (the longest stretch while that zone was the one on the map). */
   housingStallByZone: Partial<Record<ZoneId, number>>;
+  /**
+   * The housing dead zone proper (EN-13): the same stretch counted only while housing is what blocks the expedition,
+   * i.e. the rest of its price is in the project or within 5 minutes of income.
+   */
+  maxHousingBlock: number;
+  maxHousingBlockAt: number;
+  housingBlockByZone: Partial<Record<ZoneId, number>>;
   /** Scouting payouts (EN-4). */
   scouts: number;
   /** Lowest steam efficiency of the press/clocktower seen in the run (1 = never short of steam). */
@@ -1384,6 +1412,9 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
     maxHousingStall: 0,
     maxHousingStallAt: 0,
     housingStallByZone: {},
+    maxHousingBlock: 0,
+    maxHousingBlockAt: 0,
+    housingBlockByZone: {},
     scouts: 0,
     minSteamEff: 1,
     expressKept: s.express.stage,
@@ -1415,6 +1446,7 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
   let eventV = 0;
   let lastSec = -1;
   let housingStall = 0;
+  let housingBlock = 0;
   const ticks = Math.round(limit / TICK);
   for (let i = 0; i < ticks; i++) {
     const dStep = step(s, TICK, { active: bot.isActive(s) }, ctx);
@@ -1441,7 +1473,7 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
       else if (fx.k === "scout") {
         rep.scouts++;
         bot.noteScout(s);
-      }
+      } else if (fx.k === "zoneOpen") bot.noteScout(s); // a new zone is a new goal the moment it opens
     }
     ctx.fx.length = 0;
     if (dStep.steamNeed > 0 && s.steamEff < rep.minSteamEff) rep.minSteamEff = s.steamEff;
@@ -1471,7 +1503,18 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
         rep.maxHousingStall = housingStall;
         rep.maxHousingStallAt = s.time;
       }
-    } else housingStall = 0;
+      if (exp && priceNear(s, exp)) {
+        housingBlock++;
+        if (housingBlock > (rep.housingBlockByZone[exp] ?? 0)) rep.housingBlockByZone[exp] = housingBlock;
+        if (housingBlock > rep.maxHousingBlock) {
+          rep.maxHousingBlock = housingBlock;
+          rep.maxHousingBlockAt = s.time;
+        }
+      } else housingBlock = 0;
+    } else {
+      housingStall = 0;
+      housingBlock = 0;
+    }
     if (sec % 10 === 0) {
       for (const id of BUILDING_IDS) if (buildingVisible(s, id)) seenB.add(id);
       for (const u of UPGRADE_IDS) if (upgradeVisible(s, u)) seenU.add(u);
@@ -1510,6 +1553,15 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
   rep.final = s;
   s = rep.final;
   return rep;
+}
+
+/** The expedition's price is in the project or within 5 minutes of passive income (housing is then what blocks it). */
+function priceNear(s: GameState, z: ZoneId): boolean {
+  for (const [r, v] of entries(remaining(expeditionCost(s, z), s.projects[z] ?? {}))) {
+    const lack = v - s.res[r];
+    if (lack > 0 && lack > 300 * Math.max(0, s.ema[r])) return false;
+  }
+  return true;
 }
 
 function checkpoint(s: GameState, run: number, ever: number[], coins: number[], train: number[], event: number[], trainCoins: number[]): Checkpoint {

@@ -234,7 +234,8 @@ function acceptance(active: RunReport[] | null, passive: RunReport[] | null): Ch
       name: "пассивный: ожидание новой цели",
       target: "≤ 4:00",
       actual: `${fmtMin(r.maxGoalGap)} (в ${fmtMin(r.maxGoalGapAt)})`,
-      verdict: r.maxGoalGap <= 240 ? "PASS" : "FAIL",
+      // goals land on the bot's check-ins, so a gap of exactly four of them is 240 s plus float drift of the 0.1 s ticks
+      verdict: Math.round(r.maxGoalGap) <= 240 ? "PASS" : "FAIL",
     });
   }
   return out;
@@ -298,8 +299,10 @@ function v2Checks(active: RunReport[] | null, passive: RunReport[] | null): Chec
   if (passive) {
     const r = passive[0];
     add("пассивный: Вокзал", "≤ 165 мин", fmtMin(r.zoneOpenAt.terminal), r.zoneOpenAt.terminal !== undefined && r.zoneOpenAt.terminal <= 165 * 60 ? "PASS" : "FAIL");
-    const byZone = Object.entries(r.housingStallByZone).map(([z, sec]) => `${ZONE_SHORT[z as ZoneId]} ${fmtMin(sec)}`).join(", ");
-    add("пассивный: жильё полно, но мало для экспедиции", "≤ 3:00", `${fmtMin(r.maxHousingStall)} (в ${fmtMin(r.maxHousingStallAt)}; ${byZone || "нигде"})`, r.maxHousingStall <= 180 ? "PASS" : "FAIL");
+    // EN-13: a dead zone is full housing that blocks an otherwise (nearly) paid expedition; the raw stretch (any full
+    // housing below the requirement, also while the price is still far off) is printed with the passive run
+    const byZone = Object.entries(r.housingBlockByZone).map(([z, sec]) => `${ZONE_SHORT[z as ZoneId]} ${fmtMin(sec)}`).join(", ");
+    add("пассивный: жильё-тупик (цена собрана, мало жилья)", "≤ 3:00", `${fmtMin(r.maxHousingBlock)} (в ${fmtMin(r.maxHousingBlockAt)}; ${byZone || "нигде"})`, r.maxHousingBlock <= 180 ? "PASS" : "FAIL");
     add("пассивный: выплаты разведчиков", "> 0", String(r.scouts), r.scouts > 0 ? "PASS" : "FAIL");
   }
   return out;
@@ -375,6 +378,7 @@ function summarize(active: RunReport[] | null, passive: RunReport[] | null, chec
     stall: r.maxStorageStall,
     gap: r.maxGoalGap,
     housingStall: r.maxHousingStall,
+    housingBlock: r.maxHousingBlock,
     scouts: r.scouts,
     steamEffMin: +r.minSteamEff.toFixed(3),
   });
@@ -438,7 +442,7 @@ function main() {
     const r = passive[0];
     log(`\n=== Пассивный бот (${fmtMin(r.seconds)}) ===`);
     log(table(CP_HEAD, cpRows(r.checkpoints)));
-    log(`Зоны: ${ZONE_ORDER.map((z) => `${ZONE_SHORT[z]} ${fmtMin(r.zoneOpenAt[z])}`).join("  ")} | E 1M ${fmtMin(r.eRun1MAt)} | разведчики ${r.scouts} | жильё-тупик ${fmtMin(r.maxHousingStall)}`);
+    log(`Зоны: ${ZONE_ORDER.map((z) => `${ZONE_SHORT[z]} ${fmtMin(r.zoneOpenAt[z])}`).join("  ")} | E 1M ${fmtMin(r.eRun1MAt)} | разведчики ${r.scouts} | жильё-тупик ${fmtMin(r.maxHousingBlock)} (полное жильё ниже требования вообще: ${fmtMin(r.maxHousingStall)}; ${Object.entries(r.housingStallByZone).map(([z, sec]) => `${ZONE_SHORT[z as ZoneId]} ${fmtMin(sec)}`).join(", ") || "нигде"})`);
     checks.push(...passiveChecks(r));
   }
   checks.push(...acceptance(active, passive));

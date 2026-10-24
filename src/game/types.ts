@@ -751,7 +751,8 @@ export interface Meta {
   district: number; // index into DISTRICTS
   trophies: string[];
   bestRating: HaulSummary["rating"];
-  lifetime: RunStats & { playSeconds: number; coinsEver: number };
+  /** wagons: Rat Express wagons built over all runs (medal «Хвост за горизонтом»). */
+  lifetime: RunStats & { playSeconds: number; coinsEver: number; wagons: number };
   seenEvents: EventId[]; // bestiary
   /** Rat Express stages kept across migrations (express_blueprints edict). */
   expressKept: number;
@@ -852,6 +853,8 @@ export interface GameState {
   recentLines: Partial<Record<SceneEventId, number[]>>;
   /** Run time of this run's coronation, -1 before it (EN-11 chronicle). */
   coronatedAt: number;
+  /** Best haul rating of this run (the chronicle and the migration summary; haulLog keeps only the last 10). */
+  runBestRating: HaulSummary["rating"];
 }
 
 /* -------------------------------------------------------- engine I/O */

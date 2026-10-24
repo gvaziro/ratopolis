@@ -8,7 +8,7 @@
 import { useMemo } from "react";
 import { CREW_POSITIONS, EVENT_LINES, RATING_TABLE } from "@/game/data/events";
 import type { Derived } from "@/game/engine/derive";
-import { netCost, nextTrain, trainActive } from "@/game/engine/events";
+import { metroCarCount, netCost, nextTrain, trainActive, WHISTLE_FLOOR } from "@/game/engine/events";
 import { humanClock } from "@/game/engine/formulas";
 import { derivedOf, useGame } from "@/game/store";
 import type { CrewPosition, GameState, HaulSummary } from "@/game/types";
@@ -38,7 +38,9 @@ function boardRows(s: GameState, d: Derived): BoardRow[] {
   const rows: BoardRow[] = [];
   if (s.flags.vagrants && Number.isFinite(s.timers.carriage)) rows.push({ id: "carriage", at: s.timers.carriage, cars: "кэб" });
   if (trainActive(s, "capsule")) rows.push({ id: "capsule", at: s.timers.capsule, cars: `капсул: ${d.capsuleCount}` });
-  if (trainActive(s, "metro_train")) rows.push({ id: "metro_train", at: s.timers.metro_train, cars: `вагонов: ${Math.min(11, 3 + d.trainExtraCars)}` });
+  // the engine's own count (trainComposition): METRO_BASE_CARS plus posts, edicts and seals, 3..11
+  if (trainActive(s, "metro_train"))
+    rows.push({ id: "metro_train", at: s.timers.metro_train, cars: `вагонов: ${metroCarCount(d)}` });
   if (trainActive(s, "royal_express"))
     rows.push({ id: "royal_express", at: s.timers.royal_express, cars: `вагонов: ${Math.min(17, 12 + s.buildings.platform_post)}` });
   return rows.sort((a, b) => a.at - b.at);
@@ -139,18 +141,25 @@ function Board() {
 
 /* ------------------------------------------------------------ whistle */
 
+/** Mirrors engine whistle(): refused at WHISTLE_FLOOR s or less, otherwise min(60, left − WHISTLE_FLOOR) s sooner. */
 function whistleKey(s: GameState): string {
   const nt = nextTrain(s);
   const busy = !!s.scene;
   const used = !!nt && s.timers.whistleUsedFor === nt.at;
-  const disabled = !nt || busy || used;
+  // a train 5 s away or less cannot come any sooner: whistling would only delay it and still cost the coins
+  const left = nt ? nt.at - s.time : Infinity;
+  const late = !!nt && left <= WHISTLE_FLOOR;
+  const gain = Math.min(60, left - WHISTLE_FLOOR);
+  const disabled = !nt || busy || used || late;
   const note = !nt
     ? "Поездов пока нет — свистеть некому."
     : busy
       ? "Сейчас не до свиста: на путях события."
       : used
         ? "Стрелочник уже подмазан в этом интервале."
-        : `${EVENT_LINES[nt.id].name} придёт на минуту раньше. Плата — 10% монеток.`;
+        : late
+          ? "Поезд уже подходит — свистеть поздно."
+          : `${EVENT_LINES[nt.id].name} придёт ${gain >= 60 ? "на минуту" : `на ${fmtTime(gain)}`} раньше. Плата — 10% монеток.`;
   return JSON.stringify({ disabled, cost: fmt(Math.floor(s.res.coins * 0.1)), note });
 }
 

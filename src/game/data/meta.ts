@@ -1,4 +1,16 @@
-import type { AchievementDef, AchievementId, EdictDef, EdictId, LinePair, SealDef, SealId } from "../types";
+import type { AchievementDef, AchievementId, EdictDef, EdictId, LinePair, SealDef, SealId, UpgradeId } from "../types";
+import { RAT_MEMORY_RANKS, UPGRADES } from "./upgrades";
+
+/**
+ * The whole effect of rat_memory at rank `rank` (2..3), a full statement like the other rank texts (the edict card
+ * shows the rank's text instead of the base one): the first 11 upgrades plus every rank's extras, by their real names.
+ */
+function keptAlso(rank: number): string {
+  const names = RAT_MEMORY_RANKS.slice(0, rank - 1)
+    .flat()
+    .map((id: UpgradeId) => `«${UPGRADES[id].name}»`);
+  return `Сохраняются первые 11 улучшений, а также ${names.length > 1 ? `${names.slice(0, -1).join(", ")} и ${names[names.length - 1]}` : names.join("")}`;
+}
 
 export const EDICTS: Record<EdictId, EdictDef> = {
   royal_litter: {
@@ -45,8 +57,8 @@ export const EDICTS: Record<EdictId, EdictDef> = {
     effect: "Первые 11 улучшений (от «Острых резцов» до «Охоты на ходу») сохраняются",
     decree: "Забывать полезное запрещается. Забывать долги — дозволяется.",
     ranks: [
-      { cost: 24, effect: "Ещё сохраняются «Глубокие карманы», «Зубчатые передачи» и «Пневморасписание»" },
-      { cost: 80, effect: "Ещё сохраняются «Нары в гнёздах», «Сырная диета» и «Ночная смена»" },
+      { cost: 24, effect: keptAlso(2) },
+      { cost: 80, effect: keptAlso(3) },
     ],
   },
   eternal_night_shift: {
@@ -69,8 +81,8 @@ export const EDICTS: Record<EdictId, EdictDef> = {
     effect: "Канализация открыта с начала; экспедиция в Подвалы −75%",
     decree: "Карты дедов — достояние короны. Копии не выносить.",
     ranks: [
-      { cost: 30, effect: "Подвалы тоже открыты с начала забега" },
-      { cost: 100, effect: "Экспедиция в Метро −50%" },
+      { cost: 30, effect: "Канализация и Подвалы открыты с начала забега" },
+      { cost: 100, effect: "Канализация и Подвалы открыты с начала; экспедиция в Метро −50%" },
     ],
   },
   felt_soles: {
@@ -101,8 +113,8 @@ export const EDICTS: Record<EdictId, EdictDef> = {
     effect: "Поезда +2 вагона, «Гул» +5 с, автосбор +0.10, риск аварии ×0.5",
     decree: "Расписание знать наизусть. Опоздавших Бог Грома не ждёт.",
     ranks: [
-      { cost: 45, effect: "Поезда +3 вагона" },
-      { cost: 150, effect: "Поезда +4 вагона" },
+      { cost: 45, effect: "Поезда +3 вагона, «Гул» +5 с, автосбор +0.10, риск аварии ×0.5" },
+      { cost: 150, effect: "Поезда +4 вагона, «Гул» +5 с, автосбор +0.10, риск аварии ×0.5" },
     ],
   },
   lucky_tail: {
@@ -169,7 +181,7 @@ export const ACHIEVEMENTS: Record<AchievementId, AchievementDef> = {
   seal_and_tail: { id: "seal_and_tail", name: "Печать и хвост", icon: "🖋️", desc: "Подписать 6 указов", group: "meta", progress: { stat: "edicts", goal: 6 } },
   full_code: { id: "full_code", name: "Полный свод законов", icon: "⚖️", desc: "Подписать все 12 указов", group: "meta", progress: { stat: "edicts", goal: 12 } },
   long_train: { id: "long_train", name: "Длинный состав", icon: "🚋", desc: "5 вагонов Крысиного экспресса", group: "meta", progress: { stat: "wagons", goal: 5 } },
-  tail_horizon: { id: "tail_horizon", name: "Хвост за горизонтом", icon: "🚄", desc: "15 вагонов Крысиного экспресса", group: "meta", progress: { stat: "wagons", goal: 15 } },
+  tail_horizon: { id: "tail_horizon", name: "Хвост за горизонтом", icon: "🚄", desc: "15 вагонов Крысиного экспресса за все забеги", group: "meta", progress: { stat: "lifetime.wagons", goal: 15 } },
   again_throne: { id: "again_throne", name: "Снова на троне", icon: "🤴", desc: "Вторая коронация", group: "meta", progress: { stat: "coronations", goal: 2 } },
   naturalist: { id: "naturalist", name: "Натуралист", icon: "🔍", desc: "Повстречать всех обитателей бестиария", group: "meta", progress: { stat: "seenEvents", goal: 10 } },
   purser: { id: "purser", name: "Кошелёчник", icon: "👛", desc: "50 кошельков за всё время", group: "meta", progress: { stat: "lifetime.purses", goal: 50 } },
@@ -180,10 +192,10 @@ export const ACHIEVEMENTS: Record<AchievementId, AchievementDef> = {
   miser: { id: "miser", name: "Скряга", icon: "🪙", desc: "Переселиться, не потратив 200 👑", secret: true, group: "secret" },
   forever_tuesday: { id: "forever_tuesday", name: "Вечный вторник", icon: "📅", desc: "Коронация без единого переселения", secret: true, group: "secret" },
   // ---- v2 (EN-11): event feats
-  clean_car_10: { id: "clean_car_10", name: "Чистая работа", icon: "🧹", desc: "Вымести дочиста 10 вагонов за забег", group: "events", progress: { stat: "stats.cleanCars", goal: 10 } },
+  clean_car_10: { id: "clean_car_10", name: "Чистая работа", icon: "🧹", desc: "Поймать все предметы вагона («Вагон чист!») — 10 вагонов за забег", group: "events", progress: { stat: "stats.cleanCars", goal: 10 } },
   no_spark: { id: "no_spark", name: "Без единой искры", icon: "⚡", desc: "Золото или выше, не задев ни одной искры", group: "events" },
   gold_streak: { id: "gold_streak", name: "Золотая серия", icon: "🥇", desc: "3 золотых улова подряд", group: "events", progress: { stat: "stats.goldStreak", goal: 3 } },
-  ties_survivor: { id: "ties_survivor", name: "Живучий", icon: "🩹", desc: "Авария на шпалах — и всё равно золото", group: "events" },
+  ties_survivor: { id: "ties_survivor", name: "Живучий", icon: "🩹", desc: "Авария между шпал — и всё равно золото", group: "events" },
   dry_paws: { id: "dry_paws", name: "Сухие лапки", icon: "💧", desc: "Закрыть 3 вентиля за 4 секунды", group: "events" },
   cat_nightmare: { id: "cat_nightmare", name: "Кошмар котов", icon: "🐈", desc: "Отогнать Кота 5 раз", group: "events", progress: { stat: "lifetime.catsBeaten", goal: 5 } },
   royal_retinue: { id: "royal_retinue", name: "Королевская свита", icon: "🚆", desc: "3 королевских экспресса за забег", group: "events", progress: { stat: "stats.royalExpresses", goal: 3 } },
@@ -192,8 +204,8 @@ export const ACHIEVEMENTS: Record<AchievementId, AchievementDef> = {
 
 export const ACHIEVEMENT_ORDER = Object.keys(ACHIEVEMENTS) as AchievementId[];
 
-/** Rat Express: 10 stages, base cost × 1.5^(n−1) (v2 EN-3/EN-13: 4.5× the v1 base, gentler growth — no 40-second sprint through stages 1–4). */
-export const EXPRESS_BASE = { rails: 225, gears: 45000, brass: 4500, trinkets: 27, blueprints: 135 };
+/** Rat Express: 10 stages, base cost × 1.5^(n−1) (v2 EN-3/EN-13: 5× the v1 base, gentler growth — no 40-second sprint through stages 1–4). */
+export const EXPRESS_BASE = { rails: 250, gears: 50000, brass: 5000, trinkets: 30, blueprints: 150 };
 export const EXPRESS_GROWTH = 1.5;
 export const EXPRESS_STAGES = [
   "Рама из вязальных спиц",

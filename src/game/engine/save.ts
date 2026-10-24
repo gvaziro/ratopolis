@@ -127,6 +127,10 @@ function sanitize(s: GameState): void {
       gained: Object.fromEntries(Object.entries(h.gained).filter(([r, v]) => RES.has(r) && fin(v))),
     }))
     .slice(0, 10);
+  // saves from before runBestRating: the best of the hauls they still keep
+  const order = [...RATINGS];
+  if (!RATINGS.has(s.runBestRating)) s.runBestRating = "none";
+  for (const h of s.haulLog) if (order.indexOf(h.rating) > order.indexOf(s.runBestRating)) s.runBestRating = h.rating;
   s.clickWindow = s.clickWindow.filter(fin);
   s.newsRecent = s.newsRecent.filter(str).slice(-8);
   s.trainPrefs.lastNets = s.trainPrefs.lastNets.filter((n) => fin(n) && n >= 0 && n <= 2);
@@ -174,6 +178,8 @@ function sanitize(s: GameState): void {
     .map((h) => ({ ...h, zones: isPlain(h.zones) ? h.zones : {}, bestRating: RATINGS.has(h.bestRating) ? h.bestRating : "none" }))
     .slice(-20);
   if (!RATINGS.has(m.bestRating)) m.bestRating = "none";
+  // saves from before lifetime.wagons: at least this run's wagons
+  m.lifetime.wagons = Math.max(fin(m.lifetime.wagons) ? m.lifetime.wagons : 0, s.express.wagons);
 
   const st = s.settings;
   if (st.textScale !== 1 && st.textScale !== 1.15 && st.textScale !== 1.3) st.textScale = 1;

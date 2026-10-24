@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { TICK } from "./engine/step";
-import { isActive, useGame } from "./store";
+import { isActive, noteHidden, noteVisible, useGame } from "./store";
 
 /**
  * Fixed-step loop: requestAnimationFrame + accumulator, 10 Hz, at most 10 steps per frame.
@@ -10,6 +10,11 @@ import { isActive, useGame } from "./store";
  * while the tab stayed "visible" (system sleep without visibilitychange, long freeze). Autosaves every 15 s.
  * While the store is crashed or has a save issue (corrupt / newer / another tab) nothing ticks and nothing saves;
  * the frame re-arms in `finally`, so a throw anywhere in it cannot silently stop the loop.
+ * The game clock is *held* while the tab is hidden or a ceremony is open (store.ceremony: the coronation show, the
+ * migration card): nothing ticks, saves stand for the moment the hold began, and once the tab is visible with no
+ * ceremony open the held time is credited: above 60 s as an absence (catch-up and its report), below as plain ticks.
+ * A short hold that involved a ceremony is a pause instead (not credited): a train or event due meanwhile then waits
+ * for the player rather than playing out unattended in the catch-up ticks.
  */
 export function useGameLoop(): void {
   useEffect(() => {
@@ -21,25 +26,81 @@ export function useGameLoop(): void {
     let last = performance.now();
     let lastWall = Date.now(); // performance.now() may stand still during system sleep: gaps use the wall clock
     let acc = 0;
+    /** The tab is hidden (since this wall time). */
     let hiddenAt: number | null = null;
+    /** The game clock stands still since this wall time: the tab is hidden or a ceremony is open. */
+    let heldAt: number | null = null;
+    /** A ceremony was open at some point of the current hold. */
+    let heldForCeremony = false;
 
     const halted = () => {
       const st = useGame.getState();
       return st.crashed || st.saveIssue !== null;
     };
 
+    /** Stop the game clock at `at`; every save from now on (interval, unload, take-over) is stamped `at`. */
+    const hold = (at: number) => {
+      if (useGame.getState().ceremony) heldForCeremony = true;
+      if (heldAt !== null) return;
+      heldAt = at;
+      noteHidden(at);
+    };
+
+    /** Once the tab is visible and no ceremony is open: credit the held time and tick on from now. */
+    const release = () => {
+      if (heldAt === null || hiddenAt !== null || useGame.getState().ceremony) return;
+      const away = (Date.now() - heldAt) / 1000;
+      const pause = heldForCeremony && away <= 60;
+      heldAt = null;
+      heldForCeremony = false;
+      if (!halted() && !pause) {
+        const st = useGame.getState();
+        if (away > 60) st.catchUp(away);
+        else if (away > 0.5) st.advance(Math.min(600, Math.floor(away / TICK)), false);
+      }
+      noteVisible();
+      last = performance.now();
+      lastWall = Date.now();
+      acc = 0;
+    };
+
+    // opened in a background tab: nothing ticks until it is shown, so saves until then stand for the load time
+    if (document.visibilityState === "hidden") {
+      hiddenAt = Date.now();
+      hold(hiddenAt);
+    }
+    if (useGame.getState().ceremony) hold(Date.now());
+    const offCeremony = useGame.subscribe((st, prev) => {
+      // the hold starts with the ceremony; it is released by the next frame (or by onVis) once the last one closed
+      if (st.ceremony && !prev.ceremony) hold(Date.now());
+    });
+
     const tick = (now: number) => {
       const wall = Date.now();
       const gap = (wall - lastWall) / 1000;
       lastWall = wall;
       if (halted()) {
-        // frozen: resume from "now" once the issue is resolved instead of replaying the pause
+        // frozen: resume from "now" once the issue is resolved instead of replaying the pause (every way out of a
+        // halt reloads the save, which credits its own absence), and a held clock (a ceremony) restarts from here too
         last = now;
         acc = 0;
+        if (heldAt !== null) {
+          heldAt = wall;
+          noteHidden(wall);
+        }
         return;
       }
-      // a hidden period is caught up by onVis instead; a negative gap (clock change) is ignored
-      if (gap > 2 && hiddenAt === null && document.visibilityState === "visible") {
+      if (heldAt !== null) {
+        release();
+        if (heldAt !== null) {
+          // a ceremony is still open: the clock stands still (and the frame gap is not caught up as a sleep)
+          last = now;
+          acc = 0;
+        }
+        return;
+      }
+      // a hidden period is caught up by release() instead; a negative gap (clock change) is ignored
+      if (gap > 2 && document.visibilityState === "visible") {
         const st = useGame.getState();
         if (gap > 60) st.catchUp(gap);
         else st.advance(Math.min(600, Math.floor(gap / TICK)), false);
@@ -72,20 +133,14 @@ export function useGameLoop(): void {
     raf = requestAnimationFrame(frame);
 
     const onVis = () => {
-      const st = useGame.getState();
       if (document.visibilityState === "hidden") {
         hiddenAt = Date.now();
-        st.save();
+        // the game stands still from here (or already did, under a ceremony)
+        hold(hiddenAt);
+        useGame.getState().save();
       } else {
-        if (hiddenAt !== null && !halted()) {
-          const away = (Date.now() - hiddenAt) / 1000;
-          if (away > 60) st.catchUp(away);
-          else if (away > 0.5) st.advance(Math.min(600, Math.floor(away / TICK)), false);
-        }
         hiddenAt = null;
-        last = performance.now();
-        lastWall = Date.now();
-        acc = 0;
+        release();
       }
     };
     const onInput = () => useGame.getState().noteInput();
@@ -100,6 +155,7 @@ export function useGameLoop(): void {
     return () => {
       stopped = true;
       cancelAnimationFrame(raf);
+      offCeremony();
       window.clearInterval(saver);
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("pointerdown", onInput);

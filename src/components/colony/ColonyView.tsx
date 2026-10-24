@@ -22,12 +22,13 @@ import { BrassButton } from "@/components/ui/kit";
 import { addAnchorResolver, setColonyRectGetter, setFxAnchor } from "../fx/fxBus";
 import { BgEvents } from "./BgEvents";
 import { BustleMeter } from "./BustleMeter";
-import { CameraController, camView, onCamera, toScreen } from "./camera";
+import { CameraController, camView, onCamera, toScreen, type CamView } from "./camera";
 import { Chamber, chamberMood } from "./Chamber";
 import { COLONY_CSS } from "./colonyCss";
 import { FlyingItems } from "./FlyingItems";
 import { BAND_H, bandTop, BUILDING_SLOT, GRATE, nextLocked, openZoneCount, shade, SHAFT_W, SHAFT_X, STREET_H, W } from "./geometry";
 import { GoalWidget } from "./GoalWidget";
+import { tipBox } from "./layout";
 import { LockedBand } from "./LockedBand";
 import { Defs } from "./parts";
 import { Rail } from "./Rail";
@@ -61,8 +62,11 @@ const VIG = 260;
 const VIG_ALPHA = 0.6;
 /** Largest counter-scale of the level plates (a 375 px phone at home needs ~2.35). */
 const PLATE_K_MAX = 2.6;
-/** World units beyond the view where CSS animations keep running. */
-const CULL_MARGIN = Math.round(BAND_H / 3);
+/**
+ * World units beyond the view where CSS animations keep running. Bands and chambers cull item by item, each item's
+ * range already covering its loop's travel (steam, falls), so a sliver is enough.
+ */
+const CULL_MARGIN = 32;
 
 /**
  * The flanks: a ±260-unit fade into a zone-tinted 0.6 shade (not a black wall), so the earth and the giant
@@ -105,11 +109,24 @@ const Vignette = memo(function Vignette() {
 
 /* ------------------------------------------------------------ overlays */
 
+/** Apply tipBox() to the tip element; false once the chamber has left the view. */
+function placeTip(el: HTMLElement, id: BuildingId, v: Readonly<CamView>, natH: number): boolean {
+  const b = tipBox(v, BUILDING_SLOT[id], natH);
+  if (!b) return false;
+  el.style.maxHeight = `${b.maxH}px`;
+  el.style.left = `${b.left}px`;
+  el.style.top = `${b.top}px`;
+  return true;
+}
+
 /**
  * CO-7: the chamber tip is a little build counter: output, the price of the next level, «Построить +1» (the same
- * juice as a card buy) and «Карточка →» (the Buildings tab at this card). It stays while hovered or focused.
+ * juice as a card buy) and «Карточка →» (the Buildings tab at this card). It stays while hovered or focused, follows
+ * the camera (wheel, pinch, zone flights) and closes when its chamber leaves the view.
  */
-function ChamberTip({ id, x, y, cw, onHold }: { id: BuildingId; x: number; y: number; cw: number; onHold: (on: boolean) => void }) {
+function ChamberTip({ id, onHold, onClose }: { id: BuildingId; onHold: (on: boolean) => void; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const natH = useRef(0);
   const level = useGame((s) => s.game.buildings[id]);
   const costKey = useGame((s) => {
     const c = buildingCost(id, s.game.buildings[id]);
@@ -135,13 +152,31 @@ function ChamberTip({ id, x, y, cw, onHold }: { id: BuildingId; x: number; y: nu
   const def = BUILDINGS[id];
   const lines = entries(out).filter(([, v]) => v > 0);
   const next = nextMilestone(level);
-  const left = Math.max(118, Math.min(cw - 118, x));
-  const below = y < 170;
+
+  // measured after every render (the content changes height), placed on every camera move
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.maxHeight = "";
+    natH.current = el.offsetHeight;
+    if (!placeTip(el, id, camView(), natH.current)) onClose();
+  });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    return onCamera((v) => {
+      if (v.cw > 1 && !placeTip(el, id, v, natH.current)) onClose();
+    });
+  }, [id, onClose]);
+  // closed under the pointer (a pip, the chamber scrolled away): the auto-fade must not stay on hold
+  useEffect(() => () => onHold(false), [onHold]);
+
   return (
     <div
+      ref={ref}
       data-nodrag=""
-      className="pointer-events-auto absolute z-30 w-56 rounded-md border border-brass-dark bg-soot-2/95 px-2.5 py-2 text-xs text-parchment shadow-[0_6px_18px_rgba(0,0,0,.6)]"
-      style={{ left, top: below ? Math.max(8, y + 8) : y, transform: `translate(-50%, ${below ? "0" : "-100%"})` }}
+      data-wheel-scroll=""
+      className="pointer-events-auto absolute z-30 flex w-56 -translate-x-1/2 flex-col rounded-md border border-brass-dark bg-soot-2/95 px-2.5 py-2 text-xs text-parchment shadow-[0_6px_18px_rgba(0,0,0,.6)]"
       role="dialog"
       aria-label={def.name}
       onPointerEnter={() => onHold(true)}
@@ -150,41 +185,43 @@ function ChamberTip({ id, x, y, cw, onHold }: { id: BuildingId; x: number; y: nu
       onBlur={() => onHold(false)}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      <div className="flex items-center gap-1.5 font-display text-sm font-bold text-brass-light">
-        <span>{def.icon}</span>
-        <span className="min-w-0 flex-1 truncate">{def.name}</span>
-        {level > 0 && <span className="font-mono text-[11px] text-parchment tabular">ур. {fmtInt(level)}</span>}
-      </div>
-      {level <= 0 ? (
-        <p className="mt-1 text-parchment-dim">
-          Свободное место · {ZONES[BUILDING_SLOT[id].zone].icon} {ZONES[BUILDING_SLOT[id].zone].name}
-        </p>
-      ) : lines.length > 0 ? (
-        <div className="mt-1 flex flex-wrap gap-x-2 font-mono text-[11px] tabular">
-          {lines.map(([r, v]) => (
-            <span key={r} style={{ color: RESOURCES[r].color }}>
-              {RESOURCES[r].icon} {fmtRate(v)}
-            </span>
-          ))}
+      <div data-wheel-scroll="" className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+        <div className="flex items-center gap-1.5 font-display text-sm font-bold text-brass-light">
+          <span>{def.icon}</span>
+          <span className="min-w-0 flex-1 truncate">{def.name}</span>
+          {level > 0 && <span className="font-mono text-[11px] text-parchment tabular">ур. {fmtInt(level)}</span>}
         </div>
-      ) : (
-        <p className="mt-1 text-parchment">{def.desc}</p>
-      )}
-      {mood === "nosteam" && <p className="mt-1 font-bold text-danger-light">Нет пара: машина стоит. Подбросьте угля кочегарам — манометр подскажет, чего не хватает.</p>}
-      {mood === "idle" && <p className="mt-1 font-bold text-parchment-dim">💤 Простаивает: сейчас ничего не производит.</p>}
-      {level > 0 && next !== null && lines.length > 0 && <p className="mt-0.5 text-[10px] text-brass">до ×2: ещё {fmtInt(next - level)} ур.</p>}
-      <p className="mt-1 italic text-parchment-dim">{def.flavor}</p>
-      {!maxed && (
-        <p className="mt-1 flex flex-wrap gap-x-2 border-t border-line/60 pt-1 font-mono text-[11px] tabular">
-          <span className="font-sans text-parchment-dim">{level > 0 ? "Ур. +1:" : "Цена:"}</span>
-          {cost.map(([r, v]) => (
-            <span key={r} className={useGame.getState().game.res[r] + 1e-9 >= Number(v) ? "text-parchment" : "text-danger-light"}>
-              {RESOURCES[r].icon} {fmt(Number(v))}
-            </span>
-          ))}
-        </p>
-      )}
-      <div className="mt-1.5 flex gap-1.5">
+        {level <= 0 ? (
+          <p className="mt-1 text-parchment-dim">
+            Свободное место · {ZONES[BUILDING_SLOT[id].zone].icon} {ZONES[BUILDING_SLOT[id].zone].name}
+          </p>
+        ) : lines.length > 0 ? (
+          <div className="mt-1 flex flex-wrap gap-x-2 font-mono text-[11px] tabular">
+            {lines.map(([r, v]) => (
+              <span key={r} style={{ color: RESOURCES[r].color }}>
+                {RESOURCES[r].icon} {fmtRate(v)}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-1 text-parchment">{def.desc}</p>
+        )}
+        {mood === "nosteam" && <p className="mt-1 font-bold text-danger-light">Нет пара: машина стоит. Подбросьте угля кочегарам — манометр подскажет, чего не хватает.</p>}
+        {mood === "idle" && <p className="mt-1 font-bold text-parchment-dim">💤 Простаивает: сейчас ничего не производит.</p>}
+        {level > 0 && next !== null && lines.length > 0 && <p className="mt-0.5 text-[10px] text-brass">до ×2: ещё {fmtInt(next - level)} ур.</p>}
+        <p className="mt-1 italic text-parchment-dim">{def.flavor}</p>
+        {!maxed && (
+          <p className="mt-1 flex flex-wrap gap-x-2 border-t border-line/60 pt-1 font-mono text-[11px] tabular">
+            <span className="font-sans text-parchment-dim">{level > 0 ? "Ур. +1:" : "Цена:"}</span>
+            {cost.map(([r, v]) => (
+              <span key={r} className={useGame.getState().game.res[r] + 1e-9 >= Number(v) ? "text-parchment" : "text-danger-light"}>
+                {RESOURCES[r].icon} {fmt(Number(v))}
+              </span>
+            ))}
+          </p>
+        )}
+      </div>
+      <div className="mt-1.5 flex shrink-0 gap-1.5">
         {!maxed && (
           <BrassButton
             size="sm"
@@ -298,12 +335,6 @@ function Culled({ y0, y1, children }: { y0: number; y1: number; children: ReactN
 
 /* ------------------------------------------------------------ the view */
 
-interface TipState {
-  id: BuildingId;
-  x: number;
-  y: number;
-}
-
 export default function ColonyView() {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -318,8 +349,7 @@ export default function ColonyView() {
   const frenzy = useGame((s) => s.game.buffs.frenzyUntil > s.game.time);
   const [away, setAway] = useState(false);
   const [overview, setOverview] = useState(false);
-  const [tip, setTip] = useState<TipState | null>(null);
-  const [cw, setCw] = useState(800);
+  const [tip, setTip] = useState<BuildingId | null>(null);
 
   useLayoutEffect(() => {
     const c = containerRef.current;
@@ -340,9 +370,8 @@ export default function ColonyView() {
       if (v.cw <= 1) return; // not measured yet
       if (!rect || rect.left !== v.left || rect.top !== v.top || rect.width !== v.cw || rect.height !== v.ch) rect = new DOMRect(v.left, v.top, v.cw, v.ch);
       setFxAnchor(v.left + v.cw / 2 + (GRATE.x - v.cx) * v.s, v.top + v.ch / 2 + (GRATE.y - v.cy) * v.s);
-      setCw(Math.round(v.cw));
-      // CSS animations pause outside the view ± a third of a band (paused art still draws, so nothing pops;
-      // a whole band of margin kept a fully hidden band running on phones)
+      // CSS animations pause outside the view ± CULL_MARGIN (paused art still draws, so nothing pops; a whole band
+      // of margin kept a fully hidden band running on phones)
       const hy = v.ch / 2 / v.s;
       updateCull(v.cy - hy - CULL_MARGIN, v.cy + hy + CULL_MARGIN);
       // level plates keep ≥ 11 css px digits at any home zoom (capped, so the 🔭 overview is not all plates)
@@ -390,13 +419,8 @@ export default function ColonyView() {
     return () => window.clearTimeout(t);
   }, [tip, tipHold]);
 
-  const onTip = useCallback((id: BuildingId) => {
-    const v = camView();
-    const slot = BUILDING_SLOT[id];
-    const x = v.cw / 2 + (slot.cx - v.cx) * v.s;
-    const y = v.ch / 2 + (slot.floor - 150 - v.cy) * v.s;
-    setTip((t) => (t && t.id === id ? null : { id, x, y }));
-  }, []);
+  const onTip = useCallback((id: BuildingId) => setTip((t) => (t === id ? null : id)), []);
+  const closeTip = useCallback(() => setTip(null), []);
 
   const onZone = useCallback((z: ZoneId) => {
     setTip(null);
@@ -473,7 +497,7 @@ export default function ColonyView() {
           ⤒ К решётке
         </button>
       )}
-      {tip && <ChamberTip id={tip.id} x={tip.x} y={tip.y} cw={cw} onHold={setTipHold} />}
+      {tip && <ChamberTip key={tip} id={tip} onHold={setTipHold} onClose={closeTip} />}
       <EdgePings onGo={(z) => camRef.current?.focusZone(z, 4000)} />
     </div>
   );

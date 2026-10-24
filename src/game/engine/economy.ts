@@ -4,9 +4,12 @@ import { RESOURCES } from "../data/resources";
 import { BUILDING_IDS, JOB_IDS, RES_IDS, type Amounts, type BuildingId, type EngineCtx, type GameState, type ResId, type ResMap, type TickInput } from "../types";
 import { autoContributeUncapped } from "./actions";
 import { award, gain, newbornJob, news, normalizeJobs, toast } from "./core";
-import { derive, resMult, stunnedRats, type Derived } from "./derive";
+import { converterPotential, derive, resMult, stunnedRats, type Derived } from "./derive";
 import { buildingCost, entries } from "./formulas";
 import { zeroRes } from "./state";
+
+/** Longest production slice of an offline step (s): see tickEconomy. */
+export const OFFLINE_SLICE = 2;
 
 /**
  * Passive economy for one fixed step: producers -> converters -> steam consumers -> food -> births.
@@ -37,61 +40,76 @@ export function tickEconomy(s: GameState, d: Derived, dt: number, input: TickInp
     if (s.buildings[id] <= 0) continue;
     for (const [r, v] of entries(d.buildingOut[id])) base[r] += v;
   }
+  const perSec = zeroRes();
   for (const r of RES_IDS) {
     if (base[r] <= 0) continue;
-    const perSec = base[r] * resMult(s, d, r, true) * eta;
-    gross[r] += perSec;
+    perSec[r] = base[r] * resMult(s, d, r, true) * eta;
+    gross[r] += perSec[r];
     grossNoTemp[r] += base[r] * resMult(s, d, r, false);
-    gain(s, d, r, perSec * dt, false, ctx);
   }
 
-  // ---- 2. converters in fixed order
-  for (const j of CONVERTERS) {
-    const def = JOBS[j];
-    const n = s.jobs[j];
-    if (n <= 0) {
-      s.convEff[j] = 1;
-      continue;
+  // phases 1–3 run in slices of at most OFFLINE_SLICE s offline: a coarse catch-up step (up to 48 s) would let the
+  // stokers fill the steam buffer (≈15–30 s of demand) once per step, starving the press, the clocktower and with
+  // them the global multiplier. Online a step is one slice. No derive() per slice: multipliers hold for the step.
+  const slices = input.offline ? Math.max(1, Math.ceil(dt / OFFLINE_SLICE)) : 1;
+  const h = dt / slices;
+  let crumbOverflow = 0; // crumbs the full store turned away: they feed the colony first (step 4)
+  let steamEffSum = 0;
+  for (let slice = 0; slice < slices; slice++) {
+    for (const r of RES_IDS) {
+      if (perSec[r] <= 0) continue;
+      const added = gain(s, d, r, perSec[r] * h, false, ctx);
+      if (r === "crumbs") crumbOverflow += perSec[r] * h - added;
     }
-    const rate = n * d.jobSpeed[j] * workforce * eta; // throughput per second
-    let e = 1;
-    for (const [r, v] of entries(def.consumes)) {
-      const need = rate * v * dt;
-      if (need > 0) e = Math.min(e, s.res[r] / need);
-    }
-    const outs: [ResId, number][] = [];
-    for (const [r, v] of entries(def.produces)) {
-      const amt = rate * v * d.jobYield[j] * resMult(s, d, r, true) * dt;
-      outs.push([r, amt]);
-      const cap = d.caps[r];
-      if (Number.isFinite(cap) && amt > 0) e = Math.min(e, Math.max(0, cap - s.res[r]) / amt);
-    }
-    e = Math.max(0, Math.min(1, e));
-    if (e > 0) {
-      for (const [r, v] of entries(def.consumes)) s.res[r] = Math.max(0, s.res[r] - rate * v * dt * e);
-      for (const [r, amt] of outs) {
-        gain(s, d, r, amt * e, false, ctx);
-        gross[r] += (amt * e) / dt;
-        grossNoTemp[r] += (amt * e) / dt / (RESOURCES[r].excludeGlobal ? 1 : d.temp) / eta; // rate includes η
+
+    // ---- 2. converters in fixed order
+    for (const j of CONVERTERS) {
+      const def = JOBS[j];
+      const n = s.jobs[j];
+      if (n <= 0) {
+        s.convEff[j] = 1;
+        continue;
       }
+      const rate = n * d.jobSpeed[j] * workforce * eta; // throughput per second
+      let e = 1;
+      for (const [r, v] of entries(def.consumes)) {
+        const need = rate * v * h;
+        if (need > 0) e = Math.min(e, s.res[r] / need);
+      }
+      const outs: [ResId, number][] = [];
+      for (const [r, v] of entries(def.produces)) {
+        const amt = rate * v * d.jobYield[j] * resMult(s, d, r, true) * h;
+        outs.push([r, amt]);
+        const cap = d.caps[r];
+        if (Number.isFinite(cap) && amt > 0) e = Math.min(e, Math.max(0, cap - s.res[r]) / amt);
+      }
+      e = Math.max(0, Math.min(1, e));
+      if (e > 0) {
+        for (const [r, v] of entries(def.consumes)) s.res[r] = Math.max(0, s.res[r] - rate * v * h * e);
+        for (const [r, amt] of outs) {
+          gain(s, d, r, amt * e, false, ctx);
+          gross[r] += (amt * e) / dt;
+          grossNoTemp[r] += (amt * e) / dt / (RESOURCES[r].excludeGlobal ? 1 : d.temp) / eta; // rate includes η
+        }
+      }
+      const prev = s.convEff[j] ?? e;
+      s.convEff[j] = prev + (e - prev) * (1 - Math.exp(-h / 5));
     }
-    const prev = s.convEff[j] ?? e;
-    s.convEff[j] = prev + (e - prev) * (1 - Math.exp(-dt / 5));
-  }
 
-  // ---- 3. steam consumers (press, clocktower)
-  if (d.steamNeed > 0) {
-    const need = d.steamNeed * dt * eta;
-    const e = need > 0 ? Math.min(1, s.res.steam / need) : 1;
-    s.res.steam = Math.max(0, s.res.steam - need * e);
-    s.steamEff = e;
-  } else {
-    s.steamEff = 1;
+    // ---- 3. steam consumers (press, clocktower)
+    if (d.steamNeed > 0) {
+      const need = d.steamNeed * h * eta;
+      const e = need > 0 ? Math.min(1, s.res.steam / need) : 1;
+      s.res.steam = Math.max(0, s.res.steam - need * e);
+      steamEffSum += e;
+    }
   }
+  s.steamEff = d.steamNeed > 0 ? steamEffSum / slices : 1;
 
-  // ---- 4. food
+  // ---- 4. food: eaten out of what the full store turned away first, so with production above upkeep the crumbs
+  // sit exactly at the cap (a price equal to the cap stays payable)
   const food = 0.04 * s.rats * dt * eta;
-  s.res.crumbs = Math.max(0, s.res.crumbs - food);
+  s.res.crumbs = Math.max(0, s.res.crumbs - Math.max(0, food - crumbOverflow));
   if (s.satiety && s.upgrades.cheese_diet && s.rats > 0) {
     const needC = 0.005 * s.rats * dt * eta;
     if (s.res.cheese >= needC) s.res.cheese -= needC;
@@ -199,18 +217,36 @@ export function buildingCostFor(s: GameState, id: BuildingId, k: number): Amount
 /**
  * Per-second gross gain of buying k more levels of a building: produce effects × multipliers × milestone change,
  * job bonuses on current workers, tier/global multipliers. Exact by construction: derive the state with the
- * extra levels and diff grossRates(). Only non-zero entries are returned.
+ * extra levels and diff grossRates(). Only non-zero entries are returned. Extra press/clocktower levels share the
+ * steam there is: the steam the consumers get now, or the stokers' spare output when the buffer has headroom.
  */
 export function levelGain(s: GameState, d: Derived, id: BuildingId, k: number): Partial<Record<ResId, number>> {
-  const s2: GameState = { ...s, buildings: { ...s.buildings, [id]: s.buildings[id] + Math.max(1, Math.floor(k)) } };
+  let s2: GameState = { ...s, buildings: { ...s.buildings, [id]: s.buildings[id] + Math.max(1, Math.floor(k)) } };
+  let d2 = derive(s2);
+  if (d2.steamNeed > d.steamNeed) {
+    const avail = Math.max(d.steamNeed > 0 ? s.steamEff * d.steamNeed : 0, converterPotential(s, d, "steam") - converterSteamUse(s, d));
+    s2 = { ...s2, steamEff: Math.max(0, Math.min(1, avail / d2.steamNeed)) };
+    d2 = derive(s2);
+  }
   const before = grossRates(s, d);
-  const after = grossRates(s2, derive(s2));
+  const after = grossRates(s2, d2);
   const out: Partial<Record<ResId, number>> = {};
   for (const r of RES_IDS) {
     const diff = after[r] - before[r];
     if (Math.abs(diff) > 1e-12) out[r] = diff;
   }
   return out;
+}
+
+/** Steam per second the converters (smelters, smiths) burn at their current efficiency. */
+function converterSteamUse(s: GameState, d: Derived): number {
+  const workforce = s.rats > 0 ? 1 - stunnedRats(s) / s.rats : 1;
+  let use = 0;
+  for (const j of CONVERTERS) {
+    const v = JOBS[j].consumes.steam ?? 0;
+    if (v > 0 && s.jobs[j] > 0) use += s.jobs[j] * d.jobSpeed[j] * workforce * v * Math.max(0, Math.min(1, s.convEff[j] ?? 1));
+  }
+  return use;
 }
 
 /** Market value of one unit for payback maths (📜💍 have no market price: 50, like marketValue; 💨 counts as 0). */

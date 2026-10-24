@@ -6,13 +6,14 @@
  * Hover or tap opens the breakdown: stock, who makes steam, who burns it, the machines' efficiency and the fix.
  * On phones the dial shrinks to 44 px and the label shows only while starving.
  */
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cx } from "@/components/ui/kit";
 import { BUILDINGS } from "@/game/data/buildings";
 import { steamBreakdown } from "@/game/engine/hints";
 import { derivedOf, useGame, type TabId } from "@/game/store";
 import { useSampled } from "@/game/useSampled";
 import { fmt, fmtInt, plural } from "@/lib/format";
+import { onCamera } from "./camera";
 import { colonyPaused } from "./registry";
 
 const A0 = -125;
@@ -47,37 +48,61 @@ function SteamTip({ onDone }: { onDone: () => void }) {
   const slots = b.slots < 0 ? "∞" : fmtInt(b.slots);
   const fix = b.fix ? FIX[b.fix] : null;
   const starving = b.steamEff < 0.5 && b.consumers.length > 0;
+  const ref = useRef<HTMLDivElement>(null);
+
+  // the tip opens under the dial and ends at the colony's bottom edge (the breakdown scrolls, «Что делать» stays in
+  // view); on a short colony (landscape phones) there is no room under the dial, so it opens beside it instead
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const gauge = el?.offsetParent;
+    if (!el || !(gauge instanceof HTMLElement)) return;
+    let ch = 0;
+    return onCamera((v) => {
+      if (v.ch <= 1 || v.ch === ch) return;
+      ch = v.ch;
+      const below = ch - (gauge.offsetTop + gauge.offsetHeight + 4) - 8;
+      const side = below < 150;
+      el.style.top = side ? "0px" : "";
+      el.style.right = side ? "calc(100% + 6px)" : "";
+      el.style.marginTop = side ? "0px" : "";
+      el.style.maxHeight = `${Math.max(64, Math.floor(side ? ch - gauge.offsetTop - 8 : below))}px`;
+    });
+  }, []);
+
   return (
     <div
+      ref={ref}
       role="tooltip"
-      className="absolute right-0 top-full z-30 mt-1 w-64 max-w-[calc(100vw-24px)] rounded-md border border-brass-dark bg-soot-2/95 px-2.5 py-2 text-left text-xs text-parchment shadow-[0_6px_18px_rgba(0,0,0,.6)]"
+      className="absolute right-0 top-full z-30 mt-1 flex w-64 max-w-[calc(100vw-24px)] flex-col rounded-md border border-brass-dark bg-soot-2/95 px-2.5 py-2 text-left text-xs text-parchment shadow-[0_6px_18px_rgba(0,0,0,.6)]"
     >
-      <div className="flex items-baseline justify-between font-display text-sm font-bold text-brass-light">
-        <span>Пар</span>
-        <span className="font-mono text-[11px] text-steam tabular">
-          {fmt(b.stock)} / {b.buffer < 0 ? "∞" : fmt(b.buffer)}
-        </span>
+      <div data-wheel-scroll="" className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+        <div className="flex items-baseline justify-between font-display text-sm font-bold text-brass-light">
+          <span>Пар</span>
+          <span className="font-mono text-[11px] text-steam tabular">
+            {fmt(b.stock)} / {b.buffer < 0 ? "∞" : fmt(b.buffer)}
+          </span>
+        </div>
+        <p className="mt-1">
+          <span className="font-mono text-good tabular">+{fmt(b.gross)}/с</span> от кочегаров{" "}
+          <span className="text-parchment-dim">
+            ({fmtInt(b.stokers)}/{slots} {plural(b.slots < 0 ? 5 : b.slots, "места", "мест", "мест")}, КПД {Math.round(b.convEff * 100)}%)
+          </span>
+        </p>
+        {b.consumers.length > 0 ? (
+          <ul className="mt-1 space-y-0.5">
+            {b.consumers.map((c) => (
+              <li key={c.id} className="flex items-center gap-1.5">
+                <span>{c.icon}</span>
+                <span className="min-w-0 flex-1 truncate">{c.name}</span>
+                <span className="font-mono text-danger-light tabular">−{fmt(c.perSec)}/с</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-1 text-parchment-dim">Пар пока никто не расходует.</p>
+        )}
+        <p className={cx("mt-1", starving ? "font-bold text-danger-light" : "text-parchment-dim")}>Эффективность пресса и часов: {Math.round(b.steamEff * 100)}%</p>
       </div>
-      <p className="mt-1">
-        <span className="font-mono text-good tabular">+{fmt(b.gross)}/с</span> от кочегаров{" "}
-        <span className="text-parchment-dim">
-          ({fmtInt(b.stokers)}/{slots} {plural(b.slots < 0 ? 5 : b.slots, "места", "мест", "мест")}, КПД {Math.round(b.convEff * 100)}%)
-        </span>
-      </p>
-      {b.consumers.length > 0 ? (
-        <ul className="mt-1 space-y-0.5">
-          {b.consumers.map((c) => (
-            <li key={c.id} className="flex items-center gap-1.5">
-              <span>{c.icon}</span>
-              <span className="min-w-0 flex-1 truncate">{c.name}</span>
-              <span className="font-mono text-danger-light tabular">−{fmt(c.perSec)}/с</span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="mt-1 text-parchment-dim">Пар пока никто не расходует.</p>
-      )}
-      <p className={cx("mt-1", starving ? "font-bold text-danger-light" : "text-parchment-dim")}>Эффективность пресса и часов: {Math.round(b.steamEff * 100)}%</p>
       {fix && (
         <button
           type="button"
@@ -86,7 +111,7 @@ function SteamTip({ onDone }: { onDone: () => void }) {
             onDone();
             useGame.getState().focus(fix.tab, fix.target);
           }}
-          className="mt-1.5 flex min-h-10 w-full items-center gap-1 rounded border border-gaslight/60 bg-panel/80 px-2 text-left font-bold text-gaslight hover:bg-panel-2"
+          className="mt-1.5 flex min-h-10 w-full shrink-0 items-center gap-1 rounded border border-gaslight/60 bg-panel/80 px-2 text-left font-bold text-gaslight hover:bg-panel-2"
         >
           <span aria-hidden>🔧</span>
           <span className="min-w-0 flex-1">Что делать: {fix.text}</span>
@@ -114,32 +139,50 @@ export const SteamGauge = memo(function SteamGauge() {
     let vel = 0;
     let last = performance.now();
     let written = "";
-    const frame = (now: number) => {
-      raf = requestAnimationFrame(frame);
-      if (colonyPaused()) {
-        last = now;
-        return;
-      }
-      const dt = Math.min(0.05, (now - last) / 1000);
-      last = now;
+    const aim = () => {
       const g = useGame.getState().game;
       const d = derivedOf(g);
       const cap = d.caps.steam;
       const f = cap > 0 ? Math.max(0, Math.min(1, g.res.steam / cap)) : 0;
-      const target = A0 + (A1 - A0) * f;
+      return { target: A0 + (A1 - A0) * f, starved: g.steamEff < 0.5 && d.steamNeed > 0 && !g.settings.reducedMotion };
+    };
+    // the spring runs only while the needle moves (or shakes): a settled needle costs no frames
+    const frame = (now: number) => {
+      raf = 0;
+      if (colonyPaused()) return; // the store subscription wakes it again
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      const { target, starved } = aim();
       // damped spring
       vel += ((target - ang) * 60 - vel * 9) * dt;
       ang += vel * dt;
-      const starved = g.steamEff < 0.5 && d.steamNeed > 0 && !g.settings.reducedMotion;
+      const settled = !starved && Math.abs(target - ang) < 0.05 && Math.abs(vel) < 0.05;
+      if (settled) {
+        ang = target;
+        vel = 0;
+      }
       const jitter = starved ? Math.sin(now / 23) * 2.5 : 0;
       const tr = `rotate(${(ang + jitter).toFixed(1)})`;
       if (tr !== written) {
         written = tr;
         needle.current?.setAttribute("transform", tr);
       }
+      if (!settled) raf = requestAnimationFrame(frame);
+    };
+    // (a quarter of a degree is below what the dial can show: tiny tick-to-tick wobbles of the stock don't wake it)
+    const wake = () => {
+      if (raf || colonyPaused()) return;
+      const { target, starved } = aim();
+      if (!starved && Math.abs(target - ang) < 0.25) return;
+      last = performance.now();
+      raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
-    return () => cancelAnimationFrame(raf);
+    const unsub = useGame.subscribe(wake);
+    return () => {
+      unsub();
+      cancelAnimationFrame(raf);
+    };
   }, [revealed]);
 
   // a tap elsewhere closes the pinned tip
@@ -158,6 +201,8 @@ export const SteamGauge = memo(function SteamGauge() {
     <div
       ref={rootRef}
       data-nodrag=""
+      // ZonePips measures this box to keep its rail clear of the dial and its labels
+      data-gauge=""
       className={cx("pointer-events-auto absolute right-2 top-2 flex flex-col items-end", hover || pinned ? "z-30" : "z-20")}
       onPointerEnter={(e) => e.pointerType === "mouse" && setHover(true)}
       onPointerLeave={(e) => e.pointerType === "mouse" && setHover(false)}

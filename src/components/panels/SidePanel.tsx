@@ -20,7 +20,7 @@ import type { BuildingId, GameState, JobId, UpgradeId } from "@/game/types";
 import { useGame, type TabId } from "@/game/store";
 import { useSampled } from "@/game/useSampled";
 import { cx } from "@/components/ui/kit";
-import { newKeys, tabRevealed } from "./alerts";
+import { firstSentence, newKeys, tabRevealed } from "./alerts";
 import BuildingsTab from "./BuildingsTab";
 import { PanelStyles } from "./common";
 import JobsTab from "./JobsTab";
@@ -124,6 +124,8 @@ export default function SidePanel() {
             id={id}
             hotkey={i < 8 ? i + 1 : undefined}
             active={id === active}
+            // roving tabindex: the open tab, or the first one while the office is boarded up (only ⚙/🏅 revealed)
+            focusable={id === active || (active === null && i === 0)}
             mode={labelMode}
             dot={dotsKey.split(",").includes(id)}
             glow={id === "migration" && migrateReady}
@@ -192,6 +194,7 @@ function TabContent({ tab, medalsOnly }: { tab: TabId | null; medalsOnly: boolea
 function TabButton({
   id,
   active,
+  focusable,
   mode,
   dot,
   glow,
@@ -202,6 +205,8 @@ function TabButton({
   /** SH-4: the digit that opens it (shown in the tooltip). */
   hotkey?: number;
   active: boolean;
+  /** The one tab the Tab key reaches (tabIndex 0); the arrows move between the others. */
+  focusable: boolean;
   /** all: every tab labelled; active: only the open one; none: icons; caption: icon over a 9 px caption (phones). */
   mode: LabelMode;
   dot: boolean;
@@ -222,7 +227,7 @@ function TabButton({
       aria-selected={active}
       aria-label={name}
       title={hotkey ? `${name} (${hotkey})` : name}
-      tabIndex={active ? 0 : -1}
+      tabIndex={focusable ? 0 : -1}
       onClick={() => onSelect(id)}
       className={cx(
         "relative -mb-px flex min-h-11 items-center justify-center rounded-t-md border border-b-0 font-bold tracking-wide transition-colors focus-visible:outline-2 focus-visible:outline-brass",
@@ -315,26 +320,24 @@ function unlockItem(key: string): { key: string; tab: TabId; text: string } | nu
     const t = TAB_BY_ID[id as TabId];
     return t ? { key, tab: t.id, text: `${t.icon} Открыта вкладка «${t.label}»` } : null;
   }
-  // the first sentence of a description, without its full stop
-  const short = (x: string) => x.split(/(?<=[.!?])\s/)[0].replace(/\.$/, "");
   if (kind === "j") {
     const j = JOBS[id as JobId];
-    return j ? { key, tab: "jobs", text: `${j.icon} Новая работа: ${j.name} — ${short(j.desc)}` } : null;
+    return j ? { key, tab: "jobs", text: `${j.icon} Новая работа: ${j.name} — ${firstSentence(j.desc)}` } : null;
   }
   if (kind === "b") {
     const b = BUILDINGS[id as BuildingId];
-    return b ? { key, tab: "buildings", text: `${b.icon} Открыто: ${b.name} — ${short(b.desc)}` } : null;
+    return b ? { key, tab: "buildings", text: `${b.icon} Открыто: ${b.name} — ${firstSentence(b.desc)}` } : null;
   }
   if (kind === "u") {
     const u = UPGRADES[id as UpgradeId];
-    return u ? { key, tab: "upgrades", text: `${u.icon} Открыто: ${u.name} — ${short(u.effect)}` } : null;
+    return u ? { key, tab: "upgrades", text: `${u.icon} Открыто: ${u.name} — ${firstSentence(u.effect)}` } : null;
   }
   return null;
 }
 
 const UNLOCK_TEXT: Record<string, string> = {
-  j_pickpocket: "🎩 Новая работа: Карманник — приносит 🪙",
-  j_scavenger: "🧺 Новая работа: Старьёвщик — пуговицы и проволока",
+  j_pickpocket: `${JOBS.pickpocket.icon} Новая работа: ${JOBS.pickpocket.name} — приносит 🪙`,
+  j_scavenger: `${JOBS.scavenger.icon} Новая работа: ${JOBS.scavenger.name} — пуговицы и проволока`,
   b_pantry: "🥫 Можно строить Кладовку — лимит 🍞 +150",
   tab_jobs: "🐀 Открыта вкладка «Работы»",
 };

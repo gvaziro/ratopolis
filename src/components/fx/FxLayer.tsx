@@ -11,7 +11,10 @@ import { onFx, onUiFx } from "@/game/fx";
 import { useGame } from "@/game/store";
 import type { Fx } from "@/game/types";
 import { fmt } from "@/lib/format";
+import { uiX, uiY } from "@/components/colony/geometry";
 import {
+  clampToColony,
+  flightStart,
   getColonyRect,
   getFxAnchor,
   recentFxPoint,
@@ -49,12 +52,12 @@ export default function FxLayer() {
       return r ? { x: r.left + r.width / 2, y: r.top + r.height * 0.35 } : { x: window.innerWidth / 2, y: window.innerHeight / 2 };
     };
     const grate = (): Pt => getFxAnchor() ?? center();
-    /** Engine positions: client px, or 0..1 fractions of the colony view (`frac`, shinies). */
+    /** Engine positions: client px, or 0..1 fractions of the colony view (`frac`, shinies: drawn through the CO-8 remap). */
     const at = (x: number | undefined, y: number | undefined, frac = false): Pt | null => {
       if (x === undefined || y === undefined) return null;
       if (frac) {
         const r = getColonyRect();
-        if (r) return { x: r.left + x * r.width, y: r.top + y * r.height };
+        if (r) return { x: r.left + uiX(x) * r.width, y: r.top + uiY(y) * r.height };
       }
       return { x, y };
     };
@@ -120,7 +123,9 @@ export default function FxLayer() {
           sys.burst(window.innerWidth / 2, 64, "confetti", 46);
           break;
         case "milestone": {
-          const p = resolveAnchor(`building:${fx.building}`) ?? center();
+          // an off-screen chamber (a buy from the panel) bursts at the colony edge, not over the panel
+          const a = resolveAnchor(`building:${fx.building}`);
+          const p = a ? clampToColony(a) : center();
           sys.burst(p.x, p.y, "gold", 30, 1.1);
           break;
         }
@@ -157,11 +162,10 @@ export default function FxLayer() {
       if (fx.k === "float") {
         sys.text({ text: fx.text, x: fx.x, y: fx.y, color: fx.color, big: fx.big });
       } else if (fx.k === "fly") {
-        // CO-7: a card buy flies its icon to the chamber (or to the colony edge when it is off-screen)
+        // CO-7: a card buy flies its icon to the chamber (or to the colony edge when it is off-screen);
+        // the chamber bounces when it lands (flightStart/onLand)
         if (settings().reducedMotion) return;
-        const r = getColonyRect();
-        const raw = resolveAnchor(fx.target) ?? center();
-        const to = r ? { x: Math.max(r.left + 24, Math.min(r.right - 24, raw.x)), y: Math.max(r.top + 24, Math.min(r.bottom - 36, raw.y)) } : raw;
+        const to = clampToColony(resolveAnchor(fx.target) ?? center(), 24, 36);
         const from = fx.from;
         const ctrl = { x: (from.x + to.x) / 2, y: Math.min(from.y, to.y) - 120 };
         const el = document.createElement("span");
@@ -176,11 +180,22 @@ export default function FxLayer() {
           const y = (1 - k) * (1 - k) * from.y + 2 * (1 - k) * k * ctrl.y + k * k * to.y;
           frames.push({ transform: `translate(${x - 13}px,${y - 13}px) scale(${1 - 0.4 * k})`, offset: k });
         }
-        const anim = el.animate(frames, { duration: 450, easing: "cubic-bezier(.4,0,.6,1)" });
-        anim.onfinish = () => {
+        const land = flightStart(fx.target);
+        let landed = false;
+        let fallback = 0;
+        const finish = () => {
+          if (landed) return;
+          landed = true;
+          window.clearTimeout(fallback);
           el.remove();
           sys.burst(to.x, to.y, "glint", 10);
+          land();
         };
+        const anim = el.animate(frames, { duration: 450, easing: "cubic-bezier(.4,0,.6,1)" });
+        anim.onfinish = finish;
+        anim.oncancel = finish;
+        // a throttled timeline (hidden tab) must not leave the chamber waiting for its bounce
+        fallback = window.setTimeout(finish, 700);
       } else if (fx.k === "flash") {
         const el = flashRef.current;
         if (!el || settings().reducedMotion) return;

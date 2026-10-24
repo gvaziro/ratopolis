@@ -2,10 +2,12 @@
 
 /**
  * The `timing` primitive (grappling hook): a needle swings sinusoidally (period 1.2 s) over a brass scale
- * with a green zone (18% of the width) and a perfect core (central 5%). One attempt: button or Space.
+ * with a green zone (18% of the width) and a perfect core (central 5%). One attempt: button or a fresh Space press
+ * (a Space still held for the keyboard paw auto-repeats into the window, and that is no throw).
  */
 import { useEffect, useRef, useState } from "react";
 import { BrassButton, cx } from "@/components/ui/kit";
+import { HOOK_JACKPOT } from "@/game/data/events";
 import { fmt } from "@/lib/format";
 
 export type TimingResult = "perfect" | "hit" | "miss";
@@ -21,14 +23,30 @@ export function judge(pos: number): TimingResult {
   return "miss";
 }
 
-/** Result caption; `hm` is the crew position's hook multiplier (the jackpot pays ×8 / ×5 times it). */
-function label(r: TimingResult, hm: number): string {
-  if (r === "perfect") return `ИДЕАЛЬНО! ×${fmt(8 * hm)}`;
-  if (r === "hit") return `Зацепил! ×${fmt(5 * hm)}`;
+/**
+ * Result caption; `hm` is the crew position's hook multiplier (the engine pays HOOK_JACKPOT ×4 / ×2.5 times it,
+ * the royal car ×6 / ×4).
+ */
+function label(r: TimingResult, hm: number, royal: boolean): string {
+  if (r === "perfect") return `ИДЕАЛЬНО! ×${fmt((royal ? HOOK_JACKPOT.royalPerfect : HOOK_JACKPOT.perfect) * hm)}`;
+  if (r === "hit") return `Зацепил! ×${fmt((royal ? HOOK_JACKPOT.royalHit : HOOK_JACKPOT.hit) * hm)}`;
   return "Звяк… мимо";
 }
 
-export default function TimingBar({ onThrow, title = "Крюк-кошка", hm = 1, className }: { onThrow: (r: TimingResult) => void; title?: string; hm?: number; className?: string }) {
+export default function TimingBar({
+  onThrow,
+  title = "Крюк-кошка",
+  hm = 1,
+  royal = false,
+  className,
+}: {
+  onThrow: (r: TimingResult) => void;
+  title?: string;
+  hm?: number;
+  /** The target is the royal car of the Royal Express (its own jackpot multipliers). */
+  royal?: boolean;
+  className?: string;
+}) {
   const needleRef = useRef<HTMLDivElement>(null);
   const onThrowRef = useRef(onThrow);
   const fireRef = useRef<() => void>(() => {});
@@ -41,19 +59,24 @@ export default function TimingBar({ onThrow, title = "Крюк-кошка", hm =
   useEffect(() => {
     const t0 = performance.now();
     const phase = Math.random() * Math.PI * 2;
-    let pos = 0.5;
+    const at = (now: number) => 0.5 + 0.5 * Math.sin(((now - t0) / 1000 / PERIOD) * Math.PI * 2 + phase);
+    const paint = (pos: number) => {
+      if (needleRef.current) needleRef.current.style.left = `${(pos * 100).toFixed(2)}%`;
+    };
     let thrown = false;
     let raf = 0;
     const loop = (now: number) => {
       raf = requestAnimationFrame(loop);
-      if (thrown) return;
-      pos = 0.5 + 0.5 * Math.sin(((now - t0) / 1000 / PERIOD) * Math.PI * 2 + phase);
-      if (needleRef.current) needleRef.current.style.left = `${(pos * 100).toFixed(2)}%`;
+      if (!thrown) paint(at(now));
     };
+    paint(at(t0));
     raf = requestAnimationFrame(loop);
     const fire = () => {
       if (thrown) return;
       thrown = true;
+      // judge the needle where it is now, not where the last painted frame left it
+      const pos = at(performance.now());
+      paint(pos);
       const r = judge(pos);
       setResult(r);
       onThrowRef.current(r);
@@ -62,7 +85,8 @@ export default function TimingBar({ onThrow, title = "Крюк-кошка", hm =
     const onKey = (e: KeyboardEvent) => {
       if (e.code === "Space" || e.key === " ") {
         e.preventDefault();
-        fire();
+        // only a fresh press throws: a Space held for the keyboard paw keeps auto-repeating into the window
+        if (!e.repeat) fire();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -91,7 +115,7 @@ export default function TimingBar({ onThrow, title = "Крюк-кошка", hm =
           </div>
           {result && (
             <div className={cx("absolute inset-0 flex items-center justify-center font-display text-lg font-bold tracking-wider", result === "miss" ? "bg-black/55 text-parchment-dim" : "bg-black/35 text-gaslight")} style={{ animation: "rr-pop .4s ease-out" }}>
-              {label(result, hm)}
+              {label(result, hm, royal)}
             </div>
           )}
         </div>

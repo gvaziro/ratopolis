@@ -97,3 +97,18 @@ export function newKeys(s: GameState, tab: TabId): string[] {
   }
   return out;
 }
+
+/**
+ * The first sentence of a description, without its full stop (PA-5 unlock notes). A stop inside brackets or
+ * quotes («макс. 3», «(+1 на 3 и 5 ур.)») does not end it.
+ */
+export function firstSentence(x: string): string {
+  let depth = 0;
+  for (let i = 0; i < x.length; i++) {
+    const c = x[i];
+    if (c === "(" || c === "«") depth++;
+    else if (c === ")" || c === "»") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && (c === "." || c === "!" || c === "?") && /\s/.test(x[i + 1] ?? "")) return x.slice(0, c === "." ? i : i + 1);
+  }
+  return x.replace(/\.$/, "");
+}

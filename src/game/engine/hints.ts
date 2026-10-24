@@ -1,7 +1,7 @@
 import { BUILDINGS, BUILDING_ORDER } from "../data/buildings";
 import { CONVERTERS, JOBS } from "../data/jobs";
 import { RESOURCES } from "../data/resources";
-import { EVENT_SOURCES, JOB_PLURAL, JOB_TO } from "../data/sources";
+import { EVENT_SOURCES, JOB_FROM, JOB_PLURAL, JOB_TO } from "../data/sources";
 import { UPGRADES, UPGRADE_ORDER } from "../data/upgrades";
 import { ZONES } from "../data/zones";
 import { JOB_IDS, RES_IDS, T1, type BuildingId, type GameState, type JobId, type ResId, type TabId, type UpgradeId, type ZoneId } from "../types";
@@ -11,7 +11,8 @@ import { check, describeCond } from "./conditions";
 import { jobUnlocked } from "./core";
 import { resMult, stunnedRats, type Derived } from "./derive";
 import { crumbBalance, unitValue } from "./economy";
-import { buildingCost, canAfford, entries, expeditionCost, marketValue, remaining } from "./formulas";
+import { buildingCost, canAfford, entries, expeditionCost, lockedByCap, marketValue, remaining } from "./formulas";
+import { sealOn } from "./ranks";
 
 /**
  * Onboarding brains (EN-7): the elder's next hint, «Где взять», storage locks, the steam gauge breakdown,
@@ -164,26 +165,46 @@ export function nextHint(s: GameState, d: Derived): Hint | null {
   if (!s.settings.hints || s.rats <= 0) return null;
   const workforce = s.rats > 0 ? 1 - stunnedRats(s) / s.rats : 1;
 
-  // 1. food
+  // 1. food: assignJob moves only idle rats, scavengers and pickpockets; rats in slot jobs (mechanics, cheese
+  // thieves…) the player takes off by hand, so then the hint names the biggest such crew and only focuses it
   const deficit = d.food - s.gross.crumbs;
-  const movable = s.rats - s.jobs.forager;
-  if ((s.hungry || deficit > 1e-9) && jobUnlocked(s, "forager") && movable > 0) {
+  if ((s.hungry || deficit > 1e-9) && jobUnlocked(s, "forager")) {
     const per = (JOBS.forager.produces.crumbs ?? 0) * d.jobSpeed.forager * d.jobYield.forager * resMult(s, d, "crumbs") * workforce;
-    const n = Math.min(movable, Math.max(1, Math.ceil(Math.max(0, deficit) / Math.max(1e-9, per))));
-    return {
-      id: "hungry",
-      icon: "🍞",
-      text: `Еда в минусе: верните ${n} ${ratsAcc(n)} в собиратели`,
-      why: `Крошки ${fmtRate(s.gross.crumbs - d.food)}. Голодная колония работает вполсилы и не растёт`,
-      tab: "jobs",
-      target: "j_forager",
-      action: { kind: "assign", job: "forager", n },
-    };
+    const needed = Math.max(1, Math.ceil(Math.max(0, deficit) / Math.max(1e-9, per)));
+    const why = `Крошки ${fmtRate(s.gross.crumbs - d.food)}. Голодная колония работает вполсилы и не растёт`;
+    const movable = assignable(s, d, "forager");
+    if (movable > 0) {
+      const n = Math.min(movable, needed);
+      return { id: "hungry", icon: "🍞", text: `Еда в минусе: верните ${n} ${ratsAcc(n)} в собиратели`, why, tab: "jobs", target: "j_forager", action: { kind: "assign", job: "forager", n } };
+    }
+    let crew: JobId | null = null;
+    for (const j of JOB_IDS) {
+      if (j === "idle" || j === "forager" || j === "scavenger" || j === "pickpocket" || s.jobs[j] <= 0) continue;
+      if (!crew || s.jobs[j] > s.jobs[crew]) crew = j;
+    }
+    if (crew) {
+      const n = Math.min(s.jobs[crew], needed);
+      return { id: `hungry:${crew}`, icon: "🍞", text: `Еда в минусе: верните ${n} ${ratsAcc(n)} ${JOB_FROM[crew]} в собиратели`, why, tab: "jobs", target: `j_${crew}` };
+    }
   }
 
   // 2. housing
   if (s.rats >= d.housing && buildingVisible(s, "nest") && !(s.upgrades.foreman && s.foreman.nests)) {
     const cost = buildingCost("nest", s.buildings.nest);
+    if ((cost.crumbs ?? 0) <= 2 * s.res.crumbs && lockedByCap(cost, d).includes("crumbs")) {
+      // the nest costs more than the pantry holds: a bigger store first (buying the nest would silently fail)
+      const store = storageHintFor(s, d, "crumbs", cost.crumbs);
+      const id = store.buildingId && buildingVisible(s, store.buildingId) ? store.buildingId : null;
+      return {
+        id: "housing:store",
+        icon: id ? BUILDINGS[id].icon : BUILDINGS.nest.icon,
+        text: `Гнездо стоит ${fmt(cost.crumbs ?? 0)} 🍞, а склад вмещает ${fmt(d.caps.crumbs)} — ${id ? `постройте «${BUILDINGS[id].name}»` : `нужен склад: ${store.text}`}`,
+        why: `Крысята рождаются, только пока есть место: ${fmt(s.rats)}/${fmt(d.housing)}`,
+        tab: store.target?.startsWith("z_") ? "map" : "buildings",
+        target: store.target ?? "b_nest",
+        ...(id && canAfford(s, buildingCost(id, s.buildings[id])) ? { action: { kind: "buyBuilding", id } as const } : {}),
+      };
+    }
     if ((cost.crumbs ?? 0) <= 2 * s.res.crumbs) {
       return {
         id: "housing",
@@ -257,7 +278,7 @@ export function nextHint(s: GameState, d: Derived): Hint | null {
         id: `expedition:${z}`,
         icon: "🗺️",
         text: `Внесите в экспедицию «${ZONES[z].name}»: ${list}`,
-        why: s.rats < rats ? `Вклад не пропадёт; для похода ещё нужно ${fmt(rats)} 🐀 (сейчас ${fmt(s.rats)})` : "Вклад не пропадёт, а склад освободится для новых запасов",
+        why: s.rats < rats ? `Вклад не пропадёт; для похода нужно ${fmt(rats)} 🐀 (сейчас ${fmt(s.rats)})` : "Вклад не пропадёт, а склад освободится для новых запасов",
         tab: "map",
         target: `z_${z}`,
         action: { kind: "contribute", zone: z },
@@ -416,8 +437,9 @@ export function resourceSources(
     if (!buildingVisible(s, id)) continue;
     if (BUILDINGS[id].effects.some((e) => e.t === "produce" && e.res === res)) out.push({ icon: BUILDINGS[id].icon, label: BUILDINGS[id].name, kind: "building" });
   }
+  const silence = sealOn(s, "silence");
   for (const src of EVENT_SOURCES[res] ?? []) {
-    if (!check(s, src.when) || (src.until && check(s, src.until))) continue;
+    if (!check(s, src.when) || (src.until && check(s, src.until)) || (src.noSilence && silence)) continue;
     out.push({ icon: src.icon, label: src.label, kind: src.kind });
   }
   return out;
@@ -476,23 +498,25 @@ export function steamBreakdown(
 /* ================================================================ suspicion */
 
 /**
- * The suspicion scale explained (SH-3 tooltip): +1%/min × suspicionMult while the player is active (offline it
- * stands still), time to the ratcatcher at 100%, and what lowers it.
+ * The suspicion scale explained (SH-3 tooltip): +1%/min × suspicionMult (×3 while «Щепки от дудки» runs) while the
+ * player is active (offline it stands still), the threshold that summons the ratcatcher (100%, Мэйфэр 80%) and the
+ * time until he comes (0 once he is on his way), and what lowers it.
  */
 export function suspicionInfo(
   s: GameState,
   d: Derived,
-): { pct: number; perMin: number; activeOnly: true; etaSec: number | null; reducers: { label: string; amount: string }[] } {
+): { pct: number; perMin: number; activeOnly: true; threshold: number; etaSec: number | null; reducers: { label: string; amount: string }[] } {
   const pct = Math.max(0, Math.min(100, s.suspicion));
-  const perMin = s.zones.cellars ? d.suspicionMult : 0;
-  const etaSec = perMin > 0 ? ((100 - pct) / perMin) * 60 : null;
+  const threshold = d.ratcatcherAt;
+  const perMin = s.zones.cellars ? d.suspicionMult * (d.commission === "pipe_splinters" ? 3 : 1) : 0;
+  const etaSec = Number.isFinite(s.timers.ratcatcherAt) ? 0 : perMin > 0 ? (Math.max(0, threshold - pct) / perMin) * 60 : null;
   const reducers: { label: string; amount: string }[] = [
     { label: "спрятаться от Кота", amount: "−10" },
     { label: "победить Кота", amount: "−25" },
     { label: "сломать дудку Крысолова", amount: "до 0" },
   ];
   if (!s.upgrades.quiet_paws) reducers.push({ label: UPGRADES.quiet_paws.name, amount: "×0.7" });
-  return { pct, perMin, activeOnly: true, etaSec, reducers };
+  return { pct, perMin, activeOnly: true, threshold, etaSec, reducers };
 }
 
 /* ================================================================ jobs tab numbers */
