@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+/* Victorian-steampunk palette: soot, brass, copper, verdigris, gaslight. */
+:root {
+  --soot: #14110f;
+  --soot-2: #1b1613;
+  --panel: #231c16;
+  --panel-2: #2c231b;
+  --panel-3: #362b20;
+  --line: #4a3a2a;
+  --brass: #c9a25a;
+  --brass-light: #e8c983;
+  --brass-dark: #7d5f2c;
+  --copper: #b8693d;
+  --copper-light: #d98a5a;
+  --verdigris: #4f9d8a;
+  --verdigris-light: #7cc4b0;
+  --gaslight: #f2b84b;
+  --parchment: #eadcc0;
+  --parchment-dim: #a8977a;
+  --muted: #7a6b57;
+  --danger: #c4453a;
+  --danger-light: #e8705f;
+  --steam: #cfd6d6;
+  --good: #8fbf5a;
+}
+
+@theme inline {
+  --color-soot: var(--soot);
+  --color-soot-2: var(--soot-2);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-panel-3: var(--panel-3);
+  --color-line: var(--line);
+  --color-brass: var(--brass);
+  --color-brass-light: var(--brass-light);
+  --color-brass-dark: var(--brass-dark);
+  --color-copper: var(--copper);
+  --color-copper-light: var(--copper-light);
+  --color-verdigris: var(--verdigris);
+  --color-verdigris-light: var(--verdigris-light);
+  --color-gaslight: var(--gaslight);
+  --color-parchment: var(--parchment);
+  --color-parchment-dim: var(--parchment-dim);
+  --color-muted: var(--muted);
+  --color-danger: var(--danger);
+  --color-danger-light: var(--danger-light);
+  --color-steam: var(--steam);
+  --color-good: var(--good);
+  --font-display: var(--font-display);
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-mono);
+}
+
+html,
+body {
+  background: var(--soot);
+  color: var(--parchment);
+}
+
+body {
+  font-family: var(--font-body), system-ui, sans-serif;
+  background:
+    radial-gradient(ellipse at 50% -10%, rgba(242, 184, 75, 0.08), transparent 60%),
+    radial-gradient(ellipse at 50% 120%, rgba(79, 157, 138, 0.06), transparent 50%),
+    var(--soot);
+  overscroll-behavior: none;
+}
+
+::selection {
+  background: var(--brass-dark);
+  color: var(--parchment);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--brass-dark) transparent;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
