@@ -6,9 +6,10 @@
  */
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { sfx } from "@/audio/sfx";
-import { TRAIN_CARS } from "@/game/data/events";
+import { CREW_POSITIONS, TRAIN_CARS } from "@/game/data/events";
 import { useGame } from "@/game/store";
 import type { CatchItem, CatchResult, Scene } from "@/game/types";
+import { fmt } from "@/lib/format";
 import { CatchCanvasCore, newCatchControl, type CatchControl } from "./CatchCanvas";
 import TimingBar, { type TimingResult } from "./TimingBar";
 import { createTrainPainter, type TrainPainter } from "./TrainPainter";
@@ -25,6 +26,8 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
   const royal = sc.id === "royal_express";
   const n = sc.cars.length;
   const hookCar = hookOwned && !capsule ? sc.hookCar : -1;
+  // the engine scales the jackpot (×8 perfect / ×5 hit) by the crew position's hook factor
+  const hm = CREW_POSITIONS[sc.position].hook;
 
   const control = useRef<CatchControl>(newCatchControl());
   const painter = useRef<TrainPainter | null>(null);
@@ -152,16 +155,16 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
       )}
       {hookState !== "hidden" && (
         <div className="pointer-events-none absolute inset-x-0 bottom-[3%] z-10 flex justify-center px-3">
-          <TimingBar onThrow={onThrow} title={royal ? "Крюк — на королевский вагон!" : "Крюк — на багажную полку!"} />
+          <TimingBar onThrow={onThrow} hm={hm} title={royal ? "Крюк — на королевский вагон!" : "Крюк — на багажную полку!"} />
         </div>
       )}
-      {jackpot && <Jackpot perfect={jackpot === "perfect"} royal={royal} reduced={reduced} />}
+      {jackpot && <Jackpot perfect={jackpot === "perfect"} hm={hm} royal={royal} reduced={reduced} />}
       {flash > 0 && <div key={flash} className="pointer-events-none absolute inset-0 z-20 bg-[#fff6dc]" style={{ animation: "rr-flash .4s ease-out forwards" }} />}
     </div>
   );
 }
 
-function Jackpot({ perfect, royal, reduced }: { perfect: boolean; royal: boolean; reduced: boolean }) {
+function Jackpot({ perfect, hm, royal, reduced }: { perfect: boolean; hm: number; royal: boolean; reduced: boolean }) {
   return (
     <div className="pointer-events-none absolute inset-0 z-20">
       <div className="absolute left-1/2 top-[30%] text-6xl md:text-7xl" style={{ animation: reduced ? undefined : "rr-drop .9s cubic-bezier(.3,.7,.4,1) both", transform: reduced ? "translate(-50%,0)" : undefined }}>
@@ -176,7 +179,7 @@ function Jackpot({ perfect, royal, reduced }: { perfect: boolean; royal: boolean
         }}
       >
         ДЖЕКПОТ!
-        <div className="font-sans text-sm font-bold tracking-normal text-parchment">{perfect ? "Идеальный бросок: чемодан ×8 + 💍💍" : "Чемодан с полки ×5 + 💍💍"}</div>
+        <div className="font-sans text-sm font-bold tracking-normal text-parchment">{`${perfect ? "Идеальный бросок: чемодан" : "Чемодан с полки"} ×${fmt((perfect ? 8 : 5) * hm)} + 💍💍`}</div>
       </div>
     </div>
   );

@@ -59,6 +59,34 @@ describe("Great Migration and edicts", () => {
     expect(buyEdict(s, "express_blueprints", ctx)).toBe(false); // once only
   });
 
+  it("after a coronation run the blueprints keep 9 stages, so the coronation can happen again", () => {
+    const s = readyToMigrate();
+    s.express.stage = 10;
+    s.coronatedThisRun = true;
+    const ctx: EngineCtx = { fx: [] };
+    const next = migrate(s, 0, ctx)!;
+    expect(next.meta.expressKept).toBe(9);
+    next.meta.crowns = 100;
+    expect(buyEdict(next, "express_blueprints", ctx)).toBe(true);
+    expect(next.express.stage).toBe(9);
+    // and at the start of the run after that (an old save may still remember 10)
+    next.meta.expressKept = 10;
+    next.zones.metro = true;
+    next.eRun = 2e6;
+    const third = migrate(next, 0, ctx)!;
+    expect(third.meta.expressKept).toBe(9);
+    expect(third.express.stage).toBe(9);
+  });
+
+  it("the new run's tabs and HUD are revealed at once (no blank second on the migration screen)", () => {
+    const next = migrate(readyToMigrate(), 0, { fx: [] })!;
+    expect(next.time).toBe(0);
+    expect(next.revealed.tab_migration).toBe(true);
+    expect(next.revealed.tab_medals).toBe(true);
+    expect(next.revealed.news).toBe(true);
+    expect(next.revealed.goal).toBe(true);
+  });
+
   it("an edict bought before a migration still applies at the next run start", () => {
     const s = readyToMigrate();
     s.meta.crowns = 20;

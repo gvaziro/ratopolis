@@ -2,7 +2,6 @@
  * Human-scale calendar helpers for the HUD: «Вт, 18 окт 1887 · 07:14».
  * The run starts on Tuesday 18 October 1887 (it really was a Tuesday); every migration starts a new day.
  */
-import { HUMAN_ACTIVITIES } from "@/game/data/headlines";
 import { WEEKDAYS, WEEKDAYS_FULL } from "@/game/data/zones";
 import { humanClock } from "@/game/engine/formulas";
 import type { GameState } from "@/game/types";
@@ -53,12 +52,7 @@ export function clockLine(time: number, migrations: number): string {
   return `${d.wd}, ${d.date} ${d.month} ${d.year} · ${pad(c.hh)}:${pad(c.mm)}`;
 }
 
-/** What the humans upstairs are doing at this hour. */
-export function humanActivity(hh: number): string {
-  // before 05:00 the humans are still asleep from the night before
-  let act = HUMAN_ACTIVITIES[HUMAN_ACTIVITIES.length - 1][1];
-  for (const [h, a] of HUMAN_ACTIVITIES) if (hh >= h) act = a;
-  return act;
-}
+/** What the humans upstairs are doing at this hour (shared with the engine's generation headline). */
+export { humanActivity } from "@/game/engine/formulas";
 
 export { pad };

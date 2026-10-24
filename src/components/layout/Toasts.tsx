@@ -62,7 +62,10 @@ export default function Toasts() {
         case "trainSoon": {
           if (!useGame.getState().game.settings.trainToasts) break;
           const at = performance.now() + fx.inSec * 1000;
-          push({ icon: fx.id === "capsule" ? "📯" : fx.id === "royal_express" ? "👑" : "🚂", text: "", tone: "gold", ms: 8000, train: { id: fx.id, inSec: fx.inSec, at } });
+          const icon = fx.id === "capsule" ? "📯" : fx.id === "royal_express" ? "👑" : "🚂";
+          const item: ToastItem = { id: ++seq, icon, text: "", tone: "gold", ms: 8000, train: { id: fx.id, inSec: fx.inSec, at } };
+          // the new countdown replaces the old one (the whistle moved the train: two clocks would disagree)
+          setToasts((list) => [...list.filter((x) => !x.leaving && !x.train), item].slice(-MAX_TOASTS));
           break;
         }
         case "medal":

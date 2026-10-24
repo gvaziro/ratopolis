@@ -1,4 +1,5 @@
 import type { GameState } from "../types";
+import { abortScene } from "./offline";
 import { createInitialState, SCHEMA_VERSION } from "./state";
 
 export const SAVE_KEY = "ratropolis.save.v1";
@@ -31,7 +32,17 @@ export function migrate(raw: Record<string, unknown>): GameState {
   const merged = mergeDefaults(def, raw) as GameState;
   // future: if (merged.schemaVersion < 2) { ... }
   merged.schemaVersion = SCHEMA_VERSION;
+  // a save made mid-scene (autosave, tab closed during a train): credit the auto-collect share, then drop it
+  if (merged.scene) {
+    try {
+      abortScene(merged, { fx: [] });
+    } catch {
+      /* malformed scene from an old save: just drop it */
+    }
+  }
   merged.scene = null;
+  // markets saved before they had an id
+  if (merged.market && typeof merged.market.id !== "number") merged.market.id = ++merged.sceneSeq;
   return merged;
 }
 

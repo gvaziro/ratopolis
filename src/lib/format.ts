@@ -56,6 +56,16 @@ export function fmtTime(seconds: number): string {
   return `${d}д ${h % 24}ч`;
 }
 
+/** Russian noun form for a count: plural(n, "крыса", "крысы", "крыс") — 1/21/31 → one, 2–4/22–24 → few, else many. */
+export function plural(n: number, one: string, few: string, many: string): string {
+  const a = Math.abs(Math.floor(n));
+  const m10 = a % 10;
+  const m100 = a % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
+
 function trimZeros(s: string): string {
   return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
 }

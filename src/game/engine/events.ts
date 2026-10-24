@@ -21,6 +21,7 @@ import {
   type TrainCarKind,
   type ZoneId,
 } from "../types";
+import { plural } from "../../lib/format";
 import { check } from "./conditions";
 import { addAmounts, award, gain, gainAll, news, pushNews, stun, toast } from "./core";
 import { eventValue, type Derived } from "./derive";
@@ -94,7 +95,7 @@ export function tickEvents(s: GameState, d: Derived, dt: number, input: TickInpu
   }
 
   // ---- background events
-  tickBackground(s, d, input, ctx);
+  tickBackground(s, d, dt, ctx);
 
   // ---- running scene
   if (s.scene) {
@@ -148,22 +149,28 @@ export function tickEvents(s: GameState, d: Derived, dt: number, input: TickInpu
 
 /* ================================================================ background */
 
-function tickBackground(s: GameState, d: Derived, input: TickInput, ctx: EngineCtx): void {
+/**
+ * Purse, shinies and Benedict's stall. A scene covers the colony (the whole screen on phones), so while one runs
+ * their lifetimes stand still and no new purse/shiny appears; timers that fall due meanwhile fire right after it.
+ */
+function tickBackground(s: GameState, d: Derived, dt: number, ctx: EngineCtx): void {
   const t = s.time;
   const golden = !!s.meta.edicts.golden_whiskers;
+  const sceneUp = !!s.scene;
 
   // purse
+  if (s.purse && sceneUp) s.purse.until += dt;
   if (s.purse && s.purse.until <= t) s.purse = null;
-  const trainPassing = s.scene && isTrainScene(s.scene.id) && s.scene.phase === "catch";
-  if (!s.purse && t >= s.timers.purse && !trainPassing && s.flags.vagrants) {
+  if (!s.purse && t >= s.timers.purse && !sceneUp && s.flags.vagrants) {
     s.purse = { x: randRange(s, 0.15, 0.85), y: randRange(s, 0.4, 0.85), until: t + T.purseLife };
     s.timers.purse = t + between(s, T.purseInterval) * (golden ? 0.5 : 1);
     markSeen(s, "purse");
   }
 
   // shinies
+  if (sceneUp) for (const x of s.shinies) x.until += dt;
   if (s.shinies.length) s.shinies = s.shinies.filter((x) => x.until > t);
-  if (t >= s.timers.shiny && s.flags.vagrants) {
+  if (t >= s.timers.shiny && s.flags.vagrants && !sceneUp) {
     const pool = T1.filter((r) => check(s, RESOURCES[r].reveal));
     const res = pool[Math.floor(rand(s) * pool.length)] ?? "crumbs";
     s.shinies.push({ id: ++s.sceneSeq, x: randRange(s, 0.1, 0.9), y: randRange(s, 0.45, 0.9), res, until: t + T.shinyLife });
@@ -171,18 +178,18 @@ function tickBackground(s: GameState, d: Derived, input: TickInput, ctx: EngineC
   }
 
   // market
+  if (s.market && sceneUp) s.market.until += dt;
   if (s.market && s.market.until <= t) s.market = null;
   if (s.zones.cellars && !s.market && t >= s.timers.market) {
     const deals = makeDeals(s, d);
     if (deals.length) {
-      s.market = { until: t + T.marketLife, deals };
+      s.market = { id: ++s.sceneSeq, until: t + T.marketLife, deals };
       news(s, "market", {}, ctx);
       toast(ctx, "Барыга Бенедикт открыл лавку у решётки", "🧺", "info");
       markSeen(s, "market");
     }
     s.timers.market = t + between(s, T.marketInterval);
   }
-  void input;
 }
 
 function markSeen(s: GameState, id: Scene["id"] | "purse" | "shiny" | "market"): void {
@@ -251,23 +258,28 @@ export function clickPurse(s: GameState, d: Derived, ctx: EngineCtx): void {
   const golden = s.meta.edicts.golden_whiskers ? 1.5 : 1;
   const o = pickWeighted(s, Object.fromEntries(PURSE_OUTCOMES.map((x) => [x.id, x.weight])) as Record<string, number>);
   const def = PURSE_OUTCOMES.find((x) => x.id === o)!;
+  // the buffs have no other on-screen explanation: the toast says what they do and for how long
+  let what = "";
   if (o === "coins") {
     const amt = Math.max(30, 180 * eventValue(s, d, "coins"));
     gain(s, d, "coins", amt, true, ctx);
     ctx.fx.push({ k: "drop", res: "coins", amount: amt, big: true });
   } else if (o === "feast") {
     s.buffs.feastUntil = s.time + 30 * golden;
+    what = ` Всё производство ×5 на ${Math.round(30 * golden)} с`;
   } else if (o === "paw") {
     s.buffs.luckyPawUntil = s.time + 12 * golden;
+    what = ` Клик ×15 на ${Math.round(12 * golden)} с — жмите решётку!`;
   } else {
     const id = cheapestBuilding(s);
     if (id) {
       s.buildings[id] += 1;
       ctx.fx.push({ k: "buy", building: id, level: s.buildings[id] });
+      what = ` Даром: «${BUILDINGS[id].name}» +1`;
     } else gain(s, d, "coins", Math.max(30, 180 * eventValue(s, d, "coins")), true, ctx);
   }
   ctx.fx.push({ k: "purse", outcome: o });
-  toast(ctx, `Кошелёк: ${def.name}!`, def.icon, "gold");
+  toast(ctx, `Кошелёк: ${def.name}!${what}`, def.icon, "gold");
   if (!s.flags.first_purse) s.flags.first_purse = true;
   addSuspicion(s, d, 2);
   news(s, "purse", {}, ctx);
@@ -396,6 +408,7 @@ function fillCar(
   let nextId = sc.items.length;
   for (let k = 0; k < count; k++) {
     let r = pickWeighted(s, drops) as ResId;
+    // 💍 is revealed from the Metro on (resources.ts), so 1st-class/baggage cars drop it before the first one is owned
     if (!revealedRes(s, r)) r = r === "brass" || r === "rails" ? "gears" : r === "trinkets" ? "coins" : r;
     if (!revealedRes(s, r)) r = "coins";
     const item: CatchItem = {
@@ -502,7 +515,7 @@ function beginCatch(s: GameState, d: Derived, sc: Scene, ctx: EngineCtx): void {
     if (risk > 0 && chance(s, risk)) {
       sc.crash = true;
       const n = stun(s, 0.03, 90, "crash");
-      toast(ctx, `Авария на шпалах! ${n} крыс напуганы`, "💥", "bad");
+      toast(ctx, `Авария на шпалах! ${n} ${plural(n, "крыса напугана", "крысы напуганы", "крыс напуганы")}`, "💥", "bad");
     }
     s.trainPrefs.lastNets = [...sc.nets];
   }
@@ -891,7 +904,7 @@ function resolveCat(s: GameState, d: Derived, sc: Scene, beaten: boolean, ctx: E
     const n = stun(s, 0.03, 60, "cat");
     s.res.cheese = s.res.cheese * 0.95;
     news(s, "cat_lose", {}, ctx);
-    toast(ctx, `Кот победил: ${n} крыс напуганы, −5% 🧀`, "🐈‍⬛", "bad");
+    toast(ctx, `Кот победил: ${n} ${plural(n, "крыса напугана", "крысы напуганы", "крыс напуганы")}, −5% 🧀`, "🐈‍⬛", "bad");
   }
   sc.choice = beaten ? "won" : "lost";
   endScene(s, d, ctx);
@@ -943,7 +956,7 @@ function resolveRatcatcher(s: GameState, d: Derived, sc: Scene, popped: number, 
     const reached = total - p;
     const n = reached > 0 ? stun(s, 0.005 * reached, 90, "piper") : 0;
     news(s, "ratcatcher_lose", {}, ctx);
-    toast(ctx, `Дудочник увёл ${n} крыс (вернутся через 90 с)`, "🎶", "bad");
+    toast(ctx, `Дудочник увёл ${n} ${plural(n, "крысу", "крысы", "крыс")} (вернутся через 90 с)`, "🎶", "bad");
     sc.choice = "lost";
   }
   endScene(s, d, ctx);

@@ -10,6 +10,7 @@ import type { SceneEventId } from "@/game/types";
 import CarriageScene from "./CarriageScene";
 import CatScene from "./CatScene";
 import DownpourScene from "./DownpourScene";
+import { MarketChip } from "./MarketPopup";
 import RatcatcherScene from "./RatcatcherScene";
 import SceneFrame from "./SceneFrame";
 import TrainScene from "./TrainScene";
@@ -44,7 +45,15 @@ function SceneInstance({ id, seq }: { id: SceneEventId; seq: number }) {
     };
   }, [seq]);
   return (
-    <SceneFrame id={id} right={<PhaseBadge />}>
+    <SceneFrame
+      id={id}
+      right={
+        <>
+          <PhaseBadge />
+          <MarketChip />
+        </>
+      }
+    >
       <SceneBody />
     </SceneFrame>
   );

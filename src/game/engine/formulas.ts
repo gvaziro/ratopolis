@@ -1,4 +1,5 @@
 import { BUILDINGS } from "../data/buildings";
+import { HUMAN_ACTIVITIES } from "../data/headlines";
 import { EXPRESS_BASE, EXPRESS_GROWTH } from "../data/meta";
 import { RESOURCES } from "../data/resources";
 import { ZONES } from "../data/zones";
@@ -142,4 +143,12 @@ export function humanClock(s: GameState): { day: number; hh: number; mm: number;
   const day = Math.floor(totalMin / (24 * 60));
   const m = totalMin - day * 24 * 60;
   return { day, hh: Math.floor(m / 60), mm: Math.floor(m % 60), totalMin };
+}
+
+/** What the humans upstairs are doing at hour `hh` (0..23). */
+export function humanActivity(hh: number): string {
+  // before 05:00 the humans are still asleep from the night before
+  let act = HUMAN_ACTIVITIES[HUMAN_ACTIVITIES.length - 1][1];
+  for (const [h, a] of HUMAN_ACTIVITIES) if (hh >= h) act = a;
+  return act;
 }

@@ -13,7 +13,7 @@ import type { Amounts, ResId } from "@/game/types";
 import { BrassButton, cx, Odometer } from "@/components/ui/kit";
 import { clockLine } from "@/components/layout/clock";
 import HudStyles from "@/components/layout/HudStyles";
-import { fmt, fmtInt, fmtPct, fmtTime } from "@/lib/format";
+import { fmt, fmtInt, fmtPct, fmtTime, plural } from "@/lib/format";
 
 export default function OfflineModal() {
   const report = useGame((s) => s.offlineReport);
@@ -27,9 +27,14 @@ function rows(a: Amounts): [ResId, number][] {
   return RES_ORDER.filter((r) => Math.abs(a[r] ?? 0) >= 0.005).map((r) => [r, a[r] ?? 0]);
 }
 
+/** Word form for a count printed by fmtInt; a compact «1.2K» reads «…тысячи», so it takes the "many" form. */
+function countForm(n: number, one: string, few: string, many: string): string {
+  return Math.abs(n) < 1000 ? plural(n, one, few, many) : many;
+}
+
 /** Witty sub-headline, picked deterministically from the report. */
 function kicker(r: OfflineReport): string {
-  if (r.trains >= 10) return `Бог Грома проходил ${r.trains} раз. Бригада встречала его без вас — и, признаться, неплохо`;
+  if (r.trains >= 10) return `Бог Грома проходил ${r.trains} ${countForm(r.trains, "раз", "раза", "раз")}. Бригада встречала его без вас — и, признаться, неплохо`;
   if (r.trains > 0) return "Поезда шли по расписанию, крысы — по привычке. Улов сложен в кладовых";
   if (r.rats >= 5) return "Пока вожак отсутствовал, колония занялась тем, что умеет лучше всего: размножением";
   const lines = [
@@ -138,7 +143,8 @@ function FrontPage({ r }: { r: OfflineReport }) {
               <span aria-hidden>🐀 </span>
               {r.rats > 0 ? (
                 <>
-                  Родилось <b className="font-mono">+{fmtInt(r.rats)}</b> крыс. Старейшины сбились со счёта.
+                  {countForm(r.rats, "Родилась", "Родились", "Родилось")} <b className="font-mono">+{fmtInt(r.rats)}</b>{" "}
+                  {countForm(r.rats, "крыса", "крысы", "крыс")}. Старейшины сбились со счёта.
                 </>
               ) : (
                 <>Новых крыс нет: то ли гнёзда полны, то ли не до того было.</>

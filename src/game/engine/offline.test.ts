@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { Bot, offlineCheck } from "../../../scripts/sim-core";
 import type { EngineCtx, GameState } from "../types";
+import { expressCost } from "./actions";
 import { derive } from "./derive";
 import { simulateOffline } from "./offline";
 import { createInitialState } from "./state";
@@ -74,6 +75,39 @@ describe("offline progress", () => {
     expect(s.suspicion).toBe(37);
     expect(s.rats).toBeGreaterThanOrEqual(rats);
     for (const r of Object.values(s.res)) expect(Number.isFinite(r)).toBe(true);
+  });
+
+  it("η is applied once: the EMA keeps the online rate, so offline trains and later events are not η²", () => {
+    const s = createInitialState(4, 0);
+    s.buildings.pickpocket_school = 10;
+    s.timers.carriage = Infinity;
+    s.timers.shiny = Infinity;
+    const ctx: EngineCtx = { fx: [] };
+    for (let i = 0; i < 3000; i++) step(s, TICK, { active: false }, ctx);
+    const ema = s.ema.coins;
+    const gross = s.gross.coins;
+    expect(ema).toBeGreaterThan(0);
+    expect(Math.abs(ema / gross - 1)).toBeLessThan(0.01);
+    const rep = simulateOffline(s, 3600, ctx)!;
+    expect(rep.eta).toBe(0.5);
+    expect(Math.abs(s.ema.coins / ema - 1)).toBeLessThan(0.01); // was ≈ η = 0.5
+    expect(s.gross.coins / gross).toBeCloseTo(0.5, 6); // actual production while away is still × η
+  });
+
+  it("a coronation finished by «Автовзнос» while away is reported and its overlay fx is forwarded", () => {
+    const s = createInitialState(6, 0);
+    s.upgrades.express_plan = true;
+    s.express.stage = 9;
+    s.express.progress = { ...expressCost(s) };
+    s.autoContribute = true;
+    const ctx: EngineCtx = { fx: [] };
+    const rep = simulateOffline(s, 600, ctx)!;
+    expect(s.express.stage).toBe(10);
+    expect(s.coronatedThisRun).toBe(true);
+    expect(rep.coronated).toBe(true);
+    expect(ctx.fx.some((f) => f.k === "coronation")).toBe(true);
+    // already crowned before the next absence: nothing new to report
+    expect(simulateOffline(s, 600, { fx: [] })!.coronated).toBe(false);
   });
 
   it("short absences (≤ 5 s) are ignored", () => {

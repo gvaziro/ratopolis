@@ -6,6 +6,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { BrassButton, cx } from "@/components/ui/kit";
+import { fmt } from "@/lib/format";
 
 export type TimingResult = "perfect" | "hit" | "miss";
 
@@ -20,13 +21,14 @@ export function judge(pos: number): TimingResult {
   return "miss";
 }
 
-const LABEL: Record<TimingResult, string> = {
-  perfect: "ИДЕАЛЬНО! ×8",
-  hit: "Зацепил! ×5",
-  miss: "Звяк… мимо",
-};
+/** Result caption; `hm` is the crew position's hook multiplier (the jackpot pays ×8 / ×5 times it). */
+function label(r: TimingResult, hm: number): string {
+  if (r === "perfect") return `ИДЕАЛЬНО! ×${fmt(8 * hm)}`;
+  if (r === "hit") return `Зацепил! ×${fmt(5 * hm)}`;
+  return "Звяк… мимо";
+}
 
-export default function TimingBar({ onThrow, title = "Крюк-кошка", className }: { onThrow: (r: TimingResult) => void; title?: string; className?: string }) {
+export default function TimingBar({ onThrow, title = "Крюк-кошка", hm = 1, className }: { onThrow: (r: TimingResult) => void; title?: string; hm?: number; className?: string }) {
   const needleRef = useRef<HTMLDivElement>(null);
   const onThrowRef = useRef(onThrow);
   const fireRef = useRef<() => void>(() => {});
@@ -89,7 +91,7 @@ export default function TimingBar({ onThrow, title = "Крюк-кошка", clas
           </div>
           {result && (
             <div className={cx("absolute inset-0 flex items-center justify-center font-display text-lg font-bold tracking-wider", result === "miss" ? "bg-black/55 text-parchment-dim" : "bg-black/35 text-gaslight")} style={{ animation: "rr-pop .4s ease-out" }}>
-              {LABEL[result]}
+              {label(result, hm)}
             </div>
           )}
         </div>

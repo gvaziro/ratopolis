@@ -13,7 +13,7 @@ import { Bar, cx } from "@/components/ui/kit";
 import { fxBurst } from "@/components/fx/fxBus";
 import { useGame } from "@/game/store";
 import type { Scene } from "@/game/types";
-import { fmt, fmtInt } from "@/lib/format";
+import { fmt, fmtInt, plural } from "@/lib/format";
 import { catStakes, ChoiceButton, Countdown, flourish, HazardStyles, makeTapLimiter, useReduced, useTimeUp, type CatStakes } from "./HazardKit";
 import { act, clamp, hash01, makeClock, shake } from "./sceneUtils";
 
@@ -73,12 +73,12 @@ function CatWarn({ scene }: { scene: Scene }) {
             tone="danger"
             sub={
               <>
-                Лапа: {fmtInt(hp)} ударов за {fmtInt(fightSec)} с · победа: 📜 +{fmt(stakes.blueprints)} 🧀 +{fmt(stakes.cheese)}, 👁 −25
+                Лапа: {fmtInt(hp)} {plural(hp, "удар", "удара", "ударов")} за {fmtInt(fightSec)} с · победа: 📜 +{fmt(stakes.blueprints)} 🧀 +{fmt(stakes.cheese)}, 👁 −25
               </>
             }
             sub2={
               <>
-                Провал: {fmtInt(stakes.scared)} крыс в испуге на 60 с, −5% 🧀
+                Провал: {fmtInt(stakes.scared)} {plural(stakes.scared, "крыса", "крысы", "крыс")} в испуге на 60 с, −5% 🧀
               </>
             }
             onClick={() => choose("fight")}
@@ -396,7 +396,7 @@ function CatFight({ scene }: { scene: Scene }) {
       }}
       role="button"
       tabIndex={0}
-      aria-label={`Бить по лапе: осталось ${left} ударов`}
+      aria-label={`Бить по лапе: осталось ${left} ${plural(left, "удар", "удара", "ударов")}`}
     >
       <BurrowWall />
       <div ref={pawRef} className="pointer-events-none absolute left-0 top-0 will-change-transform" style={{ transformOrigin: "50% 100%" }}>

@@ -15,6 +15,9 @@ import {
 
 export const SCHEMA_VERSION = 1;
 
+/** Express stages a run may start with (express_blueprints): never 10, so the coronation can happen again. */
+export const KEPT_STAGES_MAX = 9;
+
 export function zeroRes(): ResMap {
   return Object.fromEntries(RES_IDS.map((r) => [r, 0])) as ResMap;
 }
@@ -163,7 +166,7 @@ export function newRun(meta: Meta, settings: Settings, seed: number, now: number
     s.timers.capsule = 300;
     s.timers.downpour = 480; // same as onZoneOpen("sewers"): the downpour would otherwise never be scheduled
   }
-  if (e.express_blueprints) s.express.stage = meta.expressKept;
+  if (e.express_blueprints) s.express.stage = Math.min(KEPT_STAGES_MAX, meta.expressKept);
   s.news.push({ t: 0, text: meta.migrations > 0 ? "Колония обустраивается на новом месте. Наверху снова 05:00" : "Вожак выбрался к решётке стока. Колония из одной крысы объявлена открытой" });
   return s;
 }

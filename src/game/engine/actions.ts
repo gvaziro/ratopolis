@@ -6,6 +6,10 @@ import { FOREMAN_UPGRADES, RAT_MEMORY_UPGRADES, UPGRADES } from "../data/upgrade
 import { ZONES, ZONE_ORDER, districtName } from "../data/zones";
 import {
   JOB_IDS,
+  RES_IDS,
+  UPGRADE_IDS,
+  ZONE_IDS,
+  type Amounts,
   type AssignMode,
   type BuildingId,
   type BuyMode,
@@ -14,6 +18,7 @@ import {
   type GameState,
   type JobId,
   type ResId,
+  type ResMap,
   type UpgradeId,
   type ZoneId,
 } from "../types";
@@ -34,7 +39,7 @@ import {
   remaining,
 } from "./formulas";
 import { rand } from "./rng";
-import { newRun } from "./state";
+import { KEPT_STAGES_MAX, newRun } from "./state";
 
 /* ================================================================ click */
 
@@ -125,7 +130,10 @@ export function buyBuilding(s: GameState, d: Derived, id: BuildingId, mode: BuyM
   s.buildings[id] = from + k;
   const to = from + k;
   ctx.fx.push({ k: "buy", building: id, level: to });
-  for (const m of MILESTONES) if (from < m && to >= m) ctx.fx.push({ k: "milestone", building: id, level: m });
+  // milestones double only "produce" effects (derive.ts): no ×2 fanfare for nests, stores, boilers…
+  if (BUILDINGS[id].effects.some((e) => e.t === "produce")) {
+    for (const m of MILESTONES) if (from < m && to >= m) ctx.fx.push({ k: "milestone", building: id, level: m });
+  }
   for (const v of VISUAL_TIERS) if (from < v && to >= v && v > 1) ctx.fx.push({ k: "tier", building: id, level: v });
   void d;
   return k;
@@ -235,17 +243,17 @@ export function smartAssign(s: GameState, d: Derived): void {
   for (const j of ["stoker", "smelter", "smith", "mechanic", "scholar"] as JobId[]) {
     if (!jobUnlocked(s, j)) continue;
     while (left > 0 && jobs[j] < d.slots[j]) {
-      let ok = true;
+      let failed: ResId | null = null;
       for (const [r, v] of entries(JOBS[j].consumes)) {
         if (supply(r) < v * d.jobSpeed[j] - 1e-9 && s.res[r] < 50 * v) {
-          ok = false;
+          failed = r;
           break;
         }
       }
-      if (!ok) {
-        // add a supporting scavenger for button/wire hungry converters
-        const needsScrap = JOBS[j].consumes.wire || JOBS[j].consumes.buttons;
-        if (needsScrap && jobUnlocked(s, "scavenger") && left > 1) {
+      if (failed) {
+        // a supporting scavenger only helps when the missing input is scrap (not coins or steam: those
+        // would flood the colony with scavengers whenever the coin or steam stock dips)
+        if ((failed === "wire" || failed === "buttons") && jobUnlocked(s, "scavenger") && left > 1) {
           jobs.scavenger++;
           left--;
           continue;
@@ -371,25 +379,57 @@ function coronation(s: GameState, ctx: EngineCtx): void {
   if (s.time * 5 < 7 * 3600) award(s, "before_noon", ctx);
 }
 
+type AutoProject = { kind: "zone"; zone: ZoneId } | { kind: "express" };
+
+/** Projects that «Автовзнос» feeds: the expedition offered on the map, then the Rat Express. */
+function autoProjects(s: GameState): AutoProject[] {
+  const out: AutoProject[] = [];
+  const target = currentExpedition(s);
+  if (target) out.push({ kind: "zone", zone: target });
+  if (s.upgrades.express_plan) out.push({ kind: "express" });
+  return out;
+}
+
+function projectState(s: GameState, p: AutoProject): { cost: Amounts; prog: Amounts } {
+  if (p.kind === "zone") return { cost: expeditionCost(s, p.zone), prog: (s.projects[p.zone] ??= {}) };
+  return { cost: expressCost(s), prog: s.express.progress };
+}
+
 /**
- * Auto-contribute surplus. Capped resources give only what would overflow: once full, half a second of
+ * Auto-contribute, per-tick part: uncapped resources (📜🪨🔔🛤️💍) never fill a store, so half of this tick's
+ * passive gain goes to the project. Called by tickEconomy before it measures s.rates, so the HUD rate and every
+ * ETA already show what is left after the contribution. `before` is the stock at the start of the tick.
+ */
+export function autoContributeUncapped(s: GameState, d: Derived, before: ResMap): void {
+  if (!s.autoContribute) return;
+  const avail: Amounts = {}; // one half of the gain in total, even if two projects want the same resource
+  for (const p of autoProjects(s)) {
+    const { cost, prog } = projectState(s, p);
+    for (const [r, need] of entries(remaining(cost, prog))) {
+      if (need <= 0 || Number.isFinite(d.caps[r])) continue;
+      const left = (avail[r] ??= Math.max(0, 0.5 * (s.res[r] - before[r])));
+      const amt = Math.min(need, left, s.res[r]);
+      if (amt <= 0) continue;
+      s.res[r] -= amt;
+      prog[r] = (prog[r] ?? 0) + amt;
+      avail[r] = left - amt;
+    }
+  }
+}
+
+/**
+ * Auto-contribute, once a second. Capped resources give only what would overflow: once full, half a second of
  * gross production (plus any overload above the cap), so the store refills to the cap every second and
- * purchases that cost up to 100% of the cap stay affordable. Uncapped ones give half of the last second's gain.
+ * purchases that cost up to 100% of the cap stay affordable. Uncapped ones are fed every tick by
+ * autoContributeUncapped; this pass also completes the project (starts the dig / the next express stage).
  */
 export function autoContribute(s: GameState, d: Derived, ctx: EngineCtx): void {
-  const target = currentExpedition(s);
-  const projects: ({ kind: "zone"; zone: ZoneId } | { kind: "express" })[] = [];
-  if (target) projects.push({ kind: "zone", zone: target });
-  if (s.upgrades.express_plan) projects.push({ kind: "express" });
-  for (const p of projects) {
-    const cost = p.kind === "zone" ? expeditionCost(s, p.zone) : expressCost(s);
-    const prog = p.kind === "zone" ? (s.projects[p.zone] ??= {}) : s.express.progress;
+  for (const p of autoProjects(s)) {
+    const { cost, prog } = projectState(s, p);
     for (const [r, need] of entries(remaining(cost, prog))) {
-      if (need <= 0) continue;
       const cap = d.caps[r];
-      let surplus: number;
-      if (Number.isFinite(cap)) surplus = s.res[r] >= 0.999 * cap ? Math.max(0, s.res[r] - Math.max(0.5 * cap, cap - 0.5 * Math.max(0, s.gross[r]))) : 0;
-      else surplus = Math.max(0, Math.min(s.res[r], 0.5 * Math.max(0, s.rates[r])));
+      if (need <= 0 || !Number.isFinite(cap) || s.res[r] < 0.999 * cap) continue;
+      const surplus = Math.max(0, s.res[r] - Math.max(0.5 * cap, cap - 0.5 * Math.max(0, s.gross[r])));
       const amt = Math.min(need, surplus);
       if (amt <= 0) continue;
       s.res[r] -= amt;
@@ -455,9 +495,12 @@ export function migrate(s: GameState, now: number, ctx: EngineCtx): GameState | 
   meta.migrations += 1;
   meta.district += 1;
   meta.lifetime.playSeconds = s.meta.lifetime.playSeconds;
-  // remembered even without the edict: "Чертежи экспресса" bought on the migration screen keeps these stages
-  meta.expressKept = Math.max(meta.expressKept, Math.min(10, s.express.stage));
+  // remembered even without the edict: "Чертежи экспресса" bought on the migration screen keeps these stages;
+  // at most 9, so the final "Отправление!" stage and the coronation (×1.25 crowns, before_noon) replay every run
+  meta.expressKept = Math.min(KEPT_STAGES_MAX, Math.max(meta.expressKept, s.express.stage));
   const next = newRun(meta, s.settings, (s.rng ^ 0x9e3779b9) >>> 0, now);
+  // the migration screen is where edicts are bought: keep the tabs and the HUD up instead of a blank second
+  applyReveals(next);
   award(next, "first_migration", ctx);
   news(next, "migration", { district: districtName(meta.district) }, ctx);
   ctx.fx.push({ k: "toast", text: `Великое Переселение! +${gained} 👑. Новый район: ${districtName(meta.district)}`, icon: "👑", tone: "gold" });
@@ -500,8 +543,34 @@ function applyRunStartEdict(s: GameState, id: EdictId, ctx: EngineCtx): void {
     openZone(s, "sewers", ctx);
     onZoneOpen(s, "sewers");
   } else if (id === "express_blueprints") {
-    s.express.stage = Math.max(s.express.stage, Math.min(10, s.meta.expressKept));
+    s.express.stage = Math.max(s.express.stage, Math.min(KEPT_STAGES_MAX, s.meta.expressKept));
   }
+}
+
+/* ================================================================ UI reveals */
+
+/** Sticky UI reveals (tabs, widgets, resource bar entries). Run by housekeeping every second and by migrate() at once. */
+export function applyReveals(s: GameState): void {
+  const R = s.revealed;
+  const set = (k: string, cond: boolean) => {
+    if (!R[k] && cond) R[k] = true;
+  };
+  for (const r of RES_IDS) set(`res_${r}`, check(s, RESOURCES[r].reveal) || s.res[r] > 0);
+  set("tab_buildings", !!s.flags.vagrants || s.resEver.crumbs >= 10);
+  set("tab_jobs", s.rats >= 2);
+  set("tab_upgrades", UPGRADE_IDS.some((u) => upgradeVisible(s, u)));
+  set("news", s.rats >= 5 || s.meta.migrations > 0);
+  set("goal", s.time >= 120 || s.meta.migrations > 0);
+  set("tab_map", s.rats >= 12 || !!s.zones.sewers);
+  set("tab_schedule", !!s.flags.first_capsule || !!s.zones.metro || !!s.zones.sewers);
+  set("suspicion", !!s.zones.cellars);
+  set("tab_migration", !!s.zones.metro || s.meta.migrations > 0);
+  set("tab_medals", Object.keys(s.meta.achievements).length > 0);
+  set("steam", s.buildings.boiler > 0);
+  set("bustle", !!s.upgrades.bustle);
+  const exp = currentExpedition(s);
+  if (exp) set(`exp_${exp}`, true);
+  for (const z of ZONE_IDS) if (s.zones[z]) set(`zone_${z}`, true);
 }
 
 /* ================================================================ dev */

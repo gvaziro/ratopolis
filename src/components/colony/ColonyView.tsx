@@ -10,11 +10,11 @@ import { useShallow } from "zustand/react/shallow";
 import { cx } from "@/components/ui/kit";
 import { BUILDINGS } from "@/game/data/buildings";
 import { RESOURCES } from "@/game/data/resources";
-import { nextMilestone } from "@/game/engine/derive";
+import { nextMilestone, resMult } from "@/game/engine/derive";
 import { entries } from "@/game/engine/formulas";
 import { onFx } from "@/game/fx";
 import { derivedOf, useGame } from "@/game/store";
-import { BUILDING_IDS, ZONE_IDS, type BuildingId } from "@/game/types";
+import { BUILDING_IDS, ZONE_IDS, type Amounts, type BuildingId } from "@/game/types";
 import { fmtInt, fmtRate } from "@/lib/format";
 import { addAnchorResolver, setColonyRectGetter, setFxAnchor } from "../fx/fxBus";
 import { BgEvents } from "./BgEvents";
@@ -65,7 +65,15 @@ const Vignette = memo(function Vignette() {
 
 function ChamberTip({ id, x, y, cw }: { id: BuildingId; x: number; y: number; cw: number }) {
   const level = useGame((s) => s.game.buildings[id]);
-  const out = useGame(useShallow((s) => derivedOf(s.game).buildingOut[id]));
+  // the same multiplied output the engine adds and the building card shows (tier/global/temp/hunger)
+  const out = useGame(
+    useShallow((s) => {
+      const d = derivedOf(s.game);
+      const o: Amounts = {};
+      for (const [r, v] of entries(d.buildingOut[id])) o[r] = v * resMult(s.game, d, r);
+      return o;
+    }),
+  );
   const def = BUILDINGS[id];
   const lines = entries(out).filter(([, v]) => v > 0);
   const next = nextMilestone(level);

@@ -172,7 +172,11 @@ export const GoalWidget = memo(function GoalWidget() {
         >
           <span>🎯</span>
           <span className="text-sm leading-none">{g.icon}</span>
-          {room >= 96 && <span className="truncate font-mono text-[10px] text-brass-light tabular">{g.eta >= 0 ? fmtTime(g.eta) : g.eta === -2 ? `${Math.round(g.frac * 100)}%` : "…"}</span>}
+          {room >= 96 && (
+            <span className="truncate font-mono text-[10px] text-brass-light tabular">
+              {g.locked ? "🔒" : g.eta >= 0 ? fmtTime(g.eta) : g.eta === -2 ? `${Math.round(g.frac * 100)}%` : "…"}
+            </span>
+          )}
         </button>
         {open && (
           <div className="mt-1 w-60 max-w-[calc(100vw-48px)] rounded-lg border border-line bg-soot-2/95 p-1.5 shadow-[0_6px_18px_rgba(0,0,0,.55)]">

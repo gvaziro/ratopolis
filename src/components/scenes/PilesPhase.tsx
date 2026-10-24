@@ -81,13 +81,14 @@ function PilesPhaseImpl({ scene }: { scene: Scene }) {
 
     const frac = (i: number, p: number) => Math.min(1, sc.auto * p + extra[i]);
 
+    // the engine credits at least the auto share whenever the phase ends, so an early «Готово» sends (and freezes
+    // the bars at) the full auto share plus the scoops — otherwise scoops below auto·(1−p) would be lost
     const send = () => {
       if (done) return;
       done = true;
       window.clearInterval(holdIv);
-      const p = clamp(clock() / dur);
-      frozenP = p;
-      act({ a: "piles", fractions: sc.piles.map((_, i) => frac(i, p)) });
+      frozenP = 1;
+      act({ a: "piles", fractions: sc.piles.map((_, i) => frac(i, 1)) });
       setSent(true);
     };
 
@@ -186,7 +187,7 @@ function PilesPhaseImpl({ scene }: { scene: Scene }) {
         const x = ((t * v + hash01(n, 3) * span) % span) - 50;
         el.style.transform = `translateX(${x.toFixed(1)}px)`;
       }
-      if (!done && t >= dur) send();
+      if (!done && sc.phase === "piles" && t >= dur) send();
     };
     raf = requestAnimationFrame(loop);
     return () => {
@@ -250,7 +251,8 @@ function PilesPhaseImpl({ scene }: { scene: Scene }) {
               }}
               onContextMenu={(e) => e.preventDefault()}
               className={cx(
-                "relative flex min-h-[112px] touch-none select-none flex-col items-stretch justify-end gap-1 rounded-lg border bg-gradient-to-b from-black/10 to-black/45 px-1.5 pb-1.5 pt-1 text-left transition-colors",
+                // pan-y: a swipe that starts on a pile still scrolls the grid (the pan fires pointercancel → release)
+                "relative flex min-h-[112px] touch-pan-y select-none flex-col items-stretch justify-end gap-1 rounded-lg border bg-gradient-to-b from-black/10 to-black/45 px-1.5 pb-1.5 pt-1 text-left transition-colors",
                 full[pl.i] ? "border-good/60" : "border-line hover:border-brass",
               )}
             >

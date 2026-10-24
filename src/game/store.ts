@@ -32,6 +32,7 @@ import type {
   BuyMode,
   EdictId,
   EngineCtx,
+  Fx,
   GameState,
   JobId,
   ResId,
@@ -59,7 +60,10 @@ export interface GameStore {
   setBuyMode: (m: BuyMode) => void;
 
   /* ---- lifecycle */
+  /** Load the save and catch up the absence. Its fx (offline medals, zone banners, coronation) wait for flushInitFx. */
   init: () => void;
+  /** Emit the fx kept by init() once the listeners are mounted (call when `ready` turns true). Idempotent. */
+  flushInitFx: () => void;
   /** Run `steps` fixed ticks (TICK s each) in one state update. */
   advance: (steps: number, active: boolean) => void;
   /** Catch up a long absence (tab hidden > 60 s). */
@@ -117,6 +121,9 @@ function saveKey(): string {
   return slot ? `${SAVE_KEY}:${slot}` : SAVE_KEY;
 }
 
+/** Fx produced by init() before any onFx listener exists; emitted once by flushInitFx(). */
+let initFx: Fx[] = [];
+
 function isActive(lastInputAt: number): boolean {
   if (typeof document === "undefined") return false;
   return document.visibilityState === "visible" && Date.now() - lastInputAt < 60_000;
@@ -162,8 +169,15 @@ export const useGame = create<GameStore>((set, get) => {
         s = createInitialState(seed(), now);
       }
       s.lastSaved = now;
+      // no listener is mounted yet (GameRoot still shows the loading screen): flushInitFx() emits these later
+      initFx = ctx.fx;
       set({ game: s, ready: true, offlineReport: report, lastInputAt: now });
-      emitFx(ctx.fx);
+    },
+
+    flushInitFx: () => {
+      const list = initFx;
+      initFx = [];
+      emitFx(list);
     },
 
     advance: (steps, active) => {
@@ -233,11 +247,9 @@ export const useGame = create<GameStore>((set, get) => {
       }),
     toggleSatiety: () => mutate((s) => toggleSatiety(s)),
     setForeman: (key, on) => mutate((s) => setForeman(s, key, on)),
-    scene: (action) => {
-      // mounting/unmounting a scene UI is not player input (would un-gate harmful events for an AFK player)
-      if (action.a !== "attach" && action.a !== "detach") set({ lastInputAt: Date.now() });
-      mutate((s, d, ctx) => sceneAction(s, d, action, ctx));
-    },
+    // not player input by itself: scene UIs send results on timers (catch expiry, piles/taps time-up) with nobody
+    // at the controls; real input is recorded by useGameLoop's window pointerdown/keydown listeners
+    scene: (action) => mutate((s, d, ctx) => sceneAction(s, d, action, ctx)),
     clickPurse: () => mutate((s, d, ctx) => clickPurse(s, d, ctx)),
     clickShiny: (id) => mutate((s, d, ctx) => clickShiny(s, d, id, ctx)),
     marketDeal: (i) =>

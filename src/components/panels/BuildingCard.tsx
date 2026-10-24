@@ -99,6 +99,15 @@ function effectNow(s: GameState, d: Derived, id: BuildingId, L: number): string 
   return parts.join(" · ");
 }
 
+/**
+ * "special" effects (handled by the engine per building id) that def.desc leaves out. A building whose only
+ * effect is special already describes it in desc (the depot), so it gets none.
+ */
+function specialTexts(id: BuildingId): string[] {
+  const effects = BUILDINGS[id].effects;
+  return effects.length > 1 ? effects.flatMap((e) => (e.t === "special" ? [e.text] : [])) : [];
+}
+
 function cardModel(s: GameState, d: Derived, id: BuildingId, mode: BuyMode): CardModel {
   const def = BUILDINGS[id];
   const lv = s.buildings[id];
@@ -190,6 +199,7 @@ function BuildingCard({ id }: { id: BuildingId }) {
   };
 
   const single = m.out.length === 1 ? m.out[0] : null;
+  const specials = specialTexts(id);
 
   return (
     <article
@@ -228,6 +238,11 @@ function BuildingCard({ id }: { id: BuildingId }) {
             {m.fresh && <Badge tone="verdigris">новинка</Badge>}
           </div>
           <p className="mt-0.5 text-[11px] leading-snug text-parchment-dim">{def.desc}</p>
+          {specials.length > 0 && (
+            <p className="mt-0.5 text-[11px] leading-snug text-parchment-dim">
+              <span className="text-brass">✦</span> {specials.join(" · ")}
+            </p>
+          )}
 
           {single ? (
             <p className="mt-0.5 font-mono text-[11px] leading-snug tabular text-verdigris-light">

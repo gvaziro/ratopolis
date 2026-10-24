@@ -6,7 +6,8 @@ import { isActive, useGame } from "./store";
 
 /**
  * Fixed-step loop: requestAnimationFrame + accumulator, 10 Hz, at most 10 steps per frame.
- * Hidden tab > 60 s is treated as offline (catch-up simulation). Autosaves every 15 s.
+ * Hidden tab > 60 s is treated as offline (catch-up simulation), and so is a wall-clock gap between frames
+ * while the tab stayed "visible" (system sleep without visibilitychange, long freeze). Autosaves every 15 s.
  */
 export function useGameLoop(): void {
   useEffect(() => {
@@ -15,10 +16,24 @@ export function useGameLoop(): void {
 
     let raf = 0;
     let last = performance.now();
+    let lastWall = Date.now(); // performance.now() may stand still during system sleep: gaps use the wall clock
     let acc = 0;
     let hiddenAt: number | null = null;
 
     const frame = (now: number) => {
+      const wall = Date.now();
+      const gap = (wall - lastWall) / 1000;
+      lastWall = wall;
+      // a hidden period is caught up by onVis instead; a negative gap (clock change) is ignored
+      if (gap > 2 && hiddenAt === null && document.visibilityState === "visible") {
+        const st = useGame.getState();
+        if (gap > 60) st.catchUp(gap);
+        else st.advance(Math.min(600, Math.floor(gap / TICK)), false);
+        last = now;
+        acc = 0;
+        raf = requestAnimationFrame(frame);
+        return;
+      }
       const dt = Math.min(5, (now - last) / 1000);
       last = now;
       acc += dt;
@@ -49,6 +64,7 @@ export function useGameLoop(): void {
         }
         hiddenAt = null;
         last = performance.now();
+        lastWall = Date.now();
         acc = 0;
       }
     };

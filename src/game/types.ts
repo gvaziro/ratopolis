@@ -496,6 +496,8 @@ export interface MarketDeal {
   done: boolean;
 }
 export interface Market {
+  /** Stable per opening (from sceneSeq): UI keys the stall on it — `until` moves while a scene pauses the market. */
+  id: number;
   until: number;
   deals: MarketDeal[];
 }

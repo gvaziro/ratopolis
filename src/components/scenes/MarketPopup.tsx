@@ -4,21 +4,87 @@
  * «Базарный день»: Барыга Бенедикт's floating stall (bottom-left, over the colony, never over the grate centre).
  * Three trades with a +30% markup in the player's favour, a 60 s countdown, done deals stamped «ПРОДАНО».
  * Collapsible; starts collapsed on phones so it does not cover the bottom sheet.
+ * While a close-up runs (the engine pauses the stall's clock meanwhile) it folds into `MarketChip` in the scene
+ * header and opens only on demand.
  * Subscribes to primitives only (deal keys, affordability bits, whole seconds) — not to the 10 Hz game object.
  */
-import { memo, useId, useMemo, useState } from "react";
+import { memo, useId, useMemo, useState, useSyncExternalStore } from "react";
 import { Badge, BrassButton, cx, ResIcon, Ring, Rivets, Stamp } from "@/components/ui/kit";
 import { RESOURCES } from "@/game/data/resources";
 import { EVENT_TIMING } from "@/game/data/events";
-import { useGame } from "@/game/store";
+import { useGame, type GameStore } from "@/game/store";
 import type { MarketDeal, ResId } from "@/game/types";
-import { fmt, fmtTime } from "@/lib/format";
+import { fmt, fmtTime, plural } from "@/lib/format";
 import { HazardStyles } from "./HazardKit";
 
 export default function MarketPopup() {
-  const until = useGame((s) => s.game.market?.until ?? 0);
-  if (!until) return null;
-  return <Stall key={until} until={until} />;
+  // keyed on the opening's stable id: `until` moves while a scene pauses the market
+  const id = useGame((s) => (s.game.market ? s.game.market.id : -1));
+  if (id < 0) return null;
+  return <Stall key={id} />;
+}
+
+/* A peek at the stall during a scene, shared by the header chip and the stall: the scene seq it was opened in. */
+let peekSeq = 0;
+const peekSubs = new Set<() => void>();
+function setPeekSeq(v: number): void {
+  peekSeq = v;
+  for (const f of peekSubs) f();
+}
+function subscribePeek(f: () => void): () => void {
+  peekSubs.add(f);
+  return () => {
+    peekSubs.delete(f);
+  };
+}
+function usePeekSeq(): number {
+  return useSyncExternalStore(
+    subscribePeek,
+    () => peekSeq,
+    () => 0,
+  );
+}
+
+const leftOf = (s: GameStore) => Math.max(0, Math.ceil((s.game.market?.until ?? 0) - s.game.time));
+const dealsWord = (n: number) => `${n} ${plural(n, "сделка", "сделки", "сделок")}`;
+
+/** The stall folded into the scene header while a close-up runs: basket, open deals, paused clock; tap to peek. */
+export function MarketChip() {
+  const on = useGame((s) => !!s.game.market);
+  const left = useGame(leftOf);
+  const open3 = useGame((s) => (s.game.market?.deals ?? []).filter((d) => !d.done).length);
+  const ready = useGame((s) => (s.game.market?.deals ?? []).filter((d) => !d.done && s.game.res[d.give] + 1e-9 >= d.giveAmt).length);
+  const sceneSeq = useGame((s) => s.game.scene?.seq ?? 0);
+  const reduced = useGame((s) => s.game.settings.reducedMotion);
+  const peek = usePeekSeq();
+  if (!on || !sceneSeq) return null;
+  const expanded = peek === sceneSeq;
+  return (
+    <>
+      <HazardStyles />
+      <button
+        type="button"
+        onClick={() => setPeekSeq(expanded ? 0 : sceneSeq)}
+        className={cx("flex h-8 items-center gap-1 rounded-full border bg-black/30 py-0.5 pl-0.5 pr-2 hover:brightness-110", expanded ? "border-brass" : "border-brass-dark")}
+        aria-expanded={expanded}
+        aria-label={`Лавка Бенедикта: ${dealsWord(open3)}, ждёт конца события (${fmtTime(left)})`}
+        title="Лавка Бенедикта ждёт, пока вы заняты"
+      >
+        <span className="relative flex h-7 w-7 items-center justify-center rounded-full border border-brass-dark bg-[#5a1c17] text-sm">
+          🧺
+          {ready > 0 && (
+            <span
+              className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-gaslight px-1 font-mono text-[10px] font-bold text-soot"
+              style={reduced ? undefined : { animation: "rh-pulse-dot 1.2s ease-out infinite" }}
+            >
+              {ready}
+            </span>
+          )}
+        </span>
+        <span className="font-mono text-[10px] text-parchment-dim tabular">⏸ {fmtTime(left)}</span>
+      </button>
+    </>
+  );
 }
 
 function dealsKeyOf(deals: MarketDeal[] | undefined): string {
@@ -34,28 +100,34 @@ function parseDeals(key: string): MarketDeal[] {
   });
 }
 
-function Stall({ until }: { until: number }) {
-  const left = useGame((s) => Math.max(0, Math.ceil(until - s.game.time)));
+function Stall() {
+  const left = useGame(leftOf);
   const dealsKey = useGame((s) => dealsKeyOf(s.game.market?.deals));
   const affordKey = useGame((s) => (s.game.market?.deals ?? []).map((d) => (s.game.res[d.give] + 1e-9 >= d.giveAmt ? "1" : "0")).join(""));
   const reduced = useGame((s) => s.game.settings.reducedMotion);
   const deals = useMemo(() => parseDeals(dealsKey), [dealsKey]);
   const [open, setOpen] = useState(() => typeof window === "undefined" || window.matchMedia("(min-width: 768px)").matches);
-  // a running close-up owns the colony window: tuck the stall away to the right as a pill meanwhile
+  // a running close-up owns the colony window (the whole screen on phones): the stall folds into MarketChip in the
+  // scene header, and a peek opens it over the scene — above the full-screen scene on phones, at the colony's
+  // right edge (clear of the side panel) on md+
   const sceneSeq = useGame((s) => s.game.scene?.seq ?? 0);
   const sceneOn = sceneSeq !== 0;
-  const [peekSeq, setPeekSeq] = useState(0);
-  const expanded = sceneOn ? peekSeq === sceneSeq : open;
+  const peek = usePeekSeq();
+  const expanded = sceneOn ? peek === sceneSeq : open;
   const setExpanded = (v: boolean) => (sceneOn ? setPeekSeq(v ? sceneSeq : 0) : setOpen(v));
 
   const life = EVENT_TIMING.marketLife;
   const open3 = deals.filter((d) => !d.done).length;
   const ready = deals.filter((d, i) => !d.done && affordKey[i] === "1").length;
-  const urgent = left <= 10;
+  const urgent = left <= 10 && !sceneOn; // the clock stands still during a scene
 
+  if (sceneOn && !expanded) return null;
   return (
     <aside
-      className={cx("fixed bottom-[calc(env(safe-area-inset-bottom)_+_3rem)] z-30 md:bottom-14", sceneOn ? "right-2 md:right-4" : "left-2 md:left-4")}
+      className={cx(
+        "fixed bottom-[calc(env(safe-area-inset-bottom)_+_3rem)] md:bottom-14",
+        sceneOn ? "right-2 z-50 md:right-[412px] md:z-30 xl:right-[472px]" : "left-2 z-30 md:left-4",
+      )}
       style={reduced ? undefined : { animation: "rh-slide-in .35s ease-out both" }}
       aria-label="Лавка Барыги Бенедикта"
     >
@@ -99,7 +171,7 @@ function Stall({ until }: { until: number }) {
           onClick={() => setExpanded(true)}
           className="flex min-h-11 items-center gap-2 rounded-full border border-brass-dark bg-gradient-to-b from-panel-2 to-panel py-1 pl-1 pr-3 shadow-[0_8px_22px_rgba(0,0,0,.6)] hover:brightness-110"
           aria-expanded="false"
-          aria-label={`Лавка Бенедикта: ${open3} сделок, закроется через ${fmtTime(left)}`}
+          aria-label={`Лавка Бенедикта: ${dealsWord(open3)}, закроется через ${fmtTime(left)}`}
         >
           <span className="relative flex h-9 w-9 items-center justify-center rounded-full border border-brass-dark bg-[#5a1c17] text-lg">
             🧺

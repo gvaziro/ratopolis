@@ -4,7 +4,7 @@ import { EXPRESS_BASE, EXPRESS_GROWTH } from "../data/meta";
 import { BUILDING_IDS, type Amounts, type EngineCtx } from "../types";
 import { buyBuilding } from "./actions";
 import { derive } from "./derive";
-import { buildingCost, canAfford, crownsForRun, entries, expressStageCost, maxAffordable, nextCrownAt } from "./formulas";
+import { buildingCost, canAfford, crownsForRun, entries, expressStageCost, humanActivity, humanClock, maxAffordable, nextCrownAt } from "./formulas";
 import { rand } from "./rng";
 import { createInitialState } from "./state";
 
@@ -111,5 +111,17 @@ describe("projects and prestige", () => {
     expect(next).toBeGreaterThan(1e6);
     s.eRun = next * 1.000001;
     expect(crownsForRun(s)).toBe(11);
+  });
+});
+
+describe("human clock", () => {
+  it("the humans are still asleep between 00:00 and 04:59", () => {
+    for (const hh of [0, 2, 4, 23]) expect(humanActivity(hh), String(hh)).toBe("спят и храпят");
+    expect(humanActivity(5)).toBe("только просыпаются");
+    expect(humanActivity(12)).toBe("читают утреннюю газету");
+    const s = createInitialState(1, 0);
+    s.time = 13680; // 19 h of human time after 05:00 → 00:00 the next day
+    expect(humanClock(s).hh).toBe(0);
+    expect(humanActivity(humanClock(s).hh)).toBe("спят и храпят");
   });
 });

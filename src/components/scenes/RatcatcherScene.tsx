@@ -14,7 +14,7 @@ import { cx } from "@/components/ui/kit";
 import { fxBurst } from "@/components/fx/fxBus";
 import { useGame } from "@/game/store";
 import type { Scene } from "@/game/types";
-import { fmt, fmtInt } from "@/lib/format";
+import { fmt, fmtInt, plural } from "@/lib/format";
 import { ChoiceButton, Countdown, flourish, HazardStyles, piperStakes, useReduced, useTimeUp, type PiperStakes } from "./HazardKit";
 import { act, clamp, EMOJI_FONT, fonts, hash01, makeClock } from "./sceneUtils";
 
@@ -123,7 +123,7 @@ function PiperWarn({ scene }: { scene: Scene }) {
             tone="verdigris"
             sub={
               <>
-                {fmtInt(count)} нот за {fmtInt(fightSec)} с — лопнуть ≥ {fmtInt(needed)} (80%)
+                {fmtInt(count)} {plural(count, "нота", "ноты", "нот")} за {fmtInt(fightSec)} с — лопнуть ≥ {fmtInt(needed)} (80%)
               </>
             }
             sub2={

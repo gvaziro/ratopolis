@@ -145,7 +145,8 @@ function useFxSounds(): void {
           sfx.flourish();
           break;
         case "coronation":
-          sfx.coronationBells();
+          // under an offline report the overlay waits and rings the bells itself when it opens
+          if (!useGame.getState().offlineReport) sfx.coronationBells();
           break;
         case "sceneStart":
           sceneIntro(fx.id, later);

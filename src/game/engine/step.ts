@@ -1,13 +1,10 @@
-import { HUMAN_ACTIVITIES } from "../data/headlines";
-import { RESOURCES } from "../data/resources";
-import { UPGRADE_IDS, ZONE_IDS, RES_IDS, type EngineCtx, type GameState, type TickInput } from "../types";
-import { autoContribute, click, currentExpedition, foremanTick, openZone, smartAssign, upgradeVisible } from "./actions";
-import { check } from "./conditions";
+import type { EngineCtx, GameState, TickInput } from "../types";
+import { applyReveals, autoContribute, click, foremanTick, openZone, smartAssign } from "./actions";
 import { award, news } from "./core";
 import { derive, type Derived } from "./derive";
 import { tickEconomy } from "./economy";
 import { onZoneOpen, tickEvents } from "./events";
-import { canMigrate, humanClock } from "./formulas";
+import { canMigrate, humanActivity, humanClock } from "./formulas";
 
 export const TICK = 0.1; // seconds per fixed step (10 Hz)
 
@@ -87,26 +84,7 @@ function housekeeping(s: GameState, d: Derived, input: TickInput, ctx: EngineCtx
   }
 
   // sticky UI reveals
-  const R = s.revealed;
-  const set = (k: string, cond: boolean) => {
-    if (!R[k] && cond) R[k] = true;
-  };
-  for (const r of RES_IDS) set(`res_${r}`, check(s, RESOURCES[r].reveal) || s.res[r] > 0);
-  set("tab_buildings", !!s.flags.vagrants || s.resEver.crumbs >= 10);
-  set("tab_jobs", s.rats >= 2);
-  set("tab_upgrades", UPGRADE_IDS.some((u) => upgradeVisible(s, u)));
-  set("news", s.rats >= 5 || s.meta.migrations > 0);
-  set("goal", s.time >= 120 || s.meta.migrations > 0);
-  set("tab_map", s.rats >= 12 || !!s.zones.sewers);
-  set("tab_schedule", !!s.flags.first_capsule || !!s.zones.metro || !!s.zones.sewers);
-  set("suspicion", !!s.zones.cellars);
-  set("tab_migration", !!s.zones.metro || s.meta.migrations > 0);
-  set("tab_medals", Object.keys(s.meta.achievements).length > 0);
-  set("steam", s.buildings.boiler > 0);
-  set("bustle", !!s.upgrades.bustle);
-  const exp = currentExpedition(s);
-  if (exp) set(`exp_${exp}`, true);
-  for (const z of ZONE_IDS) if (s.zones[z]) set(`zone_${z}`, true);
+  applyReveals(s);
 
   if (canMigrate(s) && !s.flags.migration_ready) {
     s.flags.migration_ready = true;
@@ -118,10 +96,7 @@ function housekeeping(s: GameState, d: Derived, input: TickInput, ctx: EngineCtx
   if (!input.offline && s.time >= s.timers.nextGeneration) {
     s.timers.nextGeneration += 180;
     s.generation++;
-    const hh = humanClock(s).hh;
-    let act = HUMAN_ACTIVITIES[0][1];
-    for (const [h, a] of HUMAN_ACTIVITIES) if (hh >= h) act = a;
-    news(s, "generation", { n: s.generation, human: act }, ctx);
+    news(s, "generation", { n: s.generation, human: humanActivity(humanClock(s).hh) }, ctx);
   } else if (input.offline && s.time >= s.timers.nextGeneration) {
     const gens = Math.floor((s.time - s.timers.nextGeneration) / 180) + 1;
     s.generation += gens;

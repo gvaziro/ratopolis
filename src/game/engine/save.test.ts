@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { EngineCtx, GameState } from "../types";
-import { buyBuilding, click } from "./actions";
+import { buyBuilding, click, openZone } from "./actions";
 import { derive } from "./derive";
+import { onZoneOpen, sceneAction } from "./events";
 import { deserialize, exportString, importString, migrate, serialize } from "./save";
 import { createInitialState } from "./state";
 import { step, TICK } from "./step";
@@ -58,6 +59,37 @@ describe("save", () => {
     expect(m.res.crumbs).toBe(s.res.crumbs); // existing values are kept
     expect(m.rats).toBe(s.rats);
     expect(m.scene).toBeNull();
+  });
+
+  it("a save made mid-train credits the train's auto-collect share instead of dropping the loot", () => {
+    const s = createInitialState(77, 0);
+    const ctx: EngineCtx = { fx: [] };
+    for (const z of ["sewers", "cellars", "metro"] as const) {
+      openZone(s, z, ctx);
+      onZoneOpen(s, z);
+    }
+    s.flags.first_train = true;
+    s.timers.carriage = Infinity;
+    s.timers.metro_train = s.time;
+    step(s, TICK, { active: false }, ctx);
+    expect(s.scene?.id).toBe("metro_train");
+    sceneAction(s, derive(s), { a: "ready" }, ctx); // now in the catch phase
+    expect(s.scene?.phase).toBe("catch");
+    const back = deserialize(serialize(s))!;
+    expect(back.scene).toBeNull();
+    expect(back.haulLog.length).toBe(s.haulLog.length + 1);
+    const value = (g: GameState) => g.res.coins + g.res.coal + g.res.gears + g.res.crumbs + g.res.cheese;
+    expect(value(back)).toBeGreaterThan(value(s));
+  });
+
+  it("a market saved before markets had an id gets one", () => {
+    const s = createInitialState(1, 0);
+    const raw = JSON.parse(serialize(s)) as Record<string, unknown>;
+    raw.market = { until: 100, deals: [] };
+    raw.sceneSeq = 41;
+    const m = migrate(raw);
+    expect(m.market?.id).toBe(42);
+    expect(m.sceneSeq).toBe(42);
   });
 
   it("rejects garbage and round-trips the export string", () => {

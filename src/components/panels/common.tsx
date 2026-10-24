@@ -76,14 +76,7 @@ export function condHint(s: GameState, c: Cond): string {
 }
 
 /** Russian plural: plural(2, "крыса", "крысы", "крыс") → "крысы". */
-export function plural(n: number, one: string, few: string, many: string): string {
-  const a = Math.abs(Math.floor(n)) % 100;
-  const b = a % 10;
-  if (a > 10 && a < 20) return many;
-  if (b === 1) return one;
-  if (b >= 2 && b <= 4) return few;
-  return many;
-}
+export { plural } from "@/lib/format";
 
 /* ------------------------------------------------------------ 🔒 storage hints */
 
@@ -111,19 +104,29 @@ export function storageHint(s: GameState, d: Derived, r: ResId, price: number): 
   }
   const M = flat > 0 ? cap / flat : 1;
   const opts: string[] = [];
+  // a store in an already open zone that has not appeared yet (the pantry before the first cap hit)
+  let soon: BuildingId | null = null;
   for (const a of adders) {
-    if (!buildingVisible(s, a.id)) continue;
     const L = s.buildings[a.id];
     const k = Math.max(1, Math.ceil((price - cap) / (a.amt * M)));
-    if (L + k <= (BUILDINGS[a.id].maxLevel ?? Infinity)) opts.push(`«${BUILDINGS[a.id].name}» ур. ${L + k}`);
+    if (L + k > (BUILDINGS[a.id].maxLevel ?? Infinity)) continue;
+    if (buildingVisible(s, a.id)) opts.push(`«${BUILDINGS[a.id].name}» ур. ${L + k}`);
+    else if (s.zones[BUILDINGS[a.id].zone]) soon ??= a.id;
   }
   for (const m of mults) {
-    if (!buildingVisible(s, m.id)) continue;
+    if (!buildingVisible(s, m.id)) {
+      if (s.zones[BUILDINGS[m.id].zone]) soon ??= m.id;
+      continue;
+    }
     const k = Math.max(1, Math.ceil(Math.log(price / cap) / Math.log(m.m)));
     opts.push(`«${BUILDINGS[m.id].name}» ур. ${s.buildings[m.id] + k}`);
   }
   const head = `Цена ${fmt(price)} ${def.icon} выше лимита склада (${fmt(cap)}).`;
-  const body = opts.length ? ` Нужен склад: ${opts.slice(0, 3).join(" или ")}.` : " Подходящий склад откроется в новой зоне.";
+  const body = opts.length
+    ? ` Нужен склад: ${opts.slice(0, 3).join(" или ")}.`
+    : soon
+      ? ` Склад «${BUILDINGS[soon].name}» откроется: ${condHint(s, BUILDINGS[soon].unlock)}.`
+      : " Подходящий склад откроется в новой зоне.";
   return `${head}${body} Или добыча событий — ей лимит не писан.`;
 }
 

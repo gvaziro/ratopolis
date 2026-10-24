@@ -49,7 +49,7 @@ export default function MapTab() {
             on={game.autoContribute}
             onToggle={() => useGame.getState().toggleAutoContribute()}
             label="Автовзнос"
-            sub="только то, что не влезает в полный склад"
+            sub="излишки полных складов и ½ дохода безлимитных ресурсов"
           />
         }
       />

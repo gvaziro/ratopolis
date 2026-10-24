@@ -13,6 +13,8 @@ export interface OfflineReport {
   rats: number; // rats gained
   trains: number;
   trainLoot: Amounts;
+  /** The coronation happened during the absence («Автовзнос» finished express stage 10). */
+  coronated: boolean;
 }
 
 /** Wrap up any half-finished scene by auto-collect (used before offline catch-up and on load). */
@@ -40,6 +42,7 @@ export function simulateOffline(s: GameState, elapsedSec: number, ctx: EngineCtx
   const eta = d0.offline.eta;
   const before = { ...s.res };
   const ratsBefore = s.rats;
+  const crownedBefore = s.coronatedThisRun;
   const K = Math.min(600, Math.max(1, Math.ceil(t / 10)));
   const dt = t / K;
   const sink: EngineCtx = { fx: [] };
@@ -56,7 +59,16 @@ export function simulateOffline(s: GameState, elapsedSec: number, ctx: EngineCtx
     const diff = s.res[r] - before[r];
     if (Math.abs(diff) > 1e-9) gained[r] = diff;
   }
-  // keep a few headlines from the absence
-  for (const fx of sink.fx) if (fx.k === "medal" || fx.k === "zoneOpen") ctx.fx.push(fx);
-  return { elapsed: elapsedSec, simulated: t, eta, gained, rats: s.rats - ratsBefore, trains: tr.count, trainLoot };
+  // keep a few headlines from the absence (the coronation opens its overlay)
+  for (const fx of sink.fx) if (fx.k === "medal" || fx.k === "zoneOpen" || fx.k === "coronation") ctx.fx.push(fx);
+  return {
+    elapsed: elapsedSec,
+    simulated: t,
+    eta,
+    gained,
+    rats: s.rats - ratsBefore,
+    trains: tr.count,
+    trainLoot,
+    coronated: !crownedBefore && s.coronatedThisRun,
+  };
 }

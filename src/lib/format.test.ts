@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { fmt, fmtInt, fmtPct, fmtRate, fmtTime, setSciNotation } from "./format";
+import { fmt, fmtInt, fmtPct, fmtRate, fmtTime, plural, setSciNotation } from "./format";
 
 describe("fmt", () => {
   afterEach(() => setSciNotation(false));
@@ -62,5 +62,26 @@ describe("fmtTime", () => {
     expect(fmtTime((2 * 24 + 3) * 3600 + 59)).toBe("2д 3ч");
     expect(fmtTime(-5)).toBe("0с");
     expect(fmtTime(Infinity)).toBe("∞");
+  });
+});
+
+describe("plural", () => {
+  it("picks the Russian noun form for a count", () => {
+    const rats = (n: number) => `${n} ${plural(n, "крыса", "крысы", "крыс")}`;
+    expect(rats(1)).toBe("1 крыса");
+    expect(rats(2)).toBe("2 крысы");
+    expect(rats(4)).toBe("4 крысы");
+    expect(rats(5)).toBe("5 крыс");
+    expect(rats(11)).toBe("11 крыс");
+    expect(rats(12)).toBe("12 крыс");
+    expect(rats(14)).toBe("14 крыс");
+    expect(rats(21)).toBe("21 крыса");
+    expect(rats(22)).toBe("22 крысы");
+    expect(rats(25)).toBe("25 крыс");
+    expect(rats(0)).toBe("0 крыс");
+    expect(rats(111)).toBe("111 крыс");
+    expect(rats(101)).toBe("101 крыса");
+    expect(plural(-1, "a", "b", "c")).toBe("a");
+    expect(plural(2.7, "a", "b", "c")).toBe("b");
   });
 });

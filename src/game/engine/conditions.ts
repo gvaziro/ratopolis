@@ -1,4 +1,5 @@
 import type { Cond, GameState } from "../types";
+import { plural } from "../../lib/format";
 
 export function check(s: GameState, c: Cond): boolean {
   if ("always" in c) return true;
@@ -22,7 +23,7 @@ export function describeCond(c: Cond, names: (kind: string, id: string) => strin
   if ("all" in c) return c.all.map((x) => describeCond(x, names)).join(" и ");
   if ("any" in c) return c.any.map((x) => describeCond(x, names)).join(" или ");
   if ("stat" in c) return `${statName(c.stat)}: ${c.gte}`;
-  if ("rats" in c) return `${c.rats} крыс`;
+  if ("rats" in c) return `${c.rats} ${plural(c.rats, "крыса", "крысы", "крыс")}`;
   if ("building" in c) return `${names("building", c.building)} ур. ${c.gte}`;
   if ("job" in c) return `${c.gte} × ${names("job", c.job)}`;
   if ("zone" in c) return `открыть зону «${names("zone", c.zone)}»`;

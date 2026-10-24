@@ -4,7 +4,7 @@ import type { CatchResult, EngineCtx, GameState, Scene, SceneEventId } from "../
 import { openZone } from "./actions";
 import { stun } from "./core";
 import { derive, eventValue, stunnedRats } from "./derive";
-import { buildTrain, onZoneOpen, sceneAction } from "./events";
+import { buildTrain, clickPurse, onZoneOpen, sceneAction } from "./events";
 import { createInitialState } from "./state";
 import { step, TICK } from "./step";
 
@@ -112,6 +112,109 @@ describe("train reward (GDD 8.2.7)", () => {
     const royal = share([0, 1, 2, 3, 4, 5]);
     expect(royal.rating).toBe("royal");
     expect(royal.ratingBonus).toBeCloseTo(0.35, 9);
+  });
+});
+
+describe("train drops", () => {
+  it("💍 drop from metro 1st-class/baggage cars before the first one is owned (the Terminal costs 💍 5)", () => {
+    const s = metroState(13);
+    expect(s.resEver.trinkets).toBe(0);
+    const d = derive(s);
+    let fromCars = 0;
+    let firstCars = 0;
+    for (let i = 0; i < 60; i++) {
+      const sc = buildTrain(s, d, "metro_train");
+      for (const it of sc.items) {
+        if (it.spark || it.res !== "trinkets") continue;
+        const kind = sc.cars[it.car].kind;
+        expect(kind === "first" || kind === "baggage", kind).toBe(true);
+        fromCars++;
+        if (kind === "first") firstCars++;
+      }
+    }
+    expect(fromCars).toBeGreaterThan(0);
+    expect(firstCars).toBeGreaterThan(0);
+  });
+});
+
+describe("background events under a scene", () => {
+  /** A carriage close-up covering the colony, with nothing else due. */
+  function underCarriage(): GameState {
+    const s = metroState(17);
+    s.timers.metro_train = Infinity;
+    s.timers.market = Infinity;
+    s.timers.shiny = Infinity;
+    s.timers.purse = Infinity;
+    s.timers.carriage = s.time;
+    step(s, TICK, { active: false }, { fx: [] });
+    expect(s.scene?.id).toBe("carriage");
+    return s;
+  }
+
+  it("purse, shinies and the market keep their remaining life while a scene runs", () => {
+    const s = underCarriage();
+    s.purse = { x: 0.5, y: 0.5, until: s.time + 1 };
+    s.shinies = [{ id: 999, x: 0.5, y: 0.5, res: "coins", until: s.time + 1 }];
+    s.market = { id: 998, until: s.time + 1, deals: [] };
+    for (let i = 0; i < 20; i++) step(s, TICK, { active: false }, { fx: [] });
+    expect(s.scene).not.toBeNull();
+    expect(s.purse?.until).toBeCloseTo(s.time + 1, 6);
+    expect(s.shinies.map((x) => x.id)).toEqual([999]);
+    expect(s.market?.id).toBe(998);
+    expect(s.market!.until - s.time).toBeCloseTo(1, 6);
+  });
+
+  it("no purse or shiny spawns under a scene; the overdue ones appear right after it", () => {
+    const s = underCarriage();
+    s.timers.purse = s.time;
+    s.timers.shiny = s.time;
+    let guard = 0;
+    while (s.scene && guard++ < 2000) {
+      step(s, TICK, { active: false }, { fx: [] });
+      if (s.scene) {
+        expect(s.purse).toBeNull();
+        expect(s.shinies).toEqual([]);
+      }
+    }
+    expect(s.scene).toBeNull();
+    step(s, TICK, { active: false }, { fx: [] });
+    expect(s.purse).not.toBeNull();
+    expect(s.purse!.until - s.time).toBeGreaterThan(11);
+    expect(s.shinies.length).toBe(1);
+  });
+
+  it("a newly opened market gets a stable id", () => {
+    const s = metroState(19);
+    s.timers.market = s.time;
+    for (const r of ["coins", "buttons", "wire"] as const) {
+      s.res[r] = 5000;
+      s.resEver[r] = 5000;
+    }
+    step(s, TICK, { active: false }, { fx: [] });
+    expect(s.market).not.toBeNull();
+    expect(s.market!.id).toBe(s.sceneSeq);
+  });
+});
+
+describe("purse", () => {
+  it("the Пир and Шальная лапа toasts say what the buff does and for how long", () => {
+    const seen = new Set<string>();
+    for (let seed = 1; seed < 200 && seen.size < 2; seed++) {
+      const s = metroState(seed);
+      s.purse = { x: 0.5, y: 0.5, until: s.time + 10 };
+      const ctx: EngineCtx = { fx: [] };
+      clickPurse(s, derive(s), ctx);
+      const text = ctx.fx.find((f) => f.k === "toast")?.text ?? "";
+      if (s.buffs.feastUntil > s.time) {
+        expect(text).toContain("×5 на 30 с");
+        seen.add("feast");
+      }
+      if (s.buffs.luckyPawUntil > s.time) {
+        expect(text).toContain("×15 на 12 с");
+        seen.add("paw");
+      }
+    }
+    expect(seen.size).toBe(2);
   });
 });
 

@@ -166,7 +166,8 @@ export const RESOURCES: Record<ResId, ResourceDef> = {
     floor: 0,
     excludeGlobal: true,
     color: "#f5a3ff",
-    reveal: { resEver: "trinkets", gte: 0.01 },
+    // from the Metro on: 1st-class and baggage cars must be able to drop the first 💍 (the Terminal costs 💍 5)
+    reveal: { any: [{ zone: "metro" }, { resEver: "trinkets", gte: 0.01 }] },
     desc: "Карманные часы, кольца, запонки. Сокровища аристократии. Не получают глобальных множителей.",
   },
 };

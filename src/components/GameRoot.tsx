@@ -31,6 +31,14 @@ export default function GameRoot() {
   const shakeRef = useScreenShake();
   const sci = useGame((s) => s.game.settings.sciNotation);
   useEffect(() => setSciNotation(sci), [sci]);
+  // init() keeps the fx of the absence (medals, zone banners, coronation) until there is someone to hear them:
+  // in the commit that mounts the layout, every child's onFx subscription runs before this effect
+  useEffect(() => {
+    if (ready) useGame.getState().flushInitFx();
+  }, [ready]);
+  // a new run remounts the HUD and the colony, so their first-mount snapshots (built chambers, open zones,
+  // shown resources) are taken afresh and the build/reveal animations play in every run
+  const runKey = useGame((s) => s.game.meta.migrations);
 
   if (!ready) {
     return (
@@ -44,10 +52,10 @@ export default function GameRoot() {
     <div ref={shakeRef} className="flex h-dvh flex-col overflow-hidden">
       <Header />
       <SkyStrip />
-      <ResourceBar />
+      <ResourceBar key={runKey} />
       <main className="relative grid min-h-0 flex-1 grid-rows-[55fr_45fr] md:grid-cols-[minmax(0,1fr)_400px] md:grid-rows-1 xl:grid-cols-[minmax(0,1fr)_460px]">
         <section className="relative min-h-0 min-w-0 overflow-hidden">
-          <ColonyView />
+          <ColonyView key={runKey} />
           <SceneHost />
         </section>
         <aside className="relative min-h-0 min-w-0 border-t border-line md:border-l md:border-t-0">

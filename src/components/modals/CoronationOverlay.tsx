@@ -4,7 +4,8 @@
  * Coronation (GDD 13.32): the finished Rat Express runs through all five zone bands collecting rats while the
  * bell strikes twelve, gears and buttons rain down, then the Rat King's portrait gets its crown and the line
  * «Для людей это один вторник. Для крыс — целая история.» Opens on the engine fx "coronation"
- * (the AudioDirector plays sfx.coronationBells()); `?coronation` in the URL opens it on mount for testing.
+ * (the AudioDirector plays sfx.coronationBells()), or after the offline report when it says `coronated`;
+ * `?coronation` in the URL opens it on mount for testing.
  * Reduced motion → a static tableau with the card shown at once.
  */
 import { memo, useCallback, useEffect, useId, useRef, useState } from "react";
@@ -15,7 +16,7 @@ import { BrassButton, Rivets } from "@/components/ui/kit";
 import { ZONE_ORDER, ZONES } from "@/game/data/zones";
 import { onFx } from "@/game/fx";
 import { useGame } from "@/game/store";
-import { fmtInt } from "@/lib/format";
+import { fmtInt, plural } from "@/lib/format";
 
 const LINE = "Для людей это один вторник. Для крыс — целая история.";
 const BELLS = 12;
@@ -34,15 +35,35 @@ export default function CoronationOverlay() {
   const [run, setRun] = useState(dev ? 1 : 0);
   const [open, setOpen] = useState(dev);
 
-  useEffect(
-    () =>
-      onFx((fx) => {
-        if (fx.k !== "coronation") return;
-        setRun((n) => n + 1);
-        setOpen(true);
-      }),
-    [],
-  );
+  // A coronation finished while away («Автовзнос», offline catch-up) arrives together with the offline report:
+  // it waits until the report is closed instead of playing hidden under it, and opens once, however it is learned
+  // of (the report's `coronated`, the fx, or both).
+  useEffect(() => {
+    let pending = !!useGame.getState().offlineReport?.coronated;
+    const show = () => {
+      pending = false;
+      setRun((n) => n + 1);
+      setOpen(true);
+    };
+    const offStore = useGame.subscribe((st, prev) => {
+      if (st.offlineReport === prev.offlineReport) return;
+      if (st.offlineReport?.coronated) pending = true;
+      else if (!st.offlineReport && pending) {
+        show();
+        // the AudioDirector rang on the fx, under the report (or still muted before the first gesture)
+        sfx.coronationBells();
+      }
+    });
+    const offFx = onFx((fx) => {
+      if (fx.k !== "coronation") return;
+      if (useGame.getState().offlineReport) pending = true;
+      else show();
+    });
+    return () => {
+      offStore();
+      offFx();
+    };
+  }, []);
 
   // dev hook: no engine fx fired, so ring the bells ourselves (audible only after a user gesture)
   useEffect(() => {
@@ -361,7 +382,7 @@ function Celebration({ onClose }: { onClose: () => void }) {
               {typed < LINE.length && <span className="text-brass">▍</span>}
               {typed >= LINE.length && "»"}
             </p>
-            <p className="mt-1 text-xs text-parchment-dim">На борту экспресса — вся колония: {fmtInt(rats)} хвостов.</p>
+            <p className="mt-1 text-xs text-parchment-dim">На борту экспресса — вся колония: {fmtInt(rats)} {rats < 1000 ? plural(rats, "хвост", "хвоста", "хвостов") : "хвостов"}.</p>
             {showButton && (
               <BrassButton
                 data-hail

@@ -1,6 +1,7 @@
 import { CONVERTERS, JOBS } from "../data/jobs";
 import { RESOURCES } from "../data/resources";
 import { BUILDING_IDS, JOB_IDS, RES_IDS, type EngineCtx, type GameState, type ResId, type TickInput } from "../types";
+import { autoContributeUncapped } from "./actions";
 import { award, gain, newbornJob, news, normalizeJobs, toast } from "./core";
 import { resMult, stunnedRats, type Derived } from "./derive";
 import { entries } from "./formulas";
@@ -19,7 +20,8 @@ export function tickEconomy(s: GameState, d: Derived, dt: number, input: TickInp
   const workforce = s.rats > 0 ? 1 - stunnedRats(s) / s.rats : 1;
 
   const gross = zeroRes(); // actual passive production per second (with temp mult)
-  const grossNoTemp = zeroRes(); // for EMA (event values)
+  // for EMA (event values): the online-equivalent rate, without η — offline train loot applies η once itself
+  const grossNoTemp = zeroRes();
 
   // ---- 1. plain producers: jobs without inputs + buildings
   const base = zeroRes();
@@ -38,7 +40,7 @@ export function tickEconomy(s: GameState, d: Derived, dt: number, input: TickInp
     if (base[r] <= 0) continue;
     const perSec = base[r] * resMult(s, d, r, true) * eta;
     gross[r] += perSec;
-    grossNoTemp[r] += base[r] * resMult(s, d, r, false) * eta;
+    grossNoTemp[r] += base[r] * resMult(s, d, r, false);
     gain(s, d, r, perSec * dt, false, ctx);
   }
 
@@ -69,7 +71,7 @@ export function tickEconomy(s: GameState, d: Derived, dt: number, input: TickInp
       for (const [r, amt] of outs) {
         gain(s, d, r, amt * e, false, ctx);
         gross[r] += (amt * e) / dt;
-        grossNoTemp[r] += (amt * e) / dt / (RESOURCES[r].excludeGlobal ? 1 : d.temp);
+        grossNoTemp[r] += (amt * e) / dt / (RESOURCES[r].excludeGlobal ? 1 : d.temp) / eta; // rate includes η
       }
     }
     const prev = s.convEff[j] ?? e;
@@ -136,6 +138,9 @@ export function tickEconomy(s: GameState, d: Derived, dt: number, input: TickInp
     if (s.rats >= d.housing) s.birthProgress = Math.min(s.birthProgress, 0.999);
   }
   normalizeJobs(s, d);
+
+  // ---- «Автовзнос» of uncapped resources: half of this tick's gain, before the rates are measured
+  if (s.autoContribute) autoContributeUncapped(s, d, before);
 
   // ---- 6. stats: rates, gross, EMA30
   const kEma = 1 - Math.exp(-dt / 30);
