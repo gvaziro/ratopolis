@@ -1,0 +1,653 @@
+{
+ "roadmapMarkdown": "## v3: Игра, которую понимают с первой минуты и не бросают после пятой коронации\n\nПосле v2 игра цельная: экономика ровная, поезда стали решениями, у меты есть ранги, печати и поручения. Восемь аудитов показали, где она всё ещё недодаёт. Новичок, который слушается подсказок, открывает Канализацию на 22-й минуте вместо 11-й и не видит поезда метро в первый час. Старейшина советует копить лишние крошки, а виджет целей показывает «≈ 1e+25д». Коронацию можно получить быстрее без переселения, и подсказка игры ведёт по худшему пути. Поздние этапы экспресса ждут 💍 и 📜, которые не растут от престижа (K3). Пар не бывает в дефиците (K4). Пассивный игрок 6 минут ждёт новую цель (K5). Сцены идут дальше под коронацией (K1), стук паровоза не возвращается после паузы (K2), а альбомный телефон ловить поезд не даёт (K7). Ещё есть фриз на 1–2 с при возврате во вкладку поздней игры, гул поезда, который сжимает весь микс на 6–7 дБ, и репозиторий без CI. Задача v3: понятный первый час, честные развилки, новые причины играть после 4-го забега (Кунсткамера, карта Лондона), сцены, которые нельзя потерять, телефон в обеих ориентациях, звук с музыкой и голосами, и репозиторий с CI, e2e-скриншотами и публичной сборкой. Сначала идёт движок и данные (этап 1, он же отдаёт API), затем параллельно сцены, колония, панели, оболочка, звук и репозиторий (этап 2). Измеримые цели: новичок открывает Канализацию ≤ 15 мин, Подвалы ≤ 40, Метро ≤ 70 (сиды 12345 и 777). Коронация за 2.5–3.5 ч, без переселения её нет. Разрывы этапов 7→8 и 8→9 ≤ 6:00, пар реально в дефиците в забеге 2, пассивный разрыв целей ≤ 4:00. Ни одна сцена не идёт под церемонией или при скрытой вкладке ≤ 60 с, `simulateOffline(8 ч)` ≤ 0.9 с, `npm test` < 20 с, CI зелёный, есть скриншоты 375 px и альбомного телефона.\n\n### J1. Первый час: мозги (движок)\n- [ ] **ENG-1** Цели и Старейшина 2.0 — P0. Подсказки ведут крыс к узкому месту текущей цели: пустые мастерские, перевод собирателей в карманники, жильё не всегда важнее. Новорождённые сами идут туда, где их ждёт экспедиция, пока игрок не выберет звезду. Чинятся «склад ур. 29» и «≈ 1e+25д».\n- [ ] **ENG-2** Симулятор 2.0 — P0. Добавляется бот-новичок, который слушается только подсказок, медианы по нескольким прогонам вместо одной случайной выборки, строки «что держит этап», долгий прогон на 8 забегов и параллельная матрица сидов с базовой линией. Вокзал во 2-м забеге (K6) судится по медиане.\n\n### J2. Темп и честные развилки (движок)\n- [ ] **ENG-3** Темп экспресса и меты — P0. Чертёж экспресса выдаётся только после первого переселения. У 💍 и 📜 свой рост этапов (K3). Разведчики считают долю по ценности и выходят на 90% (K5). Вагоны дают честные ×1.1, все 10 грамот работают, невыполнимое поручение уходит из пула.\n- [ ] **ENG-4** Пар как бюджет — P0. У котла максимум 12 уровней, появляется клапан приоритета «заводу / прессам» и разбор бюджета пара на манометре. Решение про пар становится настоящим (K4).\n- [ ] **ENG-8** Настоящие решения — P1. Подозрение выше 50 снижает добычу поездов («Бдительность»). Офлайн-КПД не выше 100%. Печати Династии и Тишины и ранги II/III бьют в 📜/💍. Авария на шпалах стоит половины автосбора, и лучшая позиция бригады зависит от поезда.\n- [ ] **ENG-13** Итоговая сверка баланса v3 — P0. Все изменения вместе проверяются на сидах 12345, 777, 1, 2, 3, результаты записываются в GDD.\n\n### J3. Поезда и события (движок)\n- [ ] **ENG-5** Поезда не теряются — P0. Короткий alt-tab ставит сцену на паузу, поезд, пришедший за это время, получает «К путям!», между поездами есть передышка 35 с. Есть единый признак удержания `isHeld` для K1.\n- [ ] **ENG-9** События — P1. Первый экипаж становится уроком ловли, реплика человека решает добычу. После Метро экипаж сыплет добычу у решётки и не перекрывает экран. Добавляются «Цирк Сэнгера», туман «Гороховый суп», контрудар коту и «Гул из глубины» на 7-й минуте.\n\n### J4. Мета и содержание (движок)\n- [ ] **ENG-10** «Кунсткамера Короля» — P1. 24 редких экспоната от героев-людей падают из поездов и событий. Собранный набор даёт перк.\n- [ ] **ENG-11** Лондон на выбор и слова для повторных забегов — P1. 12 районов, после переселения выбор из двух соседних, исправлен облик районов с 6-го. Свои строки этапов и коронаций для повторов, правки текста.\n\n### J5. Надёжность и контракт (движок)\n- [ ] **ENG-6** Производительность — P0. Инкрементальный `smartAssign` убирает фриз 1–2 с при загрузке. Клон состояния без `structuredClone` и общие поддеревья, поэтому сцены не перерисовываются 10 раз в секунду.\n- [ ] **ENG-7** Сохранения и тесты — P1. Настоящие сохранения-эталоны, реестр миграций по версиям, общий тест-кит, медленный тест вынесен отдельно, мета-числа живут в одном месте.\n- [ ] **ENG-12** Контракт интерфейса v3 — P0. Новые настройки звука, `sfx3`-сигналы, структурные тосты открытий, режим раскладки телефона, кнопка «Назад» закрывает оверлей, dev-ручка для e2e, раздел «v3 UI contract» в ARCHITECTURE.\n\n### J6. Сцены\n- [ ] **SCN-1** Единые часы сцен с паузой — P0. Под церемонией, при падении, при проблеме сохранения и в скрытой вкладке ловля, кучи, кот и крысолов стоят. Тряски нет (K1).\n- [ ] **SCN-2** Проход поезда — P1. Бригада крыс держит брезент на рельсах, и видно, насколько велики колёса. Авария, цирковые отскоки, туман и экспонаты на холсте.\n- [ ] **SCN-3** Улов — P1. Чеканная медаль 🥉🥈🥇👑 вместо эмодзи, трещотка одометра и своя звуковая концовка у каждого рейтинга, плашка варианта поезда.\n- [ ] **SCN-4** Опасности и экипаж — P1. Коту отвечают контрударом в ритм его выпадов, вместо долбёжки. Первый экипаж предупреждает «Цок-цок…», копыта звучат копытами, у великанов есть голос.\n- [ ] **SCN-5** Сцены с клавиатуры и на телефоне — P1. Фокус переходит в сцену и не теряется между фазами, фон инертен. «У крысы две лапы», полный набор клавиш. Альбомный телефон получает полноэкранную ловлю, лавка Бенедикта помещается на телефоне.\n\n### J7. Колония\n- [ ] **COL-1** Первый кадр — P0. Старейшина у решётки, мусор, который проваливается при каждом клике, непрокопанные ниши, тёплый газовый свет, кольцо фокуса на решётке, «Гул из глубины».\n- [ ] **COL-2** «Цели колонии» 2.0 — P0. «Выгодно сейчас: … ≈ на N мин ближе», «склад полон — внесите», компактный вид, который не закрывает камеры, цели после коронации, читаемые подписи на телефоне.\n- [ ] **COL-3** Интерьеры камер и живые крысы — P1. Задние стены и лампы по зонам, свой декор зоны на 25-м и 50-м уровнях вместо одинаковых флажков, крысы за мебелью, походка.\n- [ ] **COL-4** Мир празднует — P2. Крысиный экспресс собирается на перроне Вокзала, зона открывается загорающимися огнями, у крупной покупки есть тег «+10».\n\n### J8. Панели\n- [ ] **PAN-1** Работы, доска и пар — P0. Бейдж «авто» у звезды, человеческие слова вместо «🪙-экв» и «η», клапан пара, доска «Запах еды 3/10», шторка свёрнута до бродяжек.\n- [ ] **PAN-2** Переселение и Кунсткамера — P1. Карта Лондона с маршрутом и выбор района, честный бонус экспресса, витрина экспонатов, читаемые медали.\n- [ ] **PAN-3** Миниатюры и шторка — P1. В карточках и работах нарисованные камеры и крысы вместо эмодзи, кнопки ×1/×10 в ручке шторки, ≥ 3 карточки на половине экрана.\n\n### J9. Оболочка, телефон, доступность\n- [ ] **SHL-1** Поток уведомлений — P0. Короткие тосты открытий, ничего поверх сцены, ранние медали объединяются в один тост, на телефоне тосты занимают ≤ 38% колонии.\n- [ ] **SHL-2** Коронация ждёт конца сцены — P0. Повторная коронация показывает финальную карточку сразу (K1).\n- [ ] **SHL-3** Телефон по-настоящему — P0. Визуальная проверка 375, 320, альбомной ориентации и планшета, короткий режим высоты, безопасные зоны, масштаб текста доходит до оверлеев (K7).\n- [ ] **SHL-4** Доступность и ввод — P1. Видимое кольцо фокуса, зоны касания 40 px, имена ресурсов для скринридеров, неподвижная строка новостей при «Меньше движения», единый выключатель декоративного движения, панель разработчика убрана к краю.\n- [ ] **SHL-5** Нарисованные значки и небо — P1. 12 значков ресурсов в стиле колонии, небо повторяет реплику и вариант сцены, эпилог «Город Наверху».\n- [ ] **SHL-6** Настройки звука, статическая сборка, офлайн — P1. Четыре ползунка, `src/app`, готовый к статическому экспорту, service worker, dev-галерея арта.\n\n### J10. Звук\n- [ ] **AUD-1** Микс, пауза звука и тестовый стенд — P0. Гул поезда больше не сжимает ловлю, есть пауза под церемониями, стук паровоза возвращается после остановки (K2), офлайн-рендер с таблицей громкостей в тестах.\n- [ ] **AUD-2** Масштаб в звуке — P1. Шаги великанов слышны на телефоне, бормотание людей и писк крыс, звуки немых событий, часы тянутся без пара, клапан шипит при лишнем паре.\n- [ ] **AUD-3** Музыка и микшер — P1. Генеративный вальс шкатулки и шарманки с мотивом своего района, отдельные «Громкость / Эффекты / Фон / Музыка», устойчивость на iOS.\n- [ ] **AUD-4** Звуковая полировка — P2. Свой гудок у каждого варианта поезда, мягкая капсула, блипы в соль мажоре, меньше писка, слой «Наверху».\n\n### J11. Репозиторий\n- [ ] **REP-1** CI и быстрые тесты — P0. GitHub Actions (типы, линт, тесты, сборка), ночной прогон баланса, `npm test` < 20 с.\n- [ ] **REP-2** Playwright: смоук и скриншоты — P0. Сценарий на 1440×900, 375×812, 320×640 и 812×375 проверяет переполнение, доступность решётки и ошибки консоли, скриншоты сохраняются (K7).\n- [ ] **REP-3** Публичная сборка и README — P1. Статический экспорт, деплой на GitHub Pages по флагу, README со скриншотами и ссылкой «Играть», CONTRIBUTING и шаблон баг-репорта.",
+ "packages": [
+  {
+   "key": "engine",
+   "title": "Engine, data, balance and the v3 UI contract",
+   "stage": 1,
+   "owns": [
+    "src/game/engine/**",
+    "src/game/data/**",
+    "src/game/types.ts",
+    "src/game/store.ts",
+    "src/game/useGameLoop.ts",
+    "src/game/useSampled.ts",
+    "src/game/fx.ts",
+    "src/game/**/*.test.ts",
+    "src/lib/**",
+    "scripts/**",
+    "docs/GDD.md",
+    "docs/ARCHITECTURE.md"
+   ],
+   "brief": "Goals: implement every engine/data/balance part of v3 (ENG-1..ENG-13) and export the APIs stage-2 packages consume, then prove the balance on seeds 12345, 777, 1, 2, 3. Order: ENG-12 contract scaffolding and ENG-6/ENG-7 (perf, saves, test kit) first, then ENG-1/ENG-2 (goals + sim tooling, so later balance work is measurable), ENG-3/ENG-4/ENG-5/ENG-8, content ENG-9/ENG-10/ENG-11, and ENG-13 last.\nHard rules: edit only the owned paths; never edit src/components/**, src/audio/** or src/app/**. Keep the existing UI compiling and behaving: additions only, no removal or renaming of exported symbols the UI imports; union additions must not break exhaustive Records in components (SfxCue is mapped exhaustively in src/audio/cues.ts — new sounds go through the new SfxCue3/'sfx3' UiFx; for train variants add data fields the UI already reads). Every new state field gets a default in state.ts, mergeDefaults handling, a MIGRATIONS step when a shape changes, and a save.test.ts case; bump SCHEMA_VERSION once for v3. Engine stays pure and deterministic: new randomness in scene builds uses hashes of scene seq, not extra draws from the sim RNG, unless the item says otherwise. tsc --noEmit, eslint and vitest must pass; the default 3-run sim output must stay comparable (document intentional changes). Do not start a dev server (one runs at :3000); browser use is not needed. Update docs/GDD.md (numbers, new tables §15.14 Новичок, §15.16 Итог v3) and docs/ARCHITECTURE.md ('v3 UI contract' listing every new API with types and semantics).\nContract provided (names are binding for stage 2): goals.ts {potentialRate, projectBottleneck, expeditionBottleneck, expressBottleneck, currentProject, buildNowPick, ETA_LONG_SEC}; newbornTarget(s,d); HintAction 'assign'; flags focus_manual/first_rumble/first_carriage; s.steamPriority, setSteamPriority, steamBudget; isHeld(st) in store.ts; holdCredit/creditShortHold; scene.crash, crashChance, expectedAuto, CREW_POSITIONS; vigilance and HaulSummary.vigilance; TRAIN_VARIANTS circus (bounces/restitution/launchMul) and fog (fog: true), fogActive; catLungeAt, CAT_COUNTER_WINDOW, cat SceneAction perfect; carriage 'warn' phase + scene.tutorial; Shiny.kind/amt; s.carriagePass; Fx deepRumble; metroTeaser; CURIOS, CurioId, curioSets, CatchItem.curio, HaulSummary.curio, Fx curio; districts: DISTRICTS, districtInfo(meta), migrationPreview().options, migrate(to?); metaMath {expressBonusPct, crownPctPer, crownBonusMult, charterMult}; charterAtCap; settings.sfxVolume/music; fx.ts SfxCue3 + UiFx 'sfx3' + sfxCue3(); UiFx unlock items icon/name/desc; src/lib/layoutMode.ts {PHONE_MQ, SHORT_MQ, usePhoneLayout, useShortLayout, isPhoneLayout}; src/lib/useBackCloses.ts; window.__rr in production with ?dev; fmtTime '> 4 д'. Also creates src/game/data/reachability.slow.test.ts and scripts/sim-matrix.ts and scripts/balance-baseline.json for the repo package."
+  },
+  {
+   "key": "scenes",
+   "title": "Close-up scenes: pause clock, train pass, haul card, hazards, keyboard and phone",
+   "stage": 2,
+   "owns": [
+    "src/components/scenes/**"
+   ],
+   "brief": "Goals: SCN-1..SCN-5 — no scene runs while held (K1), a crew and tarp that sell the scale, the crew-position gamble, circus/fog/curio rendering, a struck medal with a sound ladder, cat counters, the first-carriage tutorial, full keyboard play, inert background and landscape full-screen on phones. Hard rules: edit only src/components/scenes/** (new *.test.ts files for pure helpers may live here); read-only imports from colony (RatBody), src/lib and the engine are fine; consume engine APIs exactly as documented in docs/ARCHITECTURE.md 'v3 UI contract' (isHeld, crashChance/expectedAuto, scene.crash, TRAIN_VARIANTS bounces/fog, catLungeAt, CAT_COUNTER_WINDOW, scene.tutorial, HaulSummary.curio/vigilance, sfxCue3, usePhoneLayout/useShortLayout, useBackCloses). Use only existing sfx/sfxCue members or sfxCue3 for sounds (the audio package implements sfx3 in parallel). New decorative loops carry data-decor. Respect reduced motion. tsc, eslint and vitest must pass; the 216+ tests stay green. If you use the browser: ToolSearch 'mcp__Claude_Browser__' max_results 64, preview_start {url:'http://localhost:3000/?slot=v3-scenes'}, only your tab, close it when done; drive via window.__rr (devTrigger, devGive, scene()). Do not start another server."
+  },
+  {
+   "key": "colony",
+   "title": "Colony world: first frame, goals widget, chamber interiors, celebrations",
+   "stage": 2,
+   "owns": [
+    "src/components/colony/**",
+    "src/components/fx/**"
+   ],
+   "brief": "Goals: COL-1..COL-4 — an inviting first frame (elder at the grate, litter, dig sites, warm light, visible focus ring, deep rumble), «Цели колонии» 2.0 built on engine goals.ts, legible phone colony, lit zone interiors with rats behind furniture and a walk cycle, the express assembling on the Terminal platform and zones opening with lights. Hard rules: edit only src/components/colony/** and src/components/fx/** (new pure-helper tests allowed there); read-only import of panels/Locomotive default export is allowed; consume engine APIs from the 'v3 UI contract' (buildNowPick, projectBottleneck, currentProject, ETA_LONG_SEC, steamBudget, commissionProgress, Fx deepRumble, Shiny.kind, useBackCloses, usePhoneLayout). Keep the CO-1 performance budget (culling, no per-frame React renders) and the PA-1 render budget. New decorative loops carry data-decor and pause under reduced motion. tsc, eslint, vitest pass. Browser (optional): own tab http://localhost:3000/?slot=v3-colony via preview_start, only that tab, close when done; screenshots at 1440×900 and 375×812 for the acceptance checks."
+  },
+  {
+   "key": "panels",
+   "title": "Side panels: jobs, board, steam valve, migration map, Kunstkamera, thumbnails, phone sheet",
+   "stage": 2,
+   "owns": [
+    "src/components/panels/** (except SettingsTab.tsx)"
+   ],
+   "brief": "Goals: PAN-1..PAN-3 — the auto newborn focus made visible, plain words instead of jargon, the steam priority valve, a concrete 0/10 first goal on the boarded office, the sheet collapsed until vagrants on phones, a London map with district choice, the Kunstkamera showcase, honest express numbers, legible medals, drawn thumbnails and a denser phone sheet. Hard rules: edit only src/components/panels/** except SettingsTab.tsx (new *.test.ts allowed there); read-only imports from colony (BuildingArt, RatBody, Defs) are fine; consume 'v3 UI contract' APIs (newbornTarget, setSteamPriority/steamBudget, districtInfo/migrationPreview().options/migrate(to), curioSets/CURIOS, expressBonusPct, metroTeaser, describeCond, UiFx unlock icon/name/desc, usePhoneLayout, useBackCloses). Keep PA-1 (<= 45 panel renders per tick). No horizontal scroll at 375 px. tsc, eslint, vitest pass. Browser (optional): own tab http://localhost:3000/?slot=v3-panels, close when done."
+  },
+  {
+   "key": "shell",
+   "title": "Shell, layout, modals, accessibility, HUD art, settings and app",
+   "stage": 2,
+   "owns": [
+    "src/components/layout/**",
+    "src/components/modals/**",
+    "src/components/dev/**",
+    "src/components/panels/SettingsTab.tsx",
+    "src/components/GameRoot.tsx",
+    "src/components/GameClient.tsx",
+    "src/components/useHotkeys.ts",
+    "src/components/CrashScreen.tsx",
+    "src/components/ui/**",
+    "src/app/**",
+    "public/**"
+   ],
+   "brief": "Goals: SHL-1..SHL-6 — notification flood control, a coronation that waits for the scene, a phone layout verified visually at 375/320/landscape/tablet (K7) with short-viewport mode and safe areas, global focus rings and touch targets, named resource pills, one motion switch (data-decor), drawn resource glyphs, a sky strip that follows the scene and the «Город Наверху» epilogue, four sound sliders, a static-export-ready src/app, a service worker and a dev art gallery. Hard rules: edit only the owned paths (new *.test.ts allowed there); read node_modules/next/dist/docs before touching src/app (AGENTS.md); consume 'v3 UI contract' APIs (isHeld, charterAtCap, usePhoneLayout/useShortLayout, useBackCloses, settings.sfxVolume/music, UiFx unlock icon/name/desc, s.carriagePass, scene.line/variant). Provide to others: the .hit-slop utility, the '@custom-variant short', html[data-motion] with the [data-decor] rule, and the root ResGlyph symbol defs. Keep desktop layout unchanged except intended fixes. tsc, eslint, vitest and 'npm run build' pass. Browser is expected for SHL-3: ToolSearch 'mcp__Claude_Browser__' max_results 64, preview_start {url:'http://localhost:3000/?slot=v3-shell'}, resize_window only on your tab, screenshots at 375×812, 320×640, 812×375, 768×1024 and 1440×900; never start another server; close your tab when done; report defects found in other packages' files rather than editing them."
+  },
+  {
+   "key": "audio",
+   "title": "Audio: mix, hold gate, voices, music, mixer, polish",
+   "stage": 2,
+   "owns": [
+    "src/audio/**",
+    "src/components/AudioDirector.tsx"
+   ],
+   "brief": "Goals: AUD-1..AUD-4 — the train rumble no longer pumps the catch, audio pauses under ceremonies and halts and the chuff resumes (K2), an offline render bench with loudness regression tests, giant impacts audible on phones, giant and rat voices, sounds for silent events, the steam economy audible, generative district music and a real mixer, then polish. Hard rules: edit only src/audio/** and src/components/AudioDirector.tsx (new *.test.ts and src/audio/testing/** allowed); consume 'v3 UI contract' APIs: isHeld (store.ts), settings.sfxVolume/music/volume/ambience, UiFx 'sfx3' with SfxCue3 (implement all members: giantVoice, ratChatter, coachman, hoof, curio, counter, growl), Fx deepRumble and curio, game.scene.variant, s.steamEff and derived caps. Do not change the SfxCue union (engine-owned). Keep the existing high-frequency fatigue controls; all new loops are throttled; MAX_VOICES respected. tsc, eslint, vitest pass (audio tests < 20 s). Listening checks may use your own browser tab http://localhost:3000/?slot=v3-audio and window.__rrAudio; close it when done."
+  },
+  {
+   "key": "repo",
+   "title": "Repository health: CI, e2e screenshots, public build, README",
+   "stage": 2,
+   "owns": [
+    ".github/**",
+    "README.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "next.config.ts",
+    "package.json",
+    "package-lock.json",
+    "eslint.config.mjs",
+    "vitest.config.ts",
+    ".nvmrc",
+    ".gitignore",
+    "playwright.config.ts",
+    "e2e/**",
+    "docs/screenshots/**"
+   ],
+   "brief": "Goals: REP-1..REP-3 — CI on every push/PR (typecheck, lint, fast tests, build, build:static, e2e), a nightly balance job using the engine's sim and sim-matrix, npm test under 20 s by excluding *.slow.test.ts unless SLOW, a Playwright smoke + screenshot suite at 1440×900, 375×812, 320×640 and 812×375 (K7), static export with an opt-in Pages deploy (vars.DEPLOY_PAGES), and a README front door with screenshots. Hard rules: edit only the owned paths; read node_modules/next/dist/docs before changing next.config.ts; do not add a LICENSE file (owner's decision — note it in README); the e2e web server runs on port 3100 from a production build, never on the developer's :3000; drive the game via window.__rr which the engine exposes in production with ?dev. Engine stage 1 already created src/game/data/reachability.slow.test.ts, scripts/sim-matrix.ts and scripts/balance-baseline.json. If an e2e assertion fails because another stage-2 package's item is not merged yet, mark it test.fixme with that item id. 'npm run build', tsc, eslint and vitest must pass."
+  }
+ ],
+ "items": [
+  {
+   "id": "ENG-1",
+   "title": "Goals brain and Elder 2.0: hints steer rats to the current goal, auto newborn focus, sane storage advice and ETAs",
+   "priority": "P0",
+   "package": "engine",
+   "from": [
+    "firsthour-1",
+    "firsthour-3",
+    "firsthour-4",
+    "firsthour-5",
+    "firsthour-7"
+   ],
+   "spec": "Why: a newcomer who follows hints opens the Sewers at 22 min (GDD 11), at minute 45 has 48 foragers and 0 mechanics; the housing hint fires 340-413 times; storage advice points at a store that is itself cap-locked ('🔒 Кладовка ур. 16/17/29'); goal ETAs show '1.0100706197823662e+25д' because they divide by the net rate, which is ~0 at a full store.\n\n(A) New src/game/engine/goals.ts (pure):\n- potentialRate(s,d,r): number. Per-second production of r IGNORING storage caps (buildings + jobs + converters at current steamEff; for crumbs subtract food upkeep). Never use s.rates or s.gross (both read ~0 when the store is full; see derive.ts comment near converterPotential).\n- projectBottleneck(s,d,need: Partial<ResMap>, paid?: Partial<ResMap>): { res: ResId; remaining: number; etaSec: number; full: boolean } | null. Slowest remaining resource by remaining / potentialRate (rate <= 1e-9 → etaSec = Infinity). full = s.res[res] >= 0.99 * cap(res).\n- expeditionBottleneck(s,d,zone) and expressBottleneck(s,d) wrappers over the current expedition / current express stage.\n- currentProject(s): {kind:'expedition', zone} | {kind:'express', stage} | null (the same 'current goal' the GoalWidget shows).\n- buildNowPick(s,d): { id: BuildingId; kind: 'useful' | 'cheap'; minutesSaved: number | null } | null. Candidates: visible, affordable, below maxLevel, not a storage building, not cap-locked. For each candidate compute minutesSaved = (bottleneck ETA now − ETA with levelGain(s,d,id,1) added to potential rates) / 60 for the current project. Pick max minutesSaved / marketValue(cost) among minutesSaved >= 0.05 → kind 'useful'. Otherwise the cheapest by marketValue → kind 'cheap', minutesSaved null. No project → cheap fallback.\n- export const ETA_LONG_SEC = 7200.\n(B) src/lib/format.ts fmtTime: non-finite → '—'; >= 100 h → '> 4 д'. Add a format.test case fmtTime(1e30) === '> 4 д'.\n(C) hints.ts storage: cheapestStore/storageHintFor skip any store whose next level is itself cap-locked (lockedByCap(...).length > 0) and any flat-cap store needing storeLevelsFor > 3 levels; then prefer a capMult store (sewer_warehouse, cellar_vault, …); else the zone/expedition text. Apply the same filter in the housing:store rule and in whatever helper BuildingCard uses for the '🔒 нужен склад' link, so the UI is fixed without UI edits.\n(D) hints.ts rule order becomes: 1 food; 2a empty crew; 3 nobody gathers; 3b rebalance; 2 housing (demoted); 4; 5 contribute; 6 upgrades; 7.\n- 2a id 'empty_crew:<job>': an unlocked slot job with free slots whose output (directly, or as input of a converter) the current project needs. Text e.g. 'Мастерская пустует: поставьте 3 крыс в механики (+0.32 ⚙️/с)', why '⚙️ ждёт экспедиция «Подвалы» (650)'. Action {kind:'assign', job, n:freeSlots}. If slots are full and that resource is still the bottleneck with etaSec > 240: id 'more_slots:<building>', text '⚙️ делают только механики, мест 3/3 — постройте ещё «Жестяную мастерскую»', action buyBuilding.\n- 3b id 'rebalance:<job>': bottleneck resource comes from an open job (pickpocket→coins, scavenger→buttons/wire), its etaSec > 240, and foragers are in surplus (potential crumbs > 1.5× upkeep). n = foragers − ceil(foragers needed for 1.3× upkeep), at least 1. Text 'Крошек вдоволь (+9.9/с при прокорме 0.6/с), а 🪙 для «Канализации» копить ≈ 2 ч: переведите 6 собирателей в карманники'. Action {kind:'assign', job, n, setFocus:true}.\n- 2 housing is skipped when rats >= current expedition crew requirement and (the next nest costs > 120 s of potential crumbs or is cap-locked).\n- 5 contribute keeps back the price of the cheapest unbuilt building that would enable rule 2a (e.g. the workshop's 150 🔘).\n- 6 skips upgrades whose only effect raises a resource at >= 99% of cap that is in surplus.\n- Add a hysteresis so the same hint id does not stay more than 180 s when its action is not taken (fall through to the next rule for 60 s).\n(E) types.ts HintAction gains {kind:'assign'; job: JobId; n: number; setFocus?: boolean}. store.applyHint implements it: move up to n rats from foragers (then idle) into job, respecting slots; if setFocus, set s.focus = job WITHOUT setting focus_manual.\n(F) Auto newborn focus: new FlagId 'focus_manual', set by store.setFocus (player action only). core.ts newbornJob: while !flags.focus_manual and rat_relay is not bought, use autoFocus(s,d): forager while potential crumb net < 1.3× upkeep; else the open job (pickpocket/scavenger, or a slot job with free slots) that produces the current project's bottleneck; else forager. Export newbornTarget(s,d): { job: JobId; auto: boolean; reason: string | null } (reason like 'для «Канализации» не хватает 🪙'). Save: fresh saves leave the flag unset; migrate sets focus_manual = true for existing saves whose focus !== 'forager'. save.test case.\n(G) actions.ts applyReveals: set('goal', !!flags.vagrants || s.time >= 120 || s.meta.migrations > 0).\nDo not edit GoalWidget.tsx or any component; COL-2 and PAN-1 consume goals.ts / newbornTarget.",
+   "acceptance": "Vitest: (a) workshop 1, mechanic 0, Cellars expedition current → nextHint id 'empty_crew:mechanic' with an assign action. (b) 9 foragers with 🍞 capped, 3 pickpockets, 🪙 the Sewers bottleneck → 'rebalance:pickpocket' with n >= 4. (c) rats >= crew and nest > 120 s of income → id is not 'housing'. (d) pantry 13, Sewers open, sewer_warehouse visible → storageHintFor(s,d,'crumbs',2560) returns sewer_warehouse; no store suggestion needs > 3 levels. (e) fresh Sewers state with 🍞 surplus: next 5 births go to pickpocket/scavenger; after setFocus('forager') they go to forager. (f) buildNowPick on a 🍞-full/🪙-bottleneck fixture returns pickpocket_school or stash, not trash_chute. (g) fmtTime(1e30) === '> 4 д'; projectBottleneck never returns NaN. (h) goal revealed when flags.vagrants. Newcomer sim targets are checked in ENG-2/ENG-13. tsc, eslint, all tests green."
+  },
+  {
+   "id": "ENG-2",
+   "title": "Balance sim 2.0: newcomer bot, medians over replicates, binding report, long horizon, parallel seed matrix",
+   "priority": "P0",
+   "package": "engine",
+   "from": [
+    "firsthour-2",
+    "balance-7",
+    "balance-11",
+    "meta-11",
+    "tech-8"
+   ],
+   "spec": "Why: the sim only measures an optimal bot on one RNG stream; identical meta gives run-3 coronation 22.6–42.0 min across bot streams; nothing measures a player who follows the game's own guidance; --runs is clamped to 3; K3–K6 are multi-seed questions answered by hand.\nFiles: scripts/sim-core.ts, scripts/balance-sim.ts, new scripts/sim-matrix.ts, new scripts/simStats.ts (+ scripts/simStats.test.ts), docs/GDD.md.\n1) BotKind 'newcomer' in sim-core: clicks 3/s for the first 10 min then 1/s; every 5 s applies nextHint(s,d).action with exactly store.applyHint semantics (assign, contribute, buyBuilding, buyUpgrade), then buys buildNowPick(s,d) (goals.ts, ENG-1) if affordable; catches 50% of scene items (reuse Bot scene handling with a 0.5 catch factor); never touches setFocus, ratios or autoContribute. CLI '--bot newcomer' prints a 'Новичок' table: zone open times, first metro train time, longest streak of one hint id, longest gap without an affordable goal, forager share of rats at minutes 10/26/45, share of trash_chute among first-30-min purchases.\n2) '--replicates N': runs the same seed with Bot RNG seed ^ (k*0x9e37) for k=0..N-1 using worker_threads; v2/v3 windows judged on the median, printing min/median/max.\n3) RunReport.binding: for each expedition and express stage, the time each cost resource was completed; print 'stage 8 (4:50) last=💍 prev=🛤️'.\n4) '--policy never-migrate' (Bot.shouldMigrate → false, run 1 up to 170 min) with check 'без переселения нет коронации быстрее сценарного маршрута'.\n5) A per-minute steam line in run 2 behind '--steam' (potential / need / steamEff / boiler level).\n6) Replace the checkpoint coinsPassive EMA30 with the 120-s mean of gross coins.\n7) K6: check 'забег 2: Вокзал' uses the replicate median with window 44–56 min (single run without --replicates: INFO only). Add a GDD 14.2 note that the run-2 Terminal arrives with a train haul (±6 min); lever if ever < 45: Terminal rats 300 → 320.\n8) Allow --runs up to 8 and '--long': from run 3 on, play 20 min after the coronation, then migrate. Print a 'Долгая игра' table per run: length, coronation time, crowns gained/spent/left, purchasable sinks left, new medals, curios, wagons, commissions done, 8→9 and 9→10 gaps. v3 checks INFO by default, FAIL with '--strict': >= 1 new collectible per run through run 8; 9→10 <= 8:00 in runs 3–8; >= 1 wagon per post-coronation window from run 4; >= 2 commissions per 20-min window; crown sinks not exhausted before run 6; every run >= 20 min.\n9) scripts/sim-matrix.ts: child_process.fork of balance-sim.ts per (seed, bot) with --summary --quiet, workers = os.availableParallelism() − 1; '--seeds 12345,777,1,2,3' default; prints a tails table per seed: coronation h (2.5–3.5), max(7→8, 8→9) run-2 gap (<= 6:00), run-2 min steamEff and seconds with steamEff < 0.9 (> 0), passive maxGoalGap (<= 4:00), run-2 Terminal minute (45–55), newcomer Sewers/Cellars/Metro. '--baseline scripts/balance-baseline.json' diff marks metrics moved > 10% and exits 1; '--write-baseline' writes it.\n10) GDD 15.14: new 'Новичок' table (Sewers <= 15, Cellars <= 40, Metro <= 70, first metro train <= 75 min). GDD 14.2 run-3 windows updated to measured medians (or turned into real checks).\nWithout the new flags, the default 3-run output stays identical except the coinsPassive metric (document it).",
+   "acceptance": "'npx tsx scripts/balance-sim.ts --bot newcomer --seed 12345' and '--seed 777' print the Новичок table. '--replicates 3 --seed 12345 --summary' prints median and range per check in <= 6 min. Binding lines appear for all stages. '--policy never-migrate' check exists. '--runs 8 --long' finishes in < 12 min on seed 12345 and prints the table. 'npx tsx scripts/sim-matrix.ts --seeds 12345,777,1,2,3,4' takes <= 1.6× a single-seed run on >= 4 cores; a ±15% EXPRESS_BASE override via SIM_OVERRIDES makes --baseline exit 1 naming the metrics. scripts/simStats.test.ts covers the median aggregator."
+  },
+  {
+   "id": "ENG-3",
+   "title": "Express and meta pacing: migration gate, per-resource stage growth (K3), value-weighted scouts with a 90% step (K5), honest wagons, charters and commissions",
+   "priority": "P0",
+   "package": "engine",
+   "from": [
+    "balance-1",
+    "balance-2",
+    "meta-3",
+    "balance-8",
+    "balance-6",
+    "meta-4"
+   ],
+   "spec": "(A) Migration gate. types.ts Cond gains {migrations: number}; conditions.ts check s.meta.migrations >= c.migrations; describeCond → 'после первого Великого Переселения'. upgrades.ts express_plan.unlock = {all:[{zone:'terminal'},{building:'clocktower',gte:1},{migrations:1}]}; locked flavor 'Король выдаёт чертёж только колонии, пережившей Переселение'. A save that already owns express_plan keeps it. meta.ts/actions.ts: secret medal forever_tuesday becomes 'Короткая неделя — коронация во втором забеге' (award when meta.migrations === 1 at coronation). GDD 14.1/14.2 note the gate. Reason: never migrating crowns at 117–136 min vs 2.45–2.84 h for the scripted route.\n(B) Per-resource express growth (K3). meta.ts: EXPRESS_GROWTH becomes Record<'rails'|'gears'|'brass'|'trinkets'|'blueprints', number> = {rails:1.6, gears:1.6, brass:1.6, trinkets:1.45, blueprints:1.45}; EXPRESS_BASE = {rails:500, gears:100000, brass:10000, trinkets:50, blueprints:250}. formulas.ts expressStageCost uses growth[r]^(n−1)·disc. Update formulas.test.ts and GDD 15.11. Reason: 💍/📜 are excludeGlobal, so stage n needed 1.55^n of a resource whose income grows linearly.\n(C) Scouts (K5). actions.ts expeditionFraction becomes value-weighted: Σ min(1, prog/need)·need·unitValue(r) / Σ need·unitValue(r) (economy.ts unitValue). SCOUT_STEPS = [0.25, 0.5, 0.75, 0.9]; widen the scout Fx step type to 1|2|3|4; step 4 payout uses the step-3 formula; toast for step 4 'Разведчики: до цели рукой подать'. Verify every UI use of the step still compiles (no fixed-length tuple indexing).\n(D) Endless express. derive.ts part 'Крысиный экспресс' = (1 + 0.2·stage)·1.1^wagons. New src/game/engine/metaMath.ts with expressBonusPct(s) (= that factor − 1, ×100) for ExpressPanel. Wagon k cost: rails/gears/brass = stage-10 cost × 2^k; trinkets/blueprints = stage-10 cost × (1 + 0.5k) (tune the 2 within 1.8–2.5 to hit targets). Medal tail_horizon goal 15 → 10 lifetime; long_train stays 5 in one run.\n(E) Charters: CHARTER_MULT_CAP = 1.63 (= 1.05^10) so all 10 count. Export charterAtCap(s) (true when another charter adds nothing).\n(F) Commissions: retire 'replenish' from the offer pool (keep the id and def for old saves; an active one completes at goal 60). Add {id:'clean_three', name:'Три чистых вагона', icon:'🚃', stat:'cleanCars', goal:3, mode:'delta', desc:'Очистить три вагона за забег'} (RunStats.cleanCars exists). offerCommissions skips 'wagon' when the next wagon's timeToAfford (potential rates, goals.ts) > 480 s. save.test: a v2 save with replenish offered/active loads.\nSim targets are verified in ENG-13; here make unit tests pass and do a quick seed-12345 run.",
+   "acceptance": "Vitest: upgradeVisible(s,'express_plan') false with migrations 0 even with Terminal + clocktower, true with 1. expressStageCost matches the per-resource formula. expeditionFraction with one expensive and four cheap resources equals the weighted value. charterMult(9) < charterMult(10). ExpressPanel helper expressBonusPct equals derive's part for wagons 0..5. offerCommissions never offers replenish, nor wagon with ETA > 480 s. Sim (ENG-13): never-migrate gives no run-1 coronation within 170 min on 12345/777/1/2/3; run-2 7→8 and 8→9 <= 6:00 on >= 4/5 seeds; no stage gap 2..9 < 0:45; passive max goal gap <= 5:00 on 5/5 and <= 4:00 on >= 3/5; >= 3 wagons 30 min after coronation on >= 3/5 seeds."
+  },
+  {
+   "id": "ENG-4",
+   "title": "Steam as a budget: boiler max level 12 and a steam priority valve (K4)",
+   "priority": "P0",
+   "package": "engine",
+   "from": [
+    "balance-3",
+    "audio-12"
+   ],
+   "spec": "Why: in run 2 56 stokers make 315 💨/s against ~120 demand; steamEff never drops below 1 on 3/5 seeds; presses/clocks exceed targets on 5/5. Price growth changes nothing; a level cap binds.\n1) buildings.ts boiler: maxLevel 12; desc '+2 места кочегара; буфер 💨 +100 за уровень (макс. 12)'. Effects count min(level, d.boilerMax) where d.boilerMax = 12 + district mod boilerMaxDelta (ENG-11 sets Гончарни +2; default 0). Old saves with boiler > 12 keep the number but effects are clamped; buying is blocked at the max (existing maxLevel paths in actions.ts/events.ts). Budget at max: 24 stokers × 3 × 1.5 (safety_valves) × 1.25 (tube_orders) = 135 💨/s; safety_valves desc states '+50% к бюджету пара'.\n2) State: s.steamPriority: 'works' | 'power' (default 'works' = today's order). store.setSteamPriority(p). economy.ts: when 'power', run the press/clocktower steam phase (d.steamNeed) before the steam-consuming converters (smelter, smith); when 'works', today's order. Default + mergeDefaults + save.test.\n3) Export steamBudget(s,d): { supply: number; cap: number; press: number; clock: number; conv: number; eff: number }. hints.ts steam info line: 'бюджет 135 💨/с: прессы X · часы Y · плавильни/кузни Z'.\n4) Sim bot: respects max level; picks 'power' when presses+clocks are the express bottleneck, else 'works' (simple rule).\nThe steam audio cues (AUD-2) read s.steamEff and caps.steam; no engine work needed for them.",
+   "acceptance": "Vitest: with steamPriority 'power' and supply < need, press/clock steamEff = 1 while smelter/smith convEff < 1; the reverse with 'works'. Boiler cannot be bought past 12; a save with boiler 28 loads and its effects equal level 12. Sim (ENG-13): run 2 boiler reaches 12 and Σ steam demand >= 90% of supply for >= 15 min on >= 4/5 seeds; presses < 19 and clocks < 9 in run 2 on 5/5; coronation 2.5–3.5 h."
+  },
+  {
+   "id": "ENG-5",
+   "title": "Trains are never lost: short alt-tab pauses a scene, deferred trains get «К путям!», 35 s breather, a shared hold flag (K1 engine part)",
+   "priority": "P0",
+   "package": "engine",
+   "from": [
+    "trains-2",
+    "trains-3",
+    "trains-1",
+    "tech-7"
+   ],
+   "spec": "1) store.ts: export function isHeld(st: StoreState): boolean = st.ceremony || st.crashed || st.saveIssue is set (whatever value means 'no issue'). This is the single flag scenes (SCN-1) and audio (AUD-1) use; document it in ARCHITECTURE.\n2) Pure holdCredit({away, ceremony, scene}): 'pause' | 'ticks' | 'catchUp' in a new src/game/engine/hold.ts: 'pause' when (ceremony || scene?.interactive) && away <= 60; 'ticks' when away <= 60 otherwise; 'catchUp' beyond. useGameLoop.ts hold()/release() use it: 'pause' credits nothing (the canvas rAF is already stopped while hidden and SCN-1 freezes the scene clock).\n3) deferTrainsForReturn(s, away) next to rescheduleAfterAbsence in events.ts: every active train timer (metro_train, royal_express) below s.time + away + 15 moves to s.time + away + 15 + h·10, where h is a hash of (timer id, s.time) in [0,1) (no draw from the sim RNG); move whistleUsedFor with it so «К путям!» fires right after the credit. Store action creditShortHold(away) = deferTrainsForReturn then advance(away/TICK, false); useGameLoop uses it for 'ticks'.\n4) Breather: EVENT_TIMING.trainBreather = 35. In endScene at time t, push every active metro_train/royal_express timer below t + 35 to t + 35, shifting whistleUsedFor the same way tickEvents' start() helper does.\n5) Keep the sim path unchanged except the breather (sim calls endScene).",
+   "acceptance": "Vitest: (a) holdCredit with an attached interactive metro scene in catch and away 20 → 'pause'; after release s.time and scene.phase are unchanged. (b) No scene, metro due in 10 s, creditShortHold(40): stats.trains unchanged after the credit, timers.metro_train − time in [15,25], a trainSoon fx within the next 10 ticks. (c) An express scene ends at t with timers.metro_train = t − 3: no scene starts before t + 35, trainSoon about t + 5, metro starts at t + 35. (d) isHeld true for ceremony, crashed and saveIssue. Sim (ENG-13): 0 trains start without a trainSoon in the preceding 31 s on 12345/777; GDD 12345 >= 31/32."
+  },
+  {
+   "id": "ENG-6",
+   "title": "Performance: incremental smartAssign (no late-game freeze) and a plain clone with structural sharing in the store",
+   "priority": "P0",
+   "package": "engine",
+   "from": [
+    "tech-1",
+    "tech-5"
+   ],
+   "spec": "1) actions.ts smartAssign: same algorithm and exact same result, but track supply incrementally. Compute sup[r] once (passive buildings + no-input jobs); precompute each job's delta vector once per call (perWorker(j,r) − consumes[r]·jobSpeed[j]); on each jobs[j]++ add that delta; on each supporting scavenger++ add perWorker(scavenger,r); the failure check reads sup[r]. Hoist per-call allocations. New src/game/engine/smartAssign.test.ts keeps a frozen copy of the current implementation as the oracle and compares on >= 6 fixtures (60 and 150 min, rats ×1 and ×3, a steam shortage, a wire shortage; build them with the sim Bot or the testkit) plus a loose perf guard. Measured today: 3.05 ms/call at 667 rats; simulateOffline 8 h on a 150-min state 2.0 s, synchronous on load and on tab return.\n2) New src/game/engine/clone.ts: cloneState(s) (recursive copy of plain objects/arrays/primitives incl. Infinity) and shareState(prev, next) (walk both; wherever a subtree is deep-equal put prev's reference back). store.ts: use cloneState instead of structuredClone in mutate/advance/catchUp/devWarp; publish shareState(prevGame, next) after advance/mutate. Safe because published snapshots are never mutated. Document in ARCHITECTURE: GameState is plain JSON-like data (no Map/Set/Date/class instances); add assertPlain(s) in tests. Other structuredClone calls (migrate meta, freshGame settings) may stay.",
+   "acceptance": "(1) New smartAssign gives deep-equal s.jobs on >= 6 fixtures; <= 0.8 ms on the 150-min fixture; simulateOffline(8 h) on it <= 0.9 s on the dev box. (2) cloneState deep-equals structuredClone on all fixtures and every 600th tick of a 3-h sim; step() on cloneState(s) never mutates s (JSON snapshot equal) across 30 min incl. all scene kinds. (3) store.advance(1) on the 150-min fixture takes <= 40% of today's time (bench test, loose). (4) With an idle metro scene in rumble/piles, game.scene keeps its identity across ticks where it did not change (unit test on shareState). (5) seed-12345 SUMMARY byte-identical before/after this item."
+  },
+  {
+   "id": "ENG-7",
+   "title": "Saves and tests: golden save fixtures, a versioned migration registry, a shared test kit, slow test split, one source for meta math",
+   "priority": "P1",
+   "package": "engine",
+   "from": [
+    "tech-6",
+    "tech-2",
+    "meta-13"
+   ],
+   "spec": "1) src/game/engine/__fixtures__/saves/*.json captured by scripts/capture-fixtures.ts (sim Bot snapshots serialized with save.ts): 10, 60, 150 min; mid metro catch; run 3 with edict ranks, a seal and an active commission; post-coronation. Optional v1-early from commit 18a0f85 via git worktree if that commit exists (skip silently otherwise).\n2) save.ts: const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => void>, applied in order from raw.schemaVersion up to SCHEMA_VERSION before mergeDefaults; bump SCHEMA_VERSION for v3 and put v3 reshapes there (ENG-1 focus_manual default for old saves, ENG-11 district → districtId, ENG-3 replenish handling).\n3) save.fixtures.test.ts: each fixture deserializes, runs 600 steps plus simulateOffline(8 h); invariants: no non-finite fields, res >= 0, Σjobs <= rats, scene null right after load, schemaVersion current. A test-only registry proves a dummy migration (move charters to meta.charters) is applied.\n4) src/game/engine/testkit.ts with metroState, playedState, loadFixture; delete the 4 copies (actions.test.ts, events.test.ts, v2contract.test.ts, v2depth.test.ts).\n5) Move the 'long active run (3 h)' describe from src/game/data/conditions.test.ts to src/game/data/reachability.slow.test.ts (REP-1 excludes *.slow.test.ts unless SLOW=1). Give the heavy events.test.ts cases (≈ lines 408/414) an explicit 20 000 ms timeout.\n6) metaMath.ts (created in ENG-3) gains crownPctPer(meta), crownBonusMult(s) (coronation × charters × seal) and charterMult (moved; re-export from engine/commissions.ts for compat). derive.ts, formulas.ts and narrative.ts use them. v3 contract test: for 5 sample states the helpers equal derive() parts (e.g. 'Бонус ко всему' = (part 'Венцы' − 1) × 100).\n7) Delete engine-side dead exports nothing references (e.g. useDerived in store.ts) after grepping src/.\n8) ARCHITECTURE release rule: schema change ⇒ bump SCHEMA_VERSION + add MIGRATIONS step + add a fixture.",
+   "acceptance": ">= 6 fixtures committed and passing the invariant suite; deleting the dummy MIGRATIONS step fails its test; metroState defined in exactly one file; 'npx vitest run' without SLOW finishes in < 20 s on the dev box; grep finds no 'kings_favor ? 3', 'Math.pow(1.05' or '20 * stage' outside metaMath.ts in src/game."
+  },
+  {
+   "id": "ENG-8",
+   "title": "Real choices: vigilance makes suspicion cost loot, offline efficiency capped at 100%, seals and ranks hit the 📜/💍 bottleneck, crew crash costs loot",
+   "priority": "P1",
+   "package": "engine",
+   "from": [
+    "balance-4",
+    "balance-5",
+    "balance-9",
+    "meta-8",
+    "trains-4"
+   ],
+   "spec": "(A) Vigilance: export vigilance(S, from = 50) = 1 − max(0, S − from)/100 (0.5 at 100). Multiply train and capsule item values (hand and auto) at build time; HaulSummary.vigilance?: number (fraction lost). hints.ts suspicionInfo adds 'Бдительность людей: −X% к добыче поездов (выше 50 👁)'. District mod vigilanceFrom (ENG-11; Биг-Бен 40). Lantern greed (+5 👁 per item) is now a real gamble.\n(B) Offline: derive offline.eta = Math.min(1, …); ranks.ts RANKED.eternal_night_shift = [0.25, 0.25, 0.25]; capSec = 3600 × (2 + 2·night_shift + 4·(edict signed) + 2·(rank − 1)) (up to 12 h at III). Rank texts 'Офлайн: эффективность +25%, лимит времени +6 ч' / '… +8 ч'.\n(C) Seals (meta.ts SEALS, derive.ts): Railway unchanged. Dynasty: '+10% ко всему за каждое переселение — включая 📜 и 💍' (apply the factor also to excludeGlobal non-steam resources via resMult). Silence: 'Подозрение не растёт, Кот и Крысолов не приходят; 📜 и 💍 ×1.3' (drop click ×2). Sim bot picks a seal per run goal (Railway default; flag to force a seal for ablation).\n(D) Ranks II/III retarget: golden_whiskers II/III — a purse has a 20% / 30% chance to also hold 3 / 6 💍; ancestral_paws II/III — each manual click also gives 0.5% / 1% of the current potential 📜/s. Update rank texts; existing rank-text test style must pass.\n(E) Crew position as a gamble (data/events.ts CREW_POSITIONS, events.ts): auto mult wall 0.85, rails 1.0, ties 1.15 (hook mult unchanged); crash odds keep 5% (rails) / 15% (ties) and the 3%/90 s scare; a crash also sets scene.crash = true and halves sc.auto for this train. TRAIN_VARIANTS gains crashMul (freight 2, flooded 1.5, edinburgh_mail 0.5, others 1); royal express ×1.5. Export crashChance(pos, variant, royal) and expectedAuto(pos, variant, base, cap = 0.9) = min(cap, base·posMult)·(1 − 0.5·crashChance). Sim bot stays on rails. GDD 8.2.8 'поезд никогда не убивает крыс' still holds.",
+   "acceptance": "Vitest: vigilance(0..50) = 1, vigilance(100) = 0.5; offline eta <= 1 for every night_shift × rank combo and capSec matches the texts; expectedAuto reproduces normal ties 1.06 / rails 0.975 / wall 0.85 (base 0.5) and no position is best in all of {normal, freight, capped}; a crash halves auto and sets scene.crash. Sim (ENG-13): GDD >= 29/32 on 5 seeds; forced-seal ablation runs 3–5 (3 replicates): coronation medians of the three seals within ±12%; Dynasty best at >= 4 migrations, Railway best on train coin share; offlineCheck PASS."
+  },
+  {
+   "id": "ENG-9",
+   "title": "Events: first carriage as a catch tutorial, the human line decides the loot, grate rain after the Metro, «Цирк Сэнгера», «Гороховый суп», cat counter, «Гул из глубины»",
+   "priority": "P1",
+   "package": "engine",
+   "from": [
+    "firsthour-9",
+    "trains-6",
+    "trains-7",
+    "trains-8",
+    "trains-10",
+    "trains-9",
+    "firsthour-6"
+   ],
+   "spec": "Rule for every union addition: run tsc; if a component maps a union exhaustively (Record<…>), add the new case only through data the UI already reads, never break compile.\n(A) First carriage (flags.first_carriage unset): a 2 s 'warn' phase before 'catch' (new phase value for the carriage scene; scene.tutorial = true), itemLife 3.0, items spread over 0.5–7 s, hand-caught value ×2; set the flag at end. Every carriage end toast: 'Экипаж: поймано 5/8 — 🍞+64 🪙+9 (без вас было бы 🍞+21)'.\n(B) LinePair gains optional drops (weights) and gift {res, S}; startCarriage and capsule buildTrain use sc.line's drops; the gift is one extra item placed by a hash of seq (no extra RNG draw). Carriage: «кулёк с пирожками» → 🍞0.85 🪙0.15; «Омнибус… трясут зонтами» → 🔘0.5 🍞0.3 🪙0.2; «двуколка доктора» → ➰0.5 🪙0.3 🍞0.2; «Пивной фургон…» → 🪙0.5 ⚙️0.3 🍞0.2; «Леди… уронила перчатку» → gift 💍×1 plus 🔘. Capsule: «Курс стабилен»/«маклер» → 🪙0.7; «адмиралтейство» → gift 📜 S 30; «засорилась у Чипсайда» → mostly ⚙️/➰. Mean market value per carriage within ±10% of today.\n(C) After zones.metro is open, the carriage spawns grate rain instead of a scene: 6–10 shinies with kind 'carriage', amt = 10·eventValue (line drops), life 6 s, x 0.15–0.85, y 0.45–0.6; Shiny gains optional amt/kind; clickShiny uses sh.amt ?? 30·eventValue; an expired carriage shiny credits 25% of amt. Toast '🐎 Экипаж над решёткой — лови!'. s.carriagePass: {seq, until} | null for the sky mini-scene and the hoof sound. Before the Metro the close-up stays.\n(D) Circus variant 🎪 'circus': weight 0.08, gate always, perCarMul 1.1, itemLifeAdd 0.5, countMul 1.15, sparkMul 0.5, carWeights {third 40, baggage 30, dining 30}, tint #b0303c; physics via new optional fields bounces: 3 and restitution: 0.72, launchMul 1.25 (do not add a new physics union member). Lines: 👤 «Цирк Сэнгера переезжает в Ислингтон: клоуны спят, слон недоволен» / 🐀 «Прыгучий Змей! Дары скачут, как блохи — ловите в воздухе»; 👤 «{time}: из багажного вагона пахнет опилками и жжёным сахаром» / 🐀 «Бог Грома везёт акробатов. Даже пуговицы делают сальто».\n(E) Fog «Гороховый суп»: from the Metro, timers.fog every [1200, 1800] s sets s.buffs.fogUntil = t + 180 with toast '🌫️ Туман над Лондоном: 3 мин люди ничего не видят'. During fog addSuspicion adds 0, and metro trains get a forced variant 'fog' (like flooded): lantern chance ×2, sMul 1.2, fog: true flag, lines 👤 «Туман такой, что машинист не видит собственных ботинок» / 🐀 «Великая Мгла! Люди слепы — грабь смело». Export fogActive(s).\n(F) Cat counter: export catLungeAt(seq, n): peak time (s from fight start) = 0.6 + 1.1·n + 0.15·(2h − 1), h = hash(seq, n); wind-up 0.3 s before the peak; CAT_COUNTER_WINDOW = 0.18. SceneAction for the cat gains perfect?: number; each perfect counts as 3 hits in the engine's hit math; resolveCat with perfect >= 3 pays reward ×1.5 and toasts 'Кот бежит, поджав хвост'. Sim unchanged (bot sends cleared only).\n(G) «Гул из глубины»: in tickBackground, the first tick after time >= 390 s with rats >= 10, no scene, metro not open and !flags.first_rumble → set flag, emit Fx {k:'deepRumble'}, toast '🚇 Земля дрогнула. Старейшина: «Это Бог Грома. Глубже, на 4-м ярусе, он ходит каждые четыре минуты»', news pair '👤 Человек видит: поезд 7:58 на Паддингтон' / '🐀 Крысы видят: под норой прошёл Бог Грома'. No RNG draw, no scheduler change. Export metroTeaser(s): string | null → '🚇 ??? — там ходит Бог Грома' after the flag.",
+   "acceptance": "Vitest: first carriage has warn >= 2 s and catch >= 9 s, later carriages unchanged; carriage end toast matches /поймано \\d+\\/\\d+/; catching everything on the first carriage gives >= 2.5× auto-only. Forcing each carriage line gives >= 70% of items in its top drop; the glove line yields exactly one trinkets item; mean value over 1000 seeded builds within ±10%. Expired carriage shiny credits 25%, clicked 100%; no carriage scene starts after the Metro. pickVariant over 20k draws picks circus at 0.08/0.30 of non-normal ungated picks ±2%. During fog addSuspicion adds 0 and the metro variant is 'fog'. resolveCat with perfect 3 pays 1.5× the shown stakes. deepRumble fires once between 6:30 and 8:00 and changes no timer or RNG state. Sim: circus on >= 3/5 seeds, >= 2 fog trains per 3-h session, GDD 12345 >= 31/32."
+  },
+  {
+   "id": "ENG-10",
+   "title": "«Кунсткамера Короля»: 24 curios from the human characters, caught in trains and events",
+   "priority": "P1",
+   "package": "engine",
+   "from": [
+    "meta-1",
+    "meta-12"
+   ],
+   "spec": "Why: new medals per run go 15/10/6/2/0/2/0, so from run 5 there is nothing to chase; the cast of recurring humans keeps losing things but nothing can be held.\nNew src/game/data/curios.ts: type CurioId; CURIOS: 24 curios in 6 sets of 4 {id, name, icon, owner, source:{scene, car?, variant?}, human, rat, hint}. Sets: Леди Пемберли 👒 (кружевная перчатка — carriage, веер — first class, бубенчик Мурзифера — cat win, крышка чайника — capsule); Мистер Уиггинс 🧐 (монокль — carriage, часы-луковица — first, трость — third, визитница — mail car); Лорд Эшби 🎩 (табакерка с гербом — first, запонка с сапфиром — royal, перстень-печатка — royal, билет 1-го класса — baggage); Полковник Хэтчетт 🎖️ (пенковая трубка — third, орден — baggage, шпора — freight, фляжка — dining); Часовщик Грант 🕰️ (анкерная вилка — mail, пружина хронометра — baggage, ключ от башенных часов — royal, лупа — capsule); Город 🏙️ (клок шерсти and сломанная дудка — the two current trophies, мешок из Эдинбурга — edinburgh_mail, печать Чеддера — cheese car). Write each human/rat line in the game's voice. CURIO_SETS with perks built on existing hooks: Пемберли purse effects ×1.25; Уиггинс click find chance ×1.25; Эшби royal car +2 items; Хэтчетт sparks ×0.8; Грант «Гул» +3 s; Город charters ×1.06.\nEngine: meta.curios: CurioId[] (default [], save drops unknown ids, survives migrate). In the scene build (events.ts around fillCar) roll at most one unowned curio per scene using a hash of (scene seq, 'curio') — no extra draw from the sim RNG: metro_train 4% (only from its source car kind; ×2 for first and baggage cars), royal_express 12%, carriage 2% (also when it rains at the grate after the Metro), capsule 2%, downpour flotsam 4%. The item gets CatchItem.curio = id, value 0, weight 0 (rating-neutral), life +1.5 s. Catching it pushes meta.curios, emits Fx {k:'curio', id}, news pair '👤 {human}' / '🐀 В Кунсткамере пополнение: «{name}»'; HaulSummary.curio?: CurioId. A missed curio can drop later. The two current trophy pushes become curio awards (keep writing the old trophies array for compat). derive.ts push('Кунсткамера', 1 + 0.005·n). Medals 'first_curio' («Первый экспонат») and 'curio_full' («Кунсткамера полна»). Helper curioSets(s) → [{owner, icon, items:[{id, owned}], done, perk}]. Sim bot catches curios like normal items (sim-core).",
+   "acceptance": "Vitest (seeded): 300 metro trains with all zones open spawn >= 5 curio items, never an owned one, each from its source car; a curio item does not change HaulSummary.share; a caught curio survives migrate() and a save round-trip; unknown ids are dropped on load. '--runs 7 --long' sim: the active bot owns 8–18 of 24 by run 7."
+  },
+  {
+   "id": "ENG-11",
+   "title": "London on a map: choose the next of 12 districts, honest traits, fixed identity of districts 6+, fresh words for repeat runs, copy fixes",
+   "priority": "P1",
+   "package": "engine",
+   "from": [
+    "meta-2",
+    "balance-10",
+    "meta-6",
+    "meta-12"
+   ],
+   "spec": "(A) New src/game/data/districts.ts: 12 districts {id, name, loc, icon, trait:{perk, quirk, mods}, fillers: 4 lines, landmark, pos:{x,y} (0..100 on a London map, Thames in the middle), neighbors}. Keep the current 6 and retune: Боро-маркет Сытость ×1.5 (was ×1.25), market every 240–300 s / 📜 −25%; Гончарни boilerMaxDelta +2, ⚙️ ×1.5 / metro trains every 300 s; Читальный зал unchanged; Особняки purses ×2, 🪙 ×1.5 / 💍 −25%; Биг-Бен unchanged perk / 📜 −20% and vigilanceFrom 40. Add Сити 🏦 coins ×1.5, purses ×1.5 / suspicion ×1.3; Ковент-Гарден 🥬 crumbs ×2, market [240,300] / cat ×1.3; Кингс-Кросс 🚉 metroCarsDelta +1 / capsules every 180 s; Доки Ист-Энда ⚓ buttons and wire ×1.5 / ratcatcher at 85; Челси 🎨 blueprints ×1.5, purses ×1.5 / expressIntervalMult 1.3; Гринвич 🔭 expressIntervalMult 0.7 / metroCarsDelta −1. Only existing DistrictMods keys plus the two new ones (boilerMaxDelta, vigilanceFrom).\n(B) Meta: districtId: DistrictId and visited: DistrictId[]; keep meta.district as the numeric index (= visited.length − 1) so existing UI compiles. MIGRATIONS step (ENG-7) maps an old numeric district to the old sequence ids. New districtInfo(meta) → {id, name, loc, icon, trait, lap} used by new UI; old districtName/districtTrait/districtLoc keep working for the current run by resolving through visited. migrationPreview(s) gains options: DistrictOption[] = two unvisited neighbours of the current district (picked by a hash of migrations count), falling back to any unvisited; after all 12 are visited a second lap uses real names («Сити II») with the existing ×1.25 amplify. store.migrate(to?: DistrictId) defaults to options[0] so sim and offline paths are unchanged. Fillers come from the current district id. all_london counts visited.length − 1 >= 5.\n(C) Words: EXPRESS_STAGE_LINES becomes LinePair[][] with 3 pairs per stage (first time, repeat, later) picked by min(coronations, 2), e.g. kettle stage repeat «Леди Пемберли (дом №12) снова без чайника» / «Котёл кипит. Старейшины уже не удивляются». CORONATION_LINES: 10 pairs indexed by coronation number with {weekday}, {nth}, {weeks}; say 'за неделю' only while migrations < 7, else 'за {weeks} недели/недель' (plural helper); extend ORDINAL_F past 10. 8 crowned fillers and 6 late fillers (migrations >= 4); tie in 1887 (Golden Jubilee), the Great Stink of 1858 and Bazalgette's sewers.\n(D) Copy fixes: «Желоб под тендером» → «Жёлоб под тендером»; commission «Королевская почта» → «Почётный караул» 🚆; «Сухие лапы» → «Шлюзовая вахта» with desc '…во время ливня'; royal_litter rank I text adds '…и 50 🍞'; miser → 'Переселиться, храня в казне 200 👑'; boiler flavor and express stage tie to «Леди Пемберли (дом №12) снова без чайника».",
+   "acceptance": "Vitest: migrate(s, 0, ctx, 'city') sets meta.districtId and the next run's derive applies Сити's mods; no district repeats until all 12 are visited; a run's filler pool contains only its own district's lines (no Whitechapel line at index >= 6); a v2 save with district 6 loads to a valid id; coronations 1–8 give 8 distinct lines and none says 'за неделю' when migrations >= 7; every district has >= 4 fillers; stage lines for coronations 1/2/3 differ; COMMISSIONS and ACHIEVEMENTS names are pairwise distinct (lowercased, last 2 letters dropped); grep finds no «Желоб». Sim forced-trait ablation (run 3, 3 replicates): every trait's coronation median within ±12% of «Туман»."
+  },
+  {
+   "id": "ENG-12",
+   "title": "UI contract v3: settings, sfx3 cues, structured unlock toasts, phone layout mode, Back-closes hook, dev handle for e2e, documented API",
+   "priority": "P0",
+   "package": "engine",
+   "from": [
+    "audio-5",
+    "audio-9",
+    "mobile-1",
+    "mobile-14",
+    "mobile-2",
+    "tech-4",
+    "audio-6"
+   ],
+   "spec": "Everything stage-2 packages consume that is not owned by another engine item:\n1) Settings: sfxVolume (default 1) and music (default 0.35), both 0..1; defaults in state.ts, clamps in save.ts, generic setSetting supports them; save.test: a v2 save without them loads with 1 and 0.35. Keep volume as the master.\n2) src/game/fx.ts: export type SfxCue3 = 'giantVoice' | 'ratChatter' | 'coachman' | 'hoof' | 'curio' | 'counter' | 'growl'; UiFx variant {k:'sfx3'; cue: SfxCue3; intensity?: number; pitch?: number}; helper sfxCue3(cue, o?). Do NOT add these to SfxCue (src/audio/cues.ts maps SfxCue exhaustively; adding members would break the audio build).\n3) UiFx 'unlock' items gain optional icon?: string, name?: string, desc?: string (text stays for compat).\n4) New src/lib/layoutMode.ts: PHONE_MQ = '(max-width: 767px), (max-height: 520px)', SHORT_MQ = '(max-height: 520px)', usePhoneLayout(): boolean and useShortLayout(): boolean via useSyncExternalStore (server snapshot false), isPhoneLayout().\n5) New src/lib/useBackCloses.ts: useBackCloses(open: boolean, close: () => void) — on the phone layout, when open turns true push history.pushState({rr:'ov'}, ''); popstate calls close(); closing from the UI calls history.back() only if the top state is ours; never grows history over repeated cycles.\n6) store.ts: expose window.__rr also in production when location.search contains 'dev' (keep the dev behaviour) so REP-2 e2e can drive the built app.\n7) docs/ARCHITECTURE.md: a 'v3 UI contract' section listing every new export from ENG-1..ENG-11 and this item with signature and semantics: goals.ts (projectBottleneck, buildNowPick, currentProject, ETA_LONG_SEC), newbornTarget, HintAction 'assign', steamBudget/steamPriority/setSteamPriority, isHeld, scene.crash, expectedAuto/crashChance, vigilance and HaulSummary.vigilance, TRAIN_VARIANTS circus/fog fields, fogActive, catLungeAt/CAT_COUNTER_WINDOW and the perfect field, carriage 'warn' phase and scene.tutorial, Shiny.kind/amt, s.carriagePass, Fx deepRumble, metroTeaser, curios API (CURIOS, curioSets, CatchItem.curio, HaulSummary.curio, Fx curio), districts API (districtInfo, migrationPreview().options, migrate(to)), expressBonusPct, charterAtCap, settings, sfx3, layoutMode, useBackCloses. GDD updated where data changed.",
+   "acceptance": "tsc, eslint and all vitest pass with the current (unchanged) UI; ARCHITECTURE lists every API named above; usePhoneLayout returns false on the server; useBackCloses unit test (mocked history) shows history.length does not grow after 10 open/close cycles; a production build exposes window.__rr only with ?dev."
+  },
+  {
+   "id": "ENG-13",
+   "title": "Final v3 balance pass on five seeds",
+   "priority": "P0",
+   "package": "engine",
+   "from": [
+    "balance-2",
+    "balance-3",
+    "balance-8",
+    "balance-11",
+    "firsthour-2"
+   ],
+   "spec": "After ENG-1..ENG-11 are in, run 'npx tsx scripts/sim-matrix.ts --seeds 12345,777,1,2,3' plus '--bot newcomer' and '--replicates 3' for 12345 and 777. Tune only these knobs, in this order, within these ranges: wagon growth for normal resources 1.8–2.5; EXPRESS_BASE ±15% per resource; express growth for 💍/📜 1.40–1.50; boiler max 11–13; scout step-4 payout; hint thresholds in ENG-1 (240 s, 120 s, 1.3×/1.5×). Targets: GDD checkpoints >= 31/32 on 12345, >= 30/32 on 777, >= 29/32 on 1/2/3 (GDD windows intentionally moved by v3 must be updated in GDD with a reason); coronation total 2.5–3.5 h on 5/5; never-migrate policy: no run-1 coronation within 170 min; run-2 7→8 and 8→9 <= 6:00 on >= 4/5 and no gap 2..9 < 0:45; run-3 coronation median >= 30 min (3 replicates); run 2 boiler 12 and steam demand >= 90% of supply >= 15 min on >= 4/5, presses < 19 and clocks < 9 on 5/5; passive max goal gap <= 5:00 on 5/5 and <= 4:00 on >= 3/5, passive Terminal <= 165 min; run-2 Terminal median 44–56 min on >= 4/5 (K6); newcomer on 12345 and 777: Sewers <= 15, Cellars <= 40, Metro <= 70, first metro train <= 75 min, mechanic > 0 at minute 45, no hint id streak > 3 min; 0 trains without trainSoon in the preceding 31 s; offlineCheck PASS. Write scripts/balance-baseline.json (--write-baseline) and a GDD §15.16 'Итог v3' table with the numbers per seed.",
+   "acceptance": "GDD §15.16 table exists with all listed metrics per seed and they meet the targets (any miss is listed with a reason and accepted only if it is within 10% of the target); scripts/balance-baseline.json committed; tsc/eslint/vitest green."
+  },
+  {
+   "id": "SCN-1",
+   "title": "One pausable scene clock: no scene runs under a ceremony, a crash, a save issue or a hidden tab (K1)",
+   "priority": "P0",
+   "package": "scenes",
+   "from": [
+    "trains-1",
+    "tech-7"
+   ],
+   "spec": "Why: setCeremony holds the engine, but every scene loop keeps its own real-time clock, so a catch resolves unattended, the cat or piper wins unseen, and the coronation show shakes over a rumble.\nNew src/components/scenes/sceneClock.ts: sceneNow() (ms that stand still while held), sceneHeld(), setSceneHeld(on), onSceneHold(fn). held = isHeld(useGame.getState()) (exported by store.ts, ENG-5) || document.hidden. SceneHost sets it from a store subscription and a visibilitychange listener.\nReplace performance.now()/real dt with sceneNow() in: sceneUtils.ts makeClock, CatchCanvas.tsx main loop (if sceneHeld() { last = now; draw(0); return; } and ignore pointer/key input while held; the 'jump forward to engine time' only when not held), TimingBar.tsx needle (ignore Space while held), CatScene.tsx paw creep, RatcatcherScene.tsx notes, DownpourScene.tsx, TrainBackdrop.tsx, HazardKit.tsx, HaulCard.tsx RollUp, TrainPass.tsx loops. TrainRumble's 200 ms shake/rumble interval and PiperWarn's tune interval return early while held. sceneUtils shake() and buzz() are no-ops while held. UpstairsInset gets animation-play-state: paused while held. SceneFrame shows a small 'пауза' badge while held for ceremony/crash/saveIssue (not for hidden). New sceneClock.test.ts with mocked performance.now. New decorative loops carry data-decor.",
+   "acceptance": "Vitest: 10 s of hold advances sceneNow by 0 and it continues without a jump after release; makeClock likewise. Dev: devTrigger('metro_train'), enter catch, setCeremony(true) 20 s, then false: scene.phase stays 'catch', no scene action reaches the store and no 'shake' UiFx is emitted while held, items resume where they were, the haul counts catches made after resume. Same on a cat fight: paw reach unchanged across the hold. Switching tabs for 10 s mid-pass: same items mid-air on return."
+  },
+  {
+   "id": "SCN-2",
+   "title": "Train pass: a rat crew holding a tarp, crash lockout, circus bounces, fog layer, curio tags",
+   "priority": "P1",
+   "package": "scenes",
+   "from": [
+    "visuals-7",
+    "trains-4",
+    "trains-8",
+    "trains-10",
+    "meta-1"
+   ],
+   "spec": "1) Crew and tarp (new scenes/crew.ts): on TrainPass mount render 4 hidden RatBody svgs (import RatBody from colony/ratArt, read-only; furs varied; coal miner cap, stoker, mechanic goggles, foreman hat), rasterize via XMLSerializer → Image into a sprite cache. In TrainPass drawBack after painter.draw, draw the crew at x = .14/.38/.62/.86·W on the 70% line; pose by position: wall y−10 scale .85, rails 0, ties +6 scale 1.1. Between neighbours a sagging tarp (quadratic curve, #d9c9a4 with stitch dashes); a catch within 90 px of a span sags it 6 px with damped spring-back and the nearest rat does a 0.2 s squash-hop; a rat ducks (scaleY .6) while a wheel arc centre is within ±0.4R. Cosmetic only: hit tests untouched, items draw over the crew; reduced motion = static crew. TrainRumble prep panel: one row of three position chips in the top 30% so the rail head and crew stay visible; each chip shows 'авария N%' from crashChance(pos, variant, royal) and '≈ сбор ×X' from expectedAuto (ENG-8).\n2) Crash: when game.scene.crash, the extracted input gate rejects pointer downs for t < 1.2 s of the pass; draw 💫 over the rail and the banner '💥 Авария! Тележки перевернулись — автосбор ×0.5'.\n3) Circus: CatchCanvas.stepBody honours TRAIN_VARIANTS[variant].bounces/restitution/launchMul (up to 3 bounces, restitution .72, 25% higher launch) for non-sparks.\n4) Fog: when TRAIN_VARIANTS[variant].fog, draw a fog layer; items show at 25% alpha unless within 110 px of a pointer or the paw, inside the lantern cone, or within 0.4 s of landing.\n5) Curio: an item with curio draws as a parchment tag with a gold ring and sparkle; on catch emit sfxCue3('curio').\nExtract pure helpers (pointer gate, fog alpha, bounce step) into .ts files with tests in this folder.",
+   "acceptance": "During every metro/royal pass >= 4 crew rats and the tarp are visible and catches near a span sag it; catch results identical with and without the crew; <= 8 extra drawImage per frame and 60 fps held. With crash the gate rejects pointer downs for t < 1.2. A circus pass shows items arcing 2–3 times. In a fog pass unlit items are dim and brighten near the paw and in the lantern cone. A curio tag is visually distinct. Unit tests for the extracted helpers pass."
+  },
+  {
+   "id": "SCN-3",
+   "title": "Haul card: a struck medal, an odometer ratchet and a distinct sound ending per rating, variant chip",
+   "priority": "P1",
+   "package": "scenes",
+   "from": [
+    "visuals-9",
+    "audio-4",
+    "trains-12",
+    "balance-4",
+    "meta-1"
+   ],
+   "spec": "HaulCard.tsx:\n1) New HaulMedal SVG (r 34 + ribbon): bronze #b0703a, silver #c9cfd3, gold #d4af37 gradients with an embossed rat-head profile and '1887'; the ribbon carries the bonus ('+20%'); royal = gold + crown, red velvet ribbon, 6 rays. Pin top-right over the double rule; enter with the existing rh-stamp keyframe (scale 2.8→1, 0.4 s) 350 ms after the card, then one CSS shine sweep. Below 40%: a dashed empty outline 'нужно 40%'. No emoji in the rating line. CatchCanvas gauge notches become small Path2D medal discs.\n2) Sound ladder: RollUp gets onTick; each time eased progress crosses a 1/14 step call sfxCue('tick', {intensity: 0.35, pitch: 1 + 0.5·k}) (first, largest row only). Stinger at ~1.25 s: none → sfx tierLost cue; bronze → sfx.tin(); silver → chime twice (1318.5 then 1568 Hz via existing cue 'chime' with pitch, 90 ms apart); gold → existing stamp/thud at 1350 ms then medal cue 120 ms later; royal → stamp, record, jingle. Keep the opening typewriter; drop the generic coin when a stinger follows. All card sound ends <= 2.3 s after the card shows. Use only existing sfx/sfxCue members.\n3) Subtitle chip from scene.variant and scene.announce (e.g. '📮 Почтовый на Эдинбург', '🧀 Сырный вагон', '🎪 Цирк', '🌫️ Туман').\n4) Lines 'Экспонат: «…»' when summary.curio, and 'Бдительность людей −X%' when summary.vigilance > 0.\n5) Phone: kicker text-[10px] tracking-[0.16em] whitespace-nowrap below sm with shorter copy 'Экстренный выпуск'.\n6) 'Дальше' uses useBackCloses (src/lib) so Android Back dismisses the card.",
+   "acceptance": "Each rating shows its own drawn medal; four ratings sound audibly different; the odometer plays 12–16 ticks and the last gap is >= 3× the first; reduced motion shows the medal without stamp scale or shine; the variant chip appears for non-normal trains; at 375 px the kicker fits on one line."
+  },
+  {
+   "id": "SCN-4",
+   "title": "Hazards and the carriage: counter the cat's lunge, first-carriage tutorial, hooves and giant voices",
+   "priority": "P1",
+   "package": "scenes",
+   "from": [
+    "trains-9",
+    "firsthour-9",
+    "audio-8",
+    "audio-6",
+    "audio-13"
+   ],
+   "spec": "1) CatScene: lunges come from catLungeAt(seq, n) (ENG-9): 0.3 s wind-up (claws glint + sfxCue('tick') rising), 0.2 s lunge (+0.12 reach). A hit within ±CAT_COUNTER_WINDOW of a peak is 'Контрудар!': counts 3 hits, knocks back ×2, shows 'ХРЯСЬ!', plays a heavier bonk and sfxCue3('counter'). Other hits stay ×1 (mashing still beats early cats). Space during the glint window counts as a counter. Send {taps, cleared, perfect} to the store.\n2) CarriageScene: render the new 'warn' phase of the first carriage (scene.tutorial): hooves and the wheel shadow sweeping the light shafts, plate 'Цок-цок… Экипаж над решёткой!'; keep CatchHint 'Лови! Зажми и веди!' until the first catch on tutorial carriages. Replace the sfx.click() hoof with sfxCue3('hoof') alternating pitch 1.0 / 0.88; sfxCue3('coachman') once per carriage.\n3) Voices: TrainRumble gentleman grumble sfxCue3('giantVoice') at beat 2; PilesPhase lineman sfxCue3('giantVoice', {pitch: 0.9}) on his first sweep and every 3rd; conductor shout sfxCue3('giantVoice', {intensity: 1}) with the arrival thump.\n4) PilesPhase uses blip(round(frac*7)) so a full pile is one octave (AUD-4 maps blips to G major).",
+   "acceptance": "With counters only a 40-hp cat falls in <= 14 taps; mashing at 6 taps/s still beats a 25-hp cat; keyboard Space counters work. The first carriage shows the warn plate >= 2 s and the hint stays until the first catch. CarriageScene no longer calls sfx.click. Each voiced moment emits one sfx3 UiFx (dev fx log)."
+  },
+  {
+   "id": "SCN-5",
+   "title": "Scenes by keyboard and on phones: focus moves in and stays, inert background, two paws, full keys, landscape full-screen, Benedict's stall on phones",
+   "priority": "P1",
+   "package": "scenes",
+   "from": [
+    "mobile-3",
+    "trains-11",
+    "mobile-1",
+    "mobile-7",
+    "mobile-11"
+   ],
+   "spec": "1) Input modality tracker in sceneUtils.ts: keydown Tab/Enter/Space/arrows → noteKeyboard(true), pointerdown → false; keyboardUsed() reads it; register once from SceneHost.\n2) useSceneFocus(seq, phase) in SceneHost.tsx: save document.activeElement on mount; while a scene is up set inert on the colony root (.cv-root) and, when usePhoneLayout() (src/lib/layoutMode), on header/sky/resource bar/aside/ticker (query by existing data attributes or roles; add data-scene-inert hooks only inside scenes files, else select by tag/role); aria-modal = usePhoneLayout(). On mount and every phase change, if keyboard modality and focus is on body or outside the dialog, focus [data-autofocus] else the first enabled button. On unmount restore the saved element or the grate. data-autofocus on TrainRumble 'По местам!', CatScene choice 1, RatcatcherScene 'Заплатить', first standing pile, HaulCard 'Дальше', BodyGuard 'Ещё раз'.\n3) Two paws: only the two oldest armed pointers catch; a third finger shows a dim ring and once the hint 'У крысы две лапы'.\n4) Keys: TrainRumble Enter/Space = 'По местам!', 1/2/3 = positions, R = 'Как в прошлый раз'; TimingBar throws on Enter and ↑; in CatchCanvas a fresh Space while hookOpen also reopens the paw; PilesPhase Enter = 'Готово'; show ⌨ hints when keyboardUsed().\n5) Landscape/short phones: SceneHost uses useShortLayout()/usePhoneLayout() to switch the dialog to fixed inset-0 z-40 (JS-driven classes, not a CSS variant); SceneFrame header on short screens py-0.5 with the 👤/🐀 lines in one row, line-clamp-1. PhaseBadge hidden below sm (or icon-only); scene h2 text-base below sm.\n6) MarketPopup docked+expanded: max-md:w-[calc(100%-16px)] md:w-[min(320px,62%)]; below md Benedict portrait 40 px, quote line-clamp-1, DealRow one line (hide +30% badge below sm), 'Сделка' min-w-[72px] min-h-10; never covers the grate. Expanded stall uses useBackCloses.\nTests for the pointer gate and key maps as pure helpers in this folder.",
+   "acceptance": "Trigger metro_train with focus on body: one Tab lands inside [role=dialog]; through rumble → catch → piles → haul → dismiss activeElement is never <body>; at 375×812 no focusable outside the dialog lacks an inert ancestor; a full metro train is playable with Tab/Enter/←/→/Space and focus returns to the grate. 4 synthetic held touches on the rail: only 2 catch. At 812×375 the catch canvas is >= 780×250 px and the dialog covers the viewport. At 375×812 'Барыга Бенедикт' is not truncated and all 3 deals are visible without inner scroll; desktop stall unchanged; all 7 scene titles fit at 360 px."
+  },
+  {
+   "id": "COL-1",
+   "title": "The first frame: the elder at the grate, litter that drops on each click, dig sites, warm gaslight, a visible focus ring, the deep rumble",
+   "priority": "P0",
+   "package": "colony",
+   "from": [
+    "firsthour-7",
+    "visuals-4",
+    "mobile-4",
+    "firsthour-6",
+    "audio-8"
+   ],
+   "spec": "Why: at t=0 two thirds of the screen is dark dirt, 0 rats, mean luminance 36.5/255 with 74% of pixels below L40; the grate is a 22 px CTA; a newcomer waited 64 s before the first click.\n1) Street.tsx: a decorative 'Старейшина' rat (RatBody, older fur, a tiny cane) in the grate's light from t=0, sniffs and looks up; on each grate press he darts to the drop point and carries the crumb to a pile by the ladder (5 sprite sizes up to 10 🍞); visual only (engine rats stay 0); hidden once flags.vagrants and 3+ rats exist.\n2) Grate litter: 3 crumbs, a 4-hole button and a penny drawn on the bars; each press drops the nearest item through the grate (WAAPI translateY 0→70 + rotate + fade, 380 ms), a new one appears 500 ms later; luckyPaw makes the penny glow gold; reduced motion: fade only.\n3) Chamber.tsx: open-zone slots not yet visible render a 'непрокопано' placeholder (seeded irregular hollow inside NICHE in shade(bg,−0.2), a pick-axe, chalk '?' at 30% opacity), ~5 nodes, no animation, not clickable.\n4) cv-rays-night becomes warm gas-lamp light (#ffcf7a stops at .26/.07/0, moon kept); rays crossfade over 3 s with two stacked paths instead of an instant fill swap.\n5) PawHint: a drawn brass paw print + pointing glove (#ffd34d, INK outline) instead of the 🐾 emoji. '← Тащи!' gets a dark plate (contrast >= 4.5:1) and anchors below the grate when the right side is clipped (375 px).\n6) Focus ring: remove outline:'none' on the grate; add path .cv-grate-ring (dashed gaslight trapezoid 6 units outside, opacity 0) shown by g[role=button]:focus-visible .cv-grate-ring{opacity:1} in colonyCss.ts; same pattern for the ExpeditionPlaque in LockedBand.tsx. Grate hit rect scaled by var(--plate-k) so it is >= 44 css px tall at 320 px.\n7) Fx deepRumble (ENG-9): dust burst along the burrow top shelf, the 4th-tier silhouette in LockedBand/ZoneBand glows red for 3 s, 3 px shake via the existing fx bus (skipped with reduced motion).\n8) Remove the extra sfx.click() in ColonyView's build button (the engine buy → thud already sounds).\nNew loops carry data-decor.",
+   "acceptance": "Fresh save at 1440×900 and 375×812: a rat is visible in the grate light, 6 burrow placeholders and the grate litter are visible in the first frame, every press visibly drops an item, the full '← Тащи!' is readable at 375 px. Rasterized mean luminance of the street+burrow rect >= 48 at 05:00. Tabbing to the grate shows the dashed ring. The deep rumble shows dust and the glow once. Day/dusk/night crossfade ~3 s."
+  },
+  {
+   "id": "COL-2",
+   "title": "«Цели колонии» 2.0: useful-now pick, honest ETAs, compact and out of the way, post-coronation goals, legible on phones",
+   "priority": "P0",
+   "package": "colony",
+   "from": [
+    "firsthour-5",
+    "firsthour-4",
+    "visuals-10",
+    "meta-4",
+    "mobile-8",
+    "mobile-10",
+    "firsthour-10",
+    "mobile-5",
+    "mobile-14"
+   ],
+   "spec": "GoalWidget.tsx:\n1) Extract a pure goalModel(s, d) (new colony/goalModel.ts) used by the widget. Step 1 uses buildNowPick(s,d) (goals.ts, ENG-1): kind 'useful' → '✓ Выгодно сейчас: 🎓 Школа карманников — «Канализация» ≈ на 4 мин ближе'; kind 'cheap' → 'Можно построить: …'. Expedition/express rows use projectBottleneck: copy 'дольше всего ждём 🪙 ≈ 12 мин'; ETA > ETA_LONG_SEC → 'долго' plus the elder's fix ('→ больше 🎩'); when full → '🍞 склад полон — внесите' and clicking contributes (contributeExpedition / contributeExpress). Never render 'e+' or > 3 digits before 'д'.\n2) Compact default: the elder's line with «Сделать» plus the first goal; the rest behind '+N цели ▾' (expanded state in sessionStorage, try/catch). When the widget's rect intersects a built chamber's screen rect (BUILDING_SLOT + toScreen, recomputed in the onCamera hook) and it was not hovered/focused for 6 s, fade to 0.55; back to 1 on hover, focus or a new goal. Pill mode unchanged. Popover uses useBackCloses (src/lib).\n3) After the coronation: rows '🚃 Вагон №N' (bottleneck ETA) and '📜 {commission} cur/goal' (commissionProgress); none accepted → '📜 Король ждёт: выберите поручение'.\n4) SteamGauge tooltip shows the steamBudget split from the hints steam info.\n5) Phones: apply transform: scale(var(--plate-k)) (transform-box fill-box) to the zone signboard group (ZoneBand), the empty-slot caption (Chamber) and the ExpeditionPlaque (LockedBand); when camera scale < 0.7 and the locked band is below view, show an HTML chip '↓ Разведка: Канализация · 9/12' docked bottom-centre (tap = focus('map', zone)). When the sheet is 'full' on phones, hide ZonePips, GoalWidget, SteamGauge and the overflow label, keep the grate, add a '▾ Колония' chip calling setSheet('half'). ZonePips get the .hit-slop class (shell adds the utility in globals.css; harmless if absent) so they resolve to >= 40 px.\n6) Colony tests: goalModel first line equals buildNowPick on 3 fixtures; 50 random sampled states never produce 'e+'.",
+   "acceptance": "At 1280×720 and 1440×900 the default widget sits above the first chamber row or fades to <= 0.55 after 6 s idle; at 1100×690 the trash chute art is readable. With 🍞 full and a project needing 🍞 the sub line contains 'склад полон' and clicking contributes. A crowned state shows wagon and commission rows. At 375×812 every visible colony text with letters is >= 10 px tall and the plaque or its chip is inside the colony section; at full sheet no widget overlaps the grate. Unit tests pass."
+  },
+  {
+   "id": "COL-3",
+   "title": "Chamber interiors and living rats: zone back walls, apex lamps, zone tier-25/50 dressing, rats behind the furniture, a walk cycle",
+   "priority": "P1",
+   "package": "colony",
+   "from": [
+    "visuals-1",
+    "visuals-5"
+   ],
+   "spec": "1) parts.tsx Defs: clipPath cv-niche (NICHE path), 5 back-wall patterns (burrow earth strata + root hairs; sewers brick courses; cellars vertical boards; metro white tiles with a red band at y−70; terminal cream plaster with a brass dado), gradient cv-niche-light (lit floor → dark apex). Chamber built branch: niche-light fill (≈ shade(bg,−0.25) at the floor) + zone wall pattern at .55 clipped to the niche.\n2) ZoneLamp on a chain (y−148 → y−118): burrow thimble candle, sewers jam-jar glow-worm lantern (teal), cellars gas bracket, metro caged bulb, terminal brass mini-chandelier; its Glow (r 70) is the key light; when mood !== 'ok' the lamp dims (glow .08). One cv-flicker per lamp, culled via registerCullItems.\n3) BuildingArt: replace the generic Bunting at L>=25 with ZONE_TIER_PROPS[zone] (tier 25: burrow framed 'Почётная грамота' + second candle; sewers copper pipe with a pressure gauge; cellars jar shelf + drying cheese; metro enamel sign 'ЦЕХЪ' + dial; terminal velvet rope + gilt mirror). Tier 50: gilded niche rim (stroke url(#cv-brass) 4) + brass nameplate with the building name; StarPlaque stays. Bunting only for coronation/frenzy. The 6 late buildings (capsule_tap, clocktower, platform_post, brass_foundry, rail_forge, express_depot) get one tall element at tier 1/5.\n4) Depth: Chamber gets layer 'back' | 'front' (both memoized): back = niche, wall, lamp glow, floor lip; front = art, hit path, plates, ring/flash/scaffold, bounce. ColonyView order: ZoneBands → ChamberBack×25 → Shaft/Rail → RatsLayer → ChamberFront×25 → WorkBeats/FlyingItems/ZoneReveal. Two depth lanes: odd-slot sprites walk at y−5, scale .9, darker fur (shade(), not a CSS filter).\n5) Walk cycle: RatBody foot rects get cv-foot-a/cv-foot-b, tail path cv-tail; the rAF loop toggles cv-walk on a sprite only when 'walking' changes and it is in view; CSS steps(2) 0.22 s feet, tail ±10° 0.44 s, slow 1.8 s idle sway; all data-decor so reduced motion pauses them.",
+   "acceptance": "Every built niche at tiers 1/10/25/50 shows a back wall and a lit lamp in its top third; no Bunting for L25–99 outside coronation/frenzy; the 5 tier-25 props differ; idle and НЕТ ПАРА chambers show the lamp off; every ChamberFront comes after RatsLayer in DOM; with 40 sprites each chamber's art is >= 70% unoccluded; walking sprites alternate feet; <= 12 nodes and <= 1 infinite animation added per chamber; colony frame time within 1 ms."
+  },
+  {
+   "id": "COL-4",
+   "title": "The world celebrates: the Rat Express assembles on the Terminal platform, zones open with lights, bulk buys feel bigger, carriage rain at the grate",
+   "priority": "P2",
+   "package": "colony",
+   "from": [
+    "visuals-3",
+    "visuals-8",
+    "visuals-12",
+    "trains-7"
+   ],
+   "spec": "1) TerminalDecor (ZoneBand.tsx): replace the r1c1 luggage cart with the existing default export of panels/Locomotive.tsx (read-only import; it returns its own <svg>, nest it with x/y/width/height ≈ 216×79 world units on the platform track) fed with the same props ExpressPanel uses (stage, wagons, frac, calm). Park the cart to the right until stage 1. On Fx expressStage: focusZone('terminal', 4000), fxBurst('dust', 16), a brass 'ЭТАП N/10' plate rises (cv-badge). This makes the K3 waits visible in the world.\n2) Zone opening: replace the black ZoneReveal rect with an SVG mask whose black circles at the zone's light sources scale 0→1 with delay i·0.3 s (pools bloom left→right within 2.4 s); the Shaft's new segment scales 0→1 from the top over 700 ms; 3 guest rats (Rats.tsx guest system) climb down; the ZoneLabel drops on two chains; mask removed after 3 s; reduced motion = 0.4 s fade.\n3) Bulk buys: Chamber keeps the previous level in a ref; jump k >= 2 → brass '+k' tag (cv-badge 1.2 s), bounce ×(1 + min(.6, .4·log10 k)), dust 12 + 4·log2 k; LevelPlate digits roll (−15→0 over 300 ms) on change.\n4) Carriage grate rain (ENG-9): shinies with kind 'carriage' render as a coach-lamp glint / horseshoe sprite in the existing shiny layer (BgEvents).",
+   "acceptance": "With the Terminal open, contributing to the express fills the ghost part in the terminal band; completing a stage flies the camera there and the part appears within 1 s. devOpenZone('cellars') shows >= 4 light pools igniting in order within 2.4 s, the ladder extends and 3 rats descend; the mask is gone after 3 s. A ×10 buy shows '+10' and a stronger bounce, a +1 buy is unchanged. Carriage shinies are visually distinct."
+  },
+  {
+   "id": "PAN-1",
+   "title": "Jobs tab, the boarded office and the steam valve: auto focus badge, plain words, steam priority, a 0/10 first goal, sheet collapsed until vagrants, structured unlock items",
+   "priority": "P0",
+   "package": "panels",
+   "from": [
+    "firsthour-3",
+    "firsthour-10",
+    "firsthour-7",
+    "balance-3",
+    "visuals-4",
+    "mobile-2"
+   ],
+   "spec": "1) JobsTab.tsx: the star column shows a small 'авто' badge on newbornTarget(s,d).job when auto (ENG-1); header 'Новорождённые идут в ★ 🎩 Карманники — для «Канализации» не хватает 🪙 (авто; нажмите звезду, чтобы выбрать самим)'. Rename the market tag '★ выгоднее всего' → '👍 выгодно'. '🪙-экв/крыса' → 'польза ≈ 0.07 🪙/с с крысы' (hidden until the first zone opens); 'В избытке' → 'лишние руки'; precise terms stay in tooltips.\n2) Steam valve near the stokers row: Segmented 'Пар: заводу / прессам' bound to s.steamPriority / setSteamPriority (ENG-4) with the line 'бюджет 135 💨/с: прессы X · часы Y · плавильни/кузни Z' from steamBudget.\n3) UpgradesTab: tag 'ВЫХОД' → 'больше добычи', 'СКОРОСТЬ' → 'быстрее'.\n4) SidePanel Boarded: an SVG office door (three planks nailed in a Z, brass 'КОНТОРА' plate, cobweb) and a goal bar 'Запах еды: 3/10 🍞 — на запах сбегутся бродяжки' fed by one res.crumbs selector; below it greyed silhouettes '🏗️ Стройка · 🐀 Работы · 🔬 Наука'.\n5) Phones (usePhoneLayout): keep the sheet collapsed to the handle (<= 64 px) until flags.vagrants; full sheet uses useBackCloses to return to half on Android Back.\n6) SidePanel unlockItem fills the new optional icon/name/desc fields of UiFx 'unlock' items (ENG-12) while keeping text.\n7) BuildingCard '🔒 нужен склад' needs no change (engine helper fixed) — verify no card shows 'ур. N' with N − current > 3.",
+   "acceptance": "A screenshot of the Jobs tab at minute 3 shows no ★ except focus buttons and an 'авто' badge; grep of src/components/panels finds no visible 'экв' or '★ выгоднее всего'. Toggling the valve changes s.steamPriority. At t=0 the board shows a 0/10 bar that advances on each click; at 375×812 the panel is <= 64 px tall until vagrants. Unlock fx items carry name and icon."
+  },
+  {
+   "id": "PAN-2",
+   "title": "Migration and collections: London map with district choice, seal texts, the Kunstkamera showcase, honest express bonus, legible medals",
+   "priority": "P1",
+   "package": "panels",
+   "from": [
+    "meta-2",
+    "meta-1",
+    "balance-10",
+    "meta-8",
+    "balance-6",
+    "mobile-8",
+    "meta-12",
+    "firsthour-6"
+   ],
+   "spec": "1) MigrationTab masthead becomes an SVG London (Thames curve, 12 labelled dots at DISTRICTS pos, visited inked, the route drawn from meta.history/visited, a crown pin on the current district) using districtInfo(meta). MigrateBox confirm card shows migrationPreview(s).options as two cards (name, icon, perk, quirk) and calls migrate(to). Seal cards read SEALS texts (ENG-8). Fits 375 px with no horizontal scroll.\n2) ExpressPanel: bonus line from expressBonusPct(s) (no hard-coded '+10%' or 1.05/1.5 math; use metaMath helpers); the locked express_plan card shows describeCond ('после первого Великого Переселения').\n3) MedalsTab: 'Трофеи' becomes 'Кунсткамера' — a grid grouped by owner from curioSets(s); unseen curios are silhouettes with CURIOS hint ('Ищите в вагоне 1-го класса'); tap shows the 👤/🐀 pair; finished sets show their perk. Group title 'Мета' → 'Династия'. Below sm: grid minmax(4.4rem,1fr) (4 columns), names text-[10.5px] line-clamp-2, progress text-[10px].\n4) MapTab: the metro card shows metroTeaser(s) when non-null.\n5) Add src/components/panels/noTinyText.test.ts: grep panels files for text-[5-9px] with an allow-list (Stamp, decorative).",
+   "acceptance": "Choosing a district card migrates to it and the next run's chip shows its name; the map renders at 375 px without horizontal scroll and draws the route. ExpressPanel's bonus equals expressBonusPct for wagons 0..5. The Medals tab shows 24 Kunstkamera slots with silhouettes and has 0 text nodes under 10 px at 375 px. noTinyText test fails when text-[9px] is added to a non-allow-listed panels file."
+  },
+  {
+   "id": "PAN-3",
+   "title": "Drawn thumbnails in cards and jobs, and a phone sheet that shows more cards",
+   "priority": "P1",
+   "package": "panels",
+   "from": [
+    "visuals-2",
+    "mobile-10",
+    "mobile-5"
+   ],
+   "spec": "1) New src/components/panels/Thumb.tsx: BuildingThumb({id, lvl}) = <svg viewBox='-92 -152 184 156' width=48 height=40 class='cv-thumb'> with the NICHE path in the zone bg plus BuildingArt (read-only import from colony/buildingArt, artLevel tiers), memoized per (id, tier); JobThumb({job}) = <svg viewBox='-36 -34 64 36'> with RatBody (colony/ratArt). PanelArtDefs: one <svg aria-hidden width=0 height=0 style position:absolute> rendering colony Defs once, mounted in SidePanel (not display:none) so url(#cv-brass) etc resolve even when the colony svg is hidden. CSS .cv-thumb *{animation:none!important}.\n2) BuildingCard icon slot uses BuildingThumb (keep opacity-50 grayscale for L0); the card→chamber flight clones the thumbnail svg; JobsTab rows use JobThumb.\n3) Phone sheet: SheetHandle becomes a 40 px row with the grab bar centred and a left slot; a small SheetSlot context lets a tab portal one compact control there; BuildingsTab puts its ×1/×10/Макс Segmented there below md and Toolbar renders nothing on phones when moved. Zone header min-h-10; Segmented dense max-md:min-h-10.",
+   "acceptance": "The Buildings tab shows 25 thumbnails that change at 5/10/25/50; Jobs shows each rat with its hat or tool; grep '{def.icon}' in BuildingCard.tsx returns 0; document.getAnimations() finds none inside .cv-thumb; PA-1 budget holds (<= 45 panel renders per tick); at 375×812 half sheet >= 3 building cards are fully visible; desktop DOM of the toolbar unchanged."
+  },
+  {
+   "id": "SHL-1",
+   "title": "Notification flood control: short unlock toasts, nothing over a running scene, early medals grouped, phone toasts that do not eat the colony",
+   "priority": "P0",
+   "package": "shell",
+   "from": [
+    "firsthour-8",
+    "mobile-2",
+    "meta-12"
+   ],
+   "spec": "Toasts.tsx:\n1) Unlock toasts: one line per item using item.name/icon when present (else text truncated at the first ' — '): '🦷 Острые резцы', '📦 Тайник в табакерке'; at most 3 lines plus '…ещё N' (phones: 2 lines, line-clamp-1). Desktop may keep the description in a tooltip; 'Открыть' focuses the first item.\n2) While game.scene is set, on desktop too, queue every non-train toast and medal banner with fuses paused (same mechanism as for modals) and release after the haul card.\n3) First 10 minutes of play: medals awarded within 5 s merge into one '🏅 +2 медали: Хомяк в душе, Перегруз!'.\n4) The zone 'ЭКСТРЕННЫЙ ВЫПУСК' banner is exclusive; others release 3 s after it.\n5) Phones (usePhoneLayout): toast text line-clamp-2; cap the stack's maxHeight at 38% of the colony rect (useSheetAnchor) dropping the oldest first; skip the 'market opened' and purse toasts while their widgets are on screen; «К путям!» becomes a one-line 44 px row (countdown + 'К перрону').\n6) The commission-done toast says 'Грамота уже в казне!' only when !charterAtCap(s) (ENG-3), else 'Король доволен'.",
+   "acceptance": "A scripted first-5-minute replay (10 clicks/s for 3 min + hint actions) never shows more than 2 toasts at once; no unlock toast taller than 96 px at 1366 width; with a scene running on desktop no toast intersects the scene frame; at 375×812 dev '🍞 Тосты ×4' plus a 4-item unlock gives a stack <= 136 px with each toast <= 64 px; devTrigger('market') on a phone produces no toast; desktop toasts outside scenes otherwise unchanged."
+  },
+  {
+   "id": "SHL-2",
+   "title": "The coronation waits for the scene to end; repeat coronations open on the finale (K1 shell part)",
+   "priority": "P0",
+   "package": "shell",
+   "from": [
+    "trains-1",
+    "meta-7"
+   ],
+   "spec": "CoronationOverlay.tsx: treat a running scene like the offline report already is: in the onFx('coronation') handler set pending when useGame.getState().game.scene is non-null (including the haul phase); in the store subscription open the show once !st.game.scene && !st.offlineReport. setCeremony is only called when the show actually opens. When meta.coronations >= 3, open straight on the finale card with 3 bells and the new coronation line, plus a 'Полная церемония ›' button that replays the ride; 'Дальше ›' unchanged. GameRoot: while isHeld(state) (ENG-5) ignore incoming 'shake' UiFx and reset any running shake transform, so the overlay never trembles. Celebration.tsx at 375 px: kicker text-[10px] tracking-[0.16em] whitespace-nowrap with 'Экстренный выпуск', portrait wrapper mt-8 so the crown clears the kicker.",
+   "acceptance": "Store/dev test: a coronation fx while game.scene is set does not set ceremony; the ceremony opens within one sample after the scene clears. Dev: devTrigger('metro_train'), finish the last express stage during the rumble → no show until the haul card is dismissed. Coronation #3+ shows the finale card within 2 s; #1 and #2 unchanged. At 375 px the kicker does not overlap the crown."
+  },
+  {
+   "id": "SHL-3",
+   "title": "Phones for real: visual verification at 375/320/landscape/tablet and the fixes it shows, short-viewport mode, safe areas, text scale reaching overlays (K7)",
+   "priority": "P0",
+   "package": "shell",
+   "from": [
+    "mobile-1",
+    "mobile-6",
+    "mobile-11",
+    "firsthour-7"
+   ],
+   "spec": "K7 says the 375 px layout was only DOM-inspected. Do it visually: open your own browser tab (http://localhost:3000/?slot=v3-shell, never another server) and take screenshots at 375×812, 320×640, 812×375 and 768×1024 of: fresh start, 5 buildings, all zones, metro scene (rumble/catch/piles/haul), market, coronation, migration and medals tabs; fix every shell-owned defect found (list the others in your final report for the owning packages).\nKnown fixes:\n1) globals.css '@custom-variant short (@media (max-height: 520px));'. SkyStrip short:h-8; Header title block short:hidden with py-0; NewsTicker root short:hidden. Toasts use usePhoneLayout (replace DESK_MQ).\n2) layout.tsx viewport: viewportFit 'cover'; header pt-[env(safe-area-inset-top)], GameRoot root px safe-area left/right, ticker pb safe-area bottom.\n3) Text scale: GameRoot sets --ui-zoom on the layout root; .ui-zoom{zoom:var(--ui-zoom)} on the Toasts stack, the FloatTip portal span, OfflineModal/SaveIssueModal cards (scenes and colony overlays are out of scope here). Header.tsx: right group shrink-0, clock min-w-0 overflow-hidden; below 400 px with zoom > 1 hide the weekday and the rats' max.\n4) Non-breaking spaces before units in shell strings ('до затопления {n} с' lives in scenes — report it).\nAt 812×375 with no scene: colony >= 260 px tall and the panel content >= 230 px (coordinate with SidePanel only via layout classes in GameRoot).",
+   "acceptance": "Screenshots of all listed states at the four sizes are attached to the final report; no horizontal scroll at 375×812, 320×640, 812×375, 1440×900; at 812×375 colony >= 260 px and panel >= 230 px; at 375×812 with textScale 1.3 header scrollWidth <= clientWidth and the ⚙ rect is inside the viewport; toast and tooltip text computed font-size is 1.3× at scale 1.3; element rects at 375×812 and 1440×900 unchanged apart from the intended fixes."
+  },
+  {
+   "id": "SHL-4",
+   "title": "Accessibility and input: visible focus everywhere, 40 px touch targets, named resource pills, still ticker for reduced motion, Back closes overlays, one motion switch, dev tools out of the way",
+   "priority": "P1",
+   "package": "shell",
+   "from": [
+    "mobile-4",
+    "mobile-5",
+    "mobile-9",
+    "mobile-12",
+    "mobile-14",
+    "visuals-13",
+    "mobile-13"
+   ],
+   "spec": "1) globals.css: ':where(button,[role=button],[role=tab],[role=radio],[role=switch],a[href],summary,[tabindex]:not([tabindex=\"-1\"])):focus-visible{outline:2px solid var(--gaslight);outline-offset:2px}'; .hud-paper :focus-visible{outline-color:#2a1f14}; .hit-slop utility (::after inset −6px); touch-action: manipulation on buttons/roles; remove outline-none without replacement in shell files.\n2) ResourceBar: Pill aria-label like 'Крошки: 10,1 тыс. из 11,8 тыс., +155 в секунду, перегруз'; ПЕРЕГРУЗ tooltip 'Находка сверх лимита: потратьте, пока не ушло'; below 640 px sort pills: resources of the current goal (nextHint/currentProject) first, then rate < 0 or full/over, then RES_ORDER. FloatTip: tabIndex=0, useId + aria-describedby, open on focus, close on blur and rr-escape, Enter toggles. ⚙ tab and ticker button get .hit-slop.\n3) NewsTicker with reducedMotion: newest headline static (truncate), swap every 8 s with a 300 ms opacity crossfade; dropdown uses useBackCloses.\n4) Motion switch: GameRoot sets html[data-motion] from settings.reducedMotion/reducedMotionFromOS; one rule html[data-motion='off'] :is([data-decor],[data-decor] *){animation-play-state:paused!important} plus the prefers-reduced-motion rule guarded by html:not([data-motion='on']); keep existing class whitelists working (other packages tag new loops with data-decor).\n5) DevPanel 🛠: half-hidden edge tab 'fixed right-0 top-1/2 translate-x-1/2 hover:translate-x-0 focus-visible:translate-x-0', hidden while game.scene is up unless open.\n6) OfflineModal copy 'КПД η = 50%' → 'вполсилы (50%)' (keep η in a tooltip).",
+   "acceptance": "A script focusing every focusable on the main screen and in Настройки finds a >= 2 px outline on 100% of shell-owned controls; read_page lists each pill with its Russian name; Tab reaches every pill and a role=tooltip appears and closes on Esc; at 375 px the goal's resources are among the first 4 pills; with reduced motion the ticker transform is constant over 5 s; in dev at 375×812 elementFromPoint at the centre of every visible '+1' returns that button; after 10 ticker open/close cycles history.length has not grown."
+  },
+  {
+   "id": "SHL-5",
+   "title": "Drawn resource icons for the HUD and costs, a sky strip that follows the scene, the «Город Наверху» epilogue",
+   "priority": "P1",
+   "package": "shell",
+   "from": [
+    "visuals-6",
+    "trains-12",
+    "meta-10",
+    "trains-7"
+   ],
+   "spec": "1) New src/components/ui/ResGlyph.tsx: 12 glyphs in the colony style (24×24, INK #1a120c 0.8 outline, brass/copper/silver gradients): crumb chunk, penny with a crown, 4-hole bone button, wire coil, brass gear, cheese wedge, rolled blue blueprint, black coal with a blue sheen, white steam curl, brass ingot, rail section, ring with a gem; plus 5 zone glyphs and a fog glyph. Emit them once as <symbol id='rg-<res>'> in a root defs svg in GameRoot. ResIcon in ui/kit.tsx and ResourceBar render <svg class='h-[1em] w-[1em]'><use href='#rg-…'/></svg> (covers CostList, AmountList, cards, HaulCard via kit). Header district chip uses the fog glyph instead of 🌫️ (blank square on Windows). Prose emoji stay.\n2) SkyStrip: add scene.line to the scene key; caption = scene.line?.human ?? EVENT_LINES[id].human; TrainArt takes tint (TRAIN_VARIANTS[variant].tint) and a yellow cheese car; while s.carriagePass is active (ENG-9) play the carriage mini-scene above the grate.\n3) Epilogue: once meta.achievements.coronation is set, SkyStrip adds a [data-royal] layer: rat-sized bunting over the grate, a tiny crown on the gas lamp, every ~3 min a flag-decked miniature Rat Express runs along the gutter while human walkers step over it; in each run with a coronation, play the flip once (8 s scaleY(−1) of the street layer with the colony band above; reduced motion → a static banner; never while a scene is open). The ticker masthead becomes 'Придворный выпуск 👑'. rAF stays paused while hidden; data-decor on loops.",
+   "acceptance": "grep finds no RESOURCES[...].icon in ResourceBar or ui/kit.tsx; Windows screenshots show coal dark and buttons as sewing buttons; the district chip shows the fog glyph; during a rush-hour train the sky caption equals game.scene.line.human and a freight's sky cars are grey; with the coronation medal SkyStrip renders [data-royal], without it none; the flip plays once per crowned run and never under reduced motion."
+  },
+  {
+   "id": "SHL-6",
+   "title": "Sound settings, a static-export-ready app, offline play, a dev art gallery",
+   "priority": "P1",
+   "package": "shell",
+   "from": [
+    "audio-9",
+    "audio-5",
+    "tech-3",
+    "tech-10",
+    "visuals-11"
+   ],
+   "spec": "Read node_modules/next/dist/docs before touching src/app (AGENTS.md).\n1) SettingsTab.tsx: four sliders 'Громкость' (settings.volume, master), 'Эффекты' (sfxVolume), 'Фон' (ambience), 'Музыка' (music) plus the sound switch; hotkey M unchanged.\n2) Static-export readiness of src/app (REP-3 sets output/basePath in next.config): manifest.ts export const dynamic = 'force-static', start_url './', scope './', icons relative 'icons/icon-192.png' and 'icons/icon-512.png'. Replace the icon1.tsx, apple-icon.tsx and opengraph-image.tsx routes with static PNG files in public/icons (icon-192.png, icon-512.png, apple-touch-icon.png, og.png) captured once from the existing routes on the running dev server (curl http://localhost:3000/icon1/192 etc.), then delete those route files and declare metadata.icons and openGraph.images with paths prefixed by process.env.NEXT_PUBLIC_BASE_PATH ?? ''. layout.tsx metadataBase from NEXT_PUBLIC_SITE_URL, then VERCEL_PROJECT_PRODUCTION_URL, then localhost.\n3) Offline: public/sw.js (~60 lines, no dependency): cache-first for /_next/static/*, network-first for navigations with the cached index as fallback, versioned cache name, old caches deleted on activate. GameClient.tsx registers it only in production (navigator.serviceWorker.register('sw.js', {scope:'./'})); when a new worker is waiting, show the existing toast UiFx 'Новая версия колонии — обновить' whose action posts skipWaiting and reloads.\n4) Dev art gallery: src/app/dev/art/page.tsx, notFound() in production, client-only via next/dynamic ssr:false: grids of NICHE + BuildingArt for every BuildingId × [1,5,10,25,50] with mood toggles, every zone band at 1:1, RatBody × every job, the ResGlyph set, switches for reduced motion and time of day (read-only imports from colony).",
+   "acceptance": "With 'Эффекты' 0 and 'Фон' 50% the sliders persist and the settings values change accordingly; 'npm run build' still succeeds; with REP-3's STATIC_EXPORT build every icon path in out/ resolves under the basePath and og:image is an absolute https URL; after one online visit an offline reload shows the colony with its save; no service worker registers in dev; /dev/art renders all 125 chamber variants in < 2 s in dev and 404s in production."
+  },
+  {
+   "id": "AUD-1",
+   "title": "Mix, audio hold and an offline test bench: the rumble stops pumping the catch, everything pauses under ceremonies, the chuff comes back (K2)",
+   "priority": "P0",
+   "package": "audio",
+   "from": [
+    "audio-1",
+    "audio-2",
+    "audio-7",
+    "trains-5",
+    "trains-1"
+   ],
+   "spec": "1) core.ts: a 'world' input (GainNode → worldDuck → shelf, verb send 0.3). Route rumble (loops.ts buildRumble: level.connect(c.world)), chuff, footstep and thump (VoiceOpts bus:'world') and the ambience bus output into it. Main compressor threshold −16 → −10 dB, knee 14 → 10, ratio 3.5 → 2.5 (limiter unchanged). loops.ts KINDS levels: train 0.62 → 0.44, royal 0.7 → 0.5, capsule 0.32 → 0.26. Chuff white band peak 0.3 → 0.48, brown 0.34 → 0.45. VoiceOpts fg?: true → play() ducks the world bus: setTargetAtTime(0.63, now, 0.004) then back to 1 at now+0.06 (τ 0.12); set fg on blip, ouch, bump, medalTier/carClear cues, jackpot, and coin while a scene is up.\n2) Hold gate (K2, audio side of K1): loops.ts separates intent from gate — chuffStart/chuffStop set chuffWanted; holdLoops(on): on → rumble level to 0 (τ 0.08) without destroying nodes and the chuff ticker skips beats; off → applyRumble() and the chuff restarts at now+0.05 at the last chuffSet rate; chuffSet starts the interval if chuffWanted && !chuffOn. core.ts setHold(on): play() returns early unless VoiceOpts.prio === 'ceremony' (set on coronationBells, migration, record, crownTick). Expose sfx.hold(on). AudioDirector: one subscription, hold = isHeld(state) (store.ts, ENG-5), calls sfx.hold(hold) and ducks ambience −15 dB under a ceremony; useRumble no longer calls rumbleStop/chuffStop on a halt. Coronation bells ring when the ceremony actually opens (ceremony false→true after a coronation fx), not on the fx itself.\n3) Test bench: src/audio/testing/offlineCtx.ts (pull-based mono renderer: Gain, Oscillator sine/square/saw/triangle, AudioBufferSource with loop/offset/playbackRate, BiquadFilter with WebAudio formulas, WaveShaper, StereoPanner and Convolver pass-through, DynamicsCompressor pass-through, AudioParam timeline set/linear/exp/setTarget/cancel; advance(t) fires onended; define globalThis.AudioBufferSourceNode) and src/audio/testing/measure.ts (kWeight, speakerSim 2× HP 250 Hz, momentaryMax 400 ms/50 ms hop, hfShare > 4 kHz, estGainReduction). src/audio/mix.test.ts at 16 kHz: every sfx method and SfxCue renders finite non-silent output with peak < +1 dBFS; a MIX_SHEET of target loudness per sound ±2 LU; voicesNow() returns to 0 (leak test); K2 regression; all-zones ambience <= −32 LUFS; estimated compressor GR during royal rumble <= 1.5 dB.",
+   "acceptance": "npx vitest run includes >= 5 audio tests finishing in < 20 s; raising any sound's peak by 3 dB fails the mix sheet; removing a stop() fails the leak test. Harness: royal rumble mean GR <= 1.5 dB (was 7.0); 8/s blip stream within 5 LU of the rumble; chuff at 8/s within 12.5 LU. chuffStart(4); hold(true) → 0 chuff voices next 1 s; hold(false) → >= 3 in the following 1 s. Dev: during a catch, setCeremony(true) silences rumble/chuff/blips within 0.3 s while bells still sound; false brings rumble and chuff back within 0.5 s; same with a simulated saveIssue."
+  },
+  {
+   "id": "AUD-2",
+   "title": "Scale you can hear: giant impacts on small speakers, giant and rat voices, sounds for silent events, the steam economy audible",
+   "priority": "P1",
+   "package": "audio",
+   "from": [
+    "audio-3",
+    "audio-6",
+    "audio-8",
+    "audio-12",
+    "firsthour-6",
+    "meta-1"
+   ],
+   "spec": "1) instruments.ts giantBody(v, t, f0, d, level): sine f0 → 0.7·f0 over d into tanh WaveShaper (drive 8), then bandpasses 420 Hz Q 0.8 and 700 Hz Q 1.2, plus a pink-noise gravel layer (BP 900 Hz Q 0.7, a 0.002, d 0.09, 0.3·level). Use in footstep (0.55), thump (0.7), heartbeat (0.45/0.32), bump/thud/dig/stamp (0.3).\n2) mutter(v, t, {f0, syll, n, formK, lp?, hp?, level}): sawtooth with ±3% jitter per syllable and a falling contour (shout rises +30% on the last), vowels a 800/1200, o 500/900, u 350/700, e 500/1800, i 300/2200 × formK through two bandpasses Q 6/8, syllable a 0.03 hold 0.6/syll d 0.08. Presets giant (f0 82–110, 3.2 syll/s, n 4–7, formK 0.8, LP 650 + giantBody, gain 0.5) and rat (f0 1100–1400, 11 syll/s, n 3–6, formK 2.3, HP 700, gain 0.18). Handle UiFx 'sfx3' (ENG-12) in AudioDirector: giantVoice, ratChatter, coachman ('Но-о!' giant preset, 2 syllables), hoof (instruments.hoof), curio (small bell + sparkle), counter (heavy bonk), growl; throttle each cue to >= 4 s except hoof/counter. Rat chatter also on zoneOpen (3 staggered voices) and on gold/royal haul.\n3) Silent events in useFxSounds: full → tierLost cue pitch 0.75 intensity 0.5 throttled once per resource per 30 s; hunger on → growl (brown noise LP 160 Hz, 7 Hz AM 0.6, 0.9 s) + squeak 2300→1500 Hz, repeat every 20 s at −6 dB while hungry; hunger off → three woodTok nibbles; overload → safety-valve pop + hiss 3600→2000 Hz 0.35 s; tier → cue 'patent'; toast tone good → chime, bad → tierLost, gold → medal; UiFx unlock → cue 'unlock' once per batch; Fx deepRumble → 2.5 s low rumble at 40% gain; Fx curio → bell. Add a test that every SfxCue member is referenced outside cues.ts.\n4) Steam audible (K4): AmbienceState gets steamEff (quantised 0.05) and steamFull (res.steam >= 0.99·caps.steam for > 5 s). Cellar clock period 1/max(0.35, steamEff), tock pitch × (0.9 + 0.1·steamEff); steamEff < 0.7 → a wheeze every 6–10 s (pink BP 600→300 Hz, −22 dB) + stalled-piston clunk; steamFull → a safety-valve hiss every 12–20 s (BP 2400 Hz Q 3, −20 dB) + tiny pop. Nothing without clocktower/boiler.\n5) Try/catch in the onFx/onUiFx handlers (log once) so an audio exception never aborts other listeners.",
+   "acceptance": "Harness: speaker-sim momentary max >= −40 LUFS for thump, footstep, heartbeat (was −50.8/−41.3/−51.4) with full-range rise <= 2 LU; giant voice centroid <= 450 Hz, rat chatter >= 2 kHz; giant voice speaker-sim >= −42 LUFS; ambience stays <= −32 LUFS. Each listed Fx/UiFx emitted via dev tools gives exactly one sound; hunger growl <= 3 per minute; with steam set to 0 the clock audibly drags within 2 s; steam at cap gives a valve hiss within 20 s; the SfxCue reference test passes."
+  },
+  {
+   "id": "AUD-3",
+   "title": "Generative Victorian music per district and a real mixer (master / effects / ambience / music), robust on iOS",
+   "priority": "P1",
+   "package": "audio",
+   "from": [
+    "audio-5",
+    "audio-9"
+   ],
+   "spec": "1) New src/audio/music.ts and a core 'music' bus (GainNode → musicLevel → musicDuck → shelf, verb send 0.35), lookahead scheduler like the chuff (25 ms tick, 0.15 s ahead). Form: 3/4 waltz in G at 88 BPM; phrase A G|C|D7|G|Em|Am|D7|G, A' G|G7|C|Cm|G/D|D7|G|G; 16 bars (~33 s) then 40–90 s rest; after 3 phrases a 2–3 min break (duty <= 40%). Melody seeded by run index and district: beat 1 nearest chord tone, beats 2–3 step ±1 degree or chord tone, rhythm cells [q q q] [h q] [q. e q] [e e q q] [h.], range D4–D6, cadence bar 4 on D, bar 8 on G; the first 2 bars are a per-district motif (Вестминстер: B-A-G-D quarter-chime figure; Уайтчепел: E minor with organ; Мейфэр/Особняки: glockenspiel waltz; Ламбет/Гончарни: 2/4 polka at 120 BPM; new districts reuse these families by a district-id hash). Instruments in instruments.ts: musicBox(f) (partials [1,.12,1.1 s],[2,.02,.35],[5.93,.015,.08] + 4 ms pluck noise BP 3.5 kHz, LP 3.2 kHz), organReed(f,dur) (two squares ±6 cents, LP 1200, 5.5 Hz tremolo 0.15) for 'pah-pah' on beats 2–3 from the Cellars, brass bass on beat 1 once the Terminal is open. Behaviour: first phrase after the first building; fades to 0 over 0.8 s on sceneStart and resumes only at a phrase boundary >= 8 s after sceneEnd; silent under ceremonies except the coronation, which after the 12th bell plays phrase A on brass at 66 BPM.\n2) Mixer: volume is master ('Громкость'); an fx gain between the effects bus and the shelf with bus.gain = 0.9·curve(sfxVolume); live() gates on master and the sound switch only; non-ambience voices skip when sfxVolume <= 0.001; music level = curve(settings.music), 0 builds no music nodes. Wrap play() including new Voice in try/catch.\n3) iOS: in unlockCore, if 'audioSession' in navigator set navigator.audioSession.type = 'ambient'; ctx.onstatechange → when back to 'running' call ambienceTick() to rebuild loops; resume also from 'interrupted'.",
+   "acceptance": "Harness 5-min render: music plays <= 45% of the time, momentary max at the default slider <= −34 LUFS, energy above 4 kHz < 1.5%, every note in the district's key, music output < −60 dBFS within 1 s of sceneStart. With 'Эффекты' 0 and 'Фон' 50% ambience is audible and clicks silent; 'Громкость' 0 silences all; music 0 builds no nodes; a thrown error in a voice builder (test stub) does not stop other listeners."
+  },
+  {
+   "id": "AUD-4",
+   "title": "Sound polish: a voice per train variant, a softer capsule, blips in G major, fewer birth squeaks, ambience rebalance with a world-above layer",
+   "priority": "P2",
+   "package": "audio",
+   "from": [
+    "audio-11",
+    "audio-13",
+    "audio-14",
+    "audio-10"
+   ],
+   "spec": "1) New src/audio/trainVoices.ts keyed by variant: normal [880] chuff 2→8; rush_hour [784, 988] + giant crowd mutter under the pass; edinburgh_mail [740, 880, 1109] chuff 3→10, rumble LP 95; freight [523, 622] chuff 1.5→5, rumble ×1.15, chain clank per joint; flooded splash with each clack, rattle band 300 Hz; circus [659, 831, 988] calliope-like; fog [440] muffled (LP 900). ±25 cents random detune per train; whistle/whistleFar and the doppler cue take the variant (AudioDirector reads game.scene.variant). Capsule hiss band 5200→2600 becomes 3600→1800 Hz, peak 0.2 → 0.14; joints alternate hiss and a pneumatic thunk (180→90 Hz d 0.08 + noise BP 900).\n2) blipAt maps step to G-major degrees from G4 [0,2,4,5,7,9,11] + 12·octave, wrapping at 14 steps.\n3) Births: at most one squeak per 1.4 s; >= 3 births since the last → a litter trill (3 chirps 70 ms apart ×1, ×1.12, ×1.26, −3 dB); 4 squeak shapes round-robin; none while a scene is open; an isolated birth after >= 3 s of quiet squeaks at once.\n4) Ambience: far train gains the rumble's saturated path (tanh 2.5 → BP 220 + BP 380 at 0.5), rattle 0.35 → 0.6; machinery −24 → −17 dB with a mid 'piston' instead of thud and a ratchet every 8 beats at density > 0.5; trickle 0.11 → 0.08 once the Cellars are open; a new 'Наверху' layer from minute one driven by humanClock(g).hh (carts over the grate every 25–60 s by day, rush-hour rustle 8–9 and 17–19, quiet nights, a muffled tower bell at 12:00 and 00:00), paused while a scene is open.",
+   "acceptance": "Harness: 5+ variants give distinct whistle pitch sets and two consecutive normal trains differ by >= 10 cents; capsule hiss share above 4 kHz <= 25% and momentary max <= −29 LUFS; blip frequencies for steps 0..30 all in G major and rising over 14 steps; 3 births/s for 60 s give <= 45 squeak voices and >= 6 dB less HF energy; each newly opened zone raises ambience >= 1.5 LU on the speaker sim, burrow-only with 'Наверху' >= −48 LUFS, all zones <= −32 LUFS."
+  },
+  {
+   "id": "REP-1",
+   "title": "CI and fast tests: GitHub Actions, slow tests split out, nightly balance, Node pinned",
+   "priority": "P0",
+   "package": "repo",
+   "from": [
+    "tech-2",
+    "tech-8",
+    "mobile-13",
+    "tech-9"
+   ],
+   "spec": "1) vitest.config.ts: exclude **/*.slow.test.ts unless process.env.SLOW; testTimeout 20_000; include src/**/*.test.ts and scripts/**/*.test.ts (unchanged). ENG-7 has moved the 3-h run into src/game/data/reachability.slow.test.ts.\n2) package.json scripts: test (fast), test:slow ('SLOW=1 vitest run' via cross-env-free form: 'vitest run --config vitest.config.ts' with env set in the workflow; for local use add 'test:slow' using node -e or the 'SLOW=1' prefix documented for bash), check = typecheck && lint && test, lint = 'eslint --cache', sim:matrix = 'tsx scripts/sim-matrix.ts', sim:baseline = 'tsx scripts/sim-matrix.ts --write-baseline'. engines {node: '>=20.9'}, repository field (github.com/gvaziro/ratopolis). Add .nvmrc (24). .gitignore: .claude/scheduled_tasks.lock.\n3) .github/workflows/ci.yml on push and PR: ubuntu-latest, setup-node with node-version-file .nvmrc and npm cache, npm ci, cache .next/cache and .eslintcache, then typecheck, lint, npm test, next build.\n4) .github/workflows/balance.yml: nightly schedule, workflow_dispatch, and PRs touching src/game/data/** or src/game/engine/**; matrix seeds [12345, 777]; runs SLOW tests and 'npm run sim -- --runs 3 --quiet --summary' (with --strict only for 12345); appends the SUMMARY to $GITHUB_STEP_SUMMARY and uploads it as an artifact; a separate job runs sim:matrix with --baseline scripts/balance-baseline.json (non-blocking).\n5) next.config.ts: devIndicators: false (per node_modules/next/dist/docs …/devIndicators.md errors still surface).",
+   "acceptance": "npm test passes in < 20 s locally and 10 consecutive runs pass while 'next build' runs in parallel; CI badge on main green; a PR with a type error, lint error or failing test turns red; the nightly balance job publishes the SUMMARY for both seeds; no Next dev indicator over controls at 375 px."
+  },
+  {
+   "id": "REP-2",
+   "title": "Playwright smoke test with real screenshots at desktop, 375, 320 and landscape (K7)",
+   "priority": "P0",
+   "package": "repo",
+   "from": [
+    "tech-4",
+    "mobile-1",
+    "tech-9"
+   ],
+   "spec": "Add @playwright/test (chromium only), playwright.config.ts (webServer 'npm run build && npm start -- -p 3100', port 3100; never reuse the developer's :3000), e2e/smoke.spec.ts and e2e/mobile.spec.ts. Drive the game through window.__rr (exposed in production with ?dev, ENG-12). Viewports: 1440×900, 375×812 (mobile emulation), 320×640, 812×375. Script: open /?dev&slot=e2e with clean storage; setSetting reducedMotion for stable shots; click the grate 20 times; visit tabs 1–8 by keys; on phones toggle the sheet half/full; devTrigger('metro_train') and wait for catch; then piles and haul; devGive + contributeExpress to the coronation and close it; open Migration. At each stop assert: document.scrollingElement.scrollWidth <= innerWidth; elementFromPoint at the grate's centre hits the grate; the tab bar rect is inside the viewport; at 812×375 during catch the [role=dialog] covers the viewport; no console.error or pageerror. Save screenshots to e2e/__shots__/{desktop,mobile,small,landscape}-{home,tabN,catch,haul,coronation}.png, upload as a CI artifact and copy 3 (desktop colony, metro catch, 375 px phone) to docs/screenshots for the README. Add an 'e2e' job to ci.yml after build. Some stage-2 fixes land in parallel: if an assertion fails because of another package's open item, mark it test.fixme with the item id and keep the screenshot.",
+   "acceptance": "'npm run e2e' passes locally and in CI in < 4 min (fixme only for documented items); 0 console errors across the scripted session incl. a full metro catch and the coronation; CI attaches >= 16 PNGs; reintroducing a fixed 400 px element makes the mobile spec fail; docs/screenshots has 3 images."
+  },
+  {
+   "id": "REP-3",
+   "title": "Public build and front door: static export, opt-in GitHub Pages deploy, README with screenshots and a play link, contributing and bug template",
+   "priority": "P1",
+   "package": "repo",
+   "from": [
+    "tech-3",
+    "tech-9"
+   ],
+   "spec": "1) next.config.ts: remove cacheComponents and partialPrefetching (no effect on a single client-only page; they block static export); output: process.env.STATIC_EXPORT ? 'export' : undefined; basePath: process.env.BASE_PATH || undefined; env NEXT_PUBLIC_BASE_PATH = BASE_PATH ?? ''; images {unoptimized: true}. Read node_modules/next/dist/docs first. package.json 'build:static'. SHL-6 makes src/app export-ready (static icons, relative manifest).\n2) .github/workflows/pages.yml: on push to main and workflow_dispatch, job guarded by if: vars.DEPLOY_PAGES == '1' (so it never fails while Pages is not enabled): build with STATIC_EXPORT=1 BASE_PATH=/ratopolis NEXT_PUBLIC_SITE_URL=https://gvaziro.github.io/ratopolis, actions/upload-pages-artifact on out/, actions/deploy-pages. Also build:static runs in ci.yml (no deploy) to keep it working.\n3) README.md: hero image (docs/screenshots from REP-2), '▶ Играть / Play' link to the Pages URL (noted as available once DEPLOY_PAGES is set), CI badge, a 4-line English pitch (two scales of the world, trains as earthquakes) and short English 'How to play', 3 screenshots, 'Deploy' (Vercel; Pages via build:static + DEPLOY_PAGES), 'Project map' tree (engine, data, store, components, audio, scripts/sim) linking ARCHITECTURE.md, and the scripts (check, test:slow, sim, sim:matrix, e2e). Do NOT add a LICENSE file: the license is the owner's decision; add a README 'Лицензия' line saying it is not chosen yet.\n4) CONTRIBUTING.md (npm run check, test:slow, sim -- --strict, 'data is the source of truth', the schema-change rule from ARCHITECTURE) and .github/ISSUE_TEMPLATE/bug.yml asking for the downloaded save file, browser and steps.",
+   "acceptance": "'STATIC_EXPORT=1 BASE_PATH=/ratopolis npm run build:static' exits 0 and every href/src in out/index.html and every manifest icon return 200 when out/ is served under /ratopolis/; 'npm run build' still succeeds; README renders the hero, 3 screenshots and the play link; a new bug issue shows the template with a save-file field; pages.yml is skipped when DEPLOY_PAGES is unset."
+  }
+ ]
+}
