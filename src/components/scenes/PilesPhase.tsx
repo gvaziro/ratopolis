@@ -7,8 +7,11 @@
  * «Путевой обходчик» enters from the left at LINEMAN_START and his hobnailed boot sweeps pile after pile away
  * («Сметено»: no more digging there). Narrow-gauge carts (one per rat_rail level, max 12) roll along the rail below.
  * «Готово», the last swept pile or the timer sends the fractions.
- * Keyboard: Tab / Shift-Tab walk the piles, holding Space digs the focused one.
+ * Keyboard: Tab / Shift-Tab walk the piles, holding Space digs the focused one, Enter is «Готово» (v3 SCN-5).
  * Everything per-frame goes through refs (bars, heaps, the boots) — React only hears about locks and full piles.
+ * v3 SCN-1: the lineman, the carts and the digging run on the scene clock; while the game is held nothing is dug or swept.
+ * SCN-4: the lineman grumbles (sfxCue3 'giantVoice', deeper) on his first sweep and every third; a pile's blips climb
+ * one octave of the G-major scale from empty to full (blip(round(frac·7)), AUD-4).
  */
 import { memo, useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { sfx } from "@/audio/sfx";
@@ -17,13 +20,14 @@ import { RESOURCES } from "@/game/data/resources";
 import { unitValue } from "@/game/engine/economy";
 import { entries } from "@/game/engine/formulas";
 import { LINEMAN_END_FRAC, LINEMAN_START, PILE_HOLD_RATE, PILE_STEP, pileLockTime, stepPile } from "@/game/engine/piles";
-import { sfxCue } from "@/game/fx";
+import { sfxCue, sfxCue3 } from "@/game/fx";
 import { useGame } from "@/game/store";
 import type { ResId, Scene } from "@/game/types";
 import { fmt, fmtInt, fmtPct } from "@/lib/format";
 import { BrassButton, Stamp, cx } from "@/components/ui/kit";
 import { TrainDust } from "./TrainBackdrop";
-import { act, clamp, hash01, keyboardUsed, makeClock, nearestStanding, noteKeyboard, shake } from "./sceneUtils";
+import { isControlTarget, isTypingTarget, pilesKey } from "./sceneInput";
+import { act, clamp, hash01, keyboardUsed, makeClock, nearestStanding, noteKeyboard, sceneHeld, sceneNow, shake } from "./sceneUtils";
 
 /** Narrowest pile slot before the strip wraps into another row (375 px phones: 6 piles in a row, 7+ → two rows). */
 const MIN_SLOT = 56;
@@ -33,6 +37,8 @@ const COMPACT_SLOT = 76;
 const STEP_S = 0.45;
 /** Hold juice: one flying scoop every this many seconds of digging. */
 const HOLD_FX_S = 1 / PILE_HOLD_RATE;
+/** Within this long after the piles show, Enter is taken as carried over from the catch (the hook's throw), not «Готово». */
+const CARRY_MS = 400;
 
 interface PileView {
   /** Car index (into sc.piles / sc.cars). */
@@ -140,6 +146,8 @@ function PilesPhaseImpl({ scene }: { scene: Scene }) {
     let lastStep = -1;
     let etaShown = "";
     let allAt = -1;
+    /** Piles the boot has swept so far (the lineman's grumbles go by it). */
+    let sweeps = 0;
     let prevT = clock();
     let railW = railRef.current?.clientWidth ?? 300;
     const ro = new ResizeObserver(() => {
@@ -242,6 +250,8 @@ function PilesPhaseImpl({ scene }: { scene: Scene }) {
       isLocked[j] = true;
       if (holdK === j) holdK = -1;
       if (quiet) return;
+      // SCN-4: the lineman grumbles over his first sweep and every third after it
+      if (!done && sweeps++ % 3 === 0) sfxCue3("giantVoice", { pitch: 0.9 });
       const el = pileEls.current[j];
       if (el) {
         const p = hostXY(el, 0.7);
@@ -268,19 +278,22 @@ function PilesPhaseImpl({ scene }: { scene: Scene }) {
 
     api.current = {
       press: (j) => {
-        if (done || isLocked[j] || j < 0 || j >= views.length) return;
+        if (done || sceneHeld() || isLocked[j] || j < 0 || j >= views.length) return;
         holdK = j;
         holdAcc = 0;
         if (frac[j] >= 1) return;
         const before = frac[j];
         frac[j] = stepPile(frac[j], 0, false, 1, auto);
-        sfx.blip(Math.round(frac[j] * 12));
+        sfx.blip(Math.round(frac[j] * 7));
         scoopFx(j, frac[j] - before);
       },
       release: () => {
         holdK = -1;
       },
-      send,
+      // the player's «Готово» (the clock's own send below is never held: the clock stands still meanwhile)
+      send: () => {
+        if (!sceneHeld()) send();
+      },
     };
 
     let raf = 0;
@@ -299,7 +312,7 @@ function PilesPhaseImpl({ scene }: { scene: Scene }) {
           holdAcc += span;
           if (holdAcc >= HOLD_FX_S) {
             holdAcc %= HOLD_FX_S;
-            sfx.blip(Math.round(frac[holdK] * 12));
+            sfx.blip(Math.round(frac[holdK] * 7));
             scoopFx(holdK, Math.max(PILE_STEP, frac[holdK] - before));
           }
         }
@@ -399,7 +412,24 @@ function PilesPhaseImpl({ scene }: { scene: Scene }) {
     if (keyboardUsed()) pileEls.current.find((el) => el && el.tabIndex >= 0)?.focus();
   }, []);
 
+  // SCN-5: Enter is «Готово» from anywhere in the phase (a focused pile handles it itself, a focused button clicks)
+  const shownAt = useRef(0);
+  useEffect(() => {
+    shownAt.current = sceneNow();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+      const el = e.target as Element | null;
+      if (isTypingTarget(el) || isControlTarget(el) || pilesKey(e.key) !== "done") return;
+      e.preventDefault();
+      if (sceneNow() - shownAt.current >= CARRY_MS) api.current?.send();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const rating = sc.haul && !capsule ? RATING_TABLE.find((r) => r.id === sc.haul?.rating) : undefined;
+  // a keyboard player lands on the first pile still standing (SceneHost's [data-autofocus])
+  const firstStanding = sent ? -1 : locked.findIndex((l) => !l);
   const compact = slotW < COMPACT_SLOT;
   const rows = Math.max(1, Math.ceil(n / Math.max(1, cols)));
 
@@ -438,7 +468,7 @@ function PilesPhaseImpl({ scene }: { scene: Scene }) {
         </div>
         <p className="text-[11px] text-parchment-dim md:text-xs">
           {capsule ? "Капсула вскрыта, добро рассыпалось по уступу." : "Поезд ушёл, пыль оседает."} Жмите на кучи — или зажмите и гребите, пока {capsule ? "обходчик коллектора" : "путевой обходчик"} не смёл всё сапожищем. Вагонетки вывезут {fmtPct(sc.auto)} и без вас.
-          {kbd && <span className="ml-1 whitespace-nowrap font-mono text-brass-light">⌨ Tab — куча, пробел — грести</span>}
+          {kbd && <span className="ml-1 whitespace-nowrap font-mono text-brass-light">⌨ Tab — куча, пробел — грести, Enter — готово</span>}
         </p>
 
         <div className="flex min-h-0 flex-1 flex-col justify-center overflow-y-auto overflow-x-hidden pb-1 pt-3">
@@ -456,6 +486,7 @@ function PilesPhaseImpl({ scene }: { scene: Scene }) {
                         pileEls.current[j] = el;
                       }}
                       tabIndex={inert ? -1 : 0}
+                      data-autofocus={j === firstStanding ? "" : undefined}
                       aria-disabled={inert}
                       aria-label={`Куча из вагона «${pl.car}», ${fmtPct(pl.share)} улова: ${isLocked ? "сметено" : "разгрести"}`}
                       onPointerDown={(e) => {
@@ -467,12 +498,14 @@ function PilesPhaseImpl({ scene }: { scene: Scene }) {
                       onPointerCancel={() => api.current?.release()}
                       onBlur={() => api.current?.release()}
                       onKeyDown={(e) => {
-                        if (e.key === " " || e.key === "Enter") {
-                          e.preventDefault();
-                          if (e.repeat) return;
-                          api.current?.press(j);
-                          if (e.key === "Enter") api.current?.release();
-                        }
+                        const k = pilesKey(e.key);
+                        if (!k) return;
+                        e.preventDefault();
+                        if (e.repeat) return;
+                        // Enter: «Готово» (unless it is still the throw carried over from the catch); Space: dig
+                        if (k === "done") {
+                          if (sceneNow() - shownAt.current >= CARRY_MS) api.current?.send();
+                        } else api.current?.press(j);
                       }}
                       onKeyUp={(e) => {
                         if (e.key === " ") {
@@ -605,6 +638,7 @@ function PilesPhaseImpl({ scene }: { scene: Scene }) {
           <BrassButton
             size="lg"
             className="min-h-11"
+            aria-keyshortcuts="Enter"
             disabled={sent}
             onKeyDown={(e) => {
               // the focus lands here when the last pile is swept: a Space still held from digging must not send

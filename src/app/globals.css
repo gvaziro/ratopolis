@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* v3 SHL-3: short viewports (a phone in landscape): the shell folds its chrome (`short:` = layoutMode SHORT_MQ) */
+@custom-variant short (@media (max-height: 520px));
+
 /*
  * Victorian-steampunk palette: soot, brass, copper, verdigris, gaslight.
  * Text tokens reach WCAG AA (4.5:1) on every panel background (soot … panel-3); the tightest pair is on --panel-3:
@@ -87,14 +90,85 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/*
+ * v3 SHL-3: «Размер текста» for what lives outside the zoomed layout columns (toasts, tooltips, dialog cards):
+ * GameRoot writes --ui-zoom on <html>; the class zooms the element it sits on (keep it off fixed-position boxes whose
+ * offsets are measured in screen pixels — zoom scales those too).
+ */
+.ui-zoom {
+  zoom: var(--ui-zoom, 1);
+}
+
 /* SH-4: danger text reads on the dark panels (--danger stays for fills and borders) */
 .text-danger,
 .text-danger-text {
   color: var(--danger-light);
 }
 
-/* SH-4: the OS «reduce motion» stops the HUD's decorative loops (unless motion was switched back on in ⚙) */
+/*
+ * v3 SHL-4 (mobile-4, mobile-5): one visible keyboard ring for every control, and taps that never wait for a
+ * double-tap zoom. Base layer: a component's own focus-visible:* / touch-* utilities (and its ring replacement for
+ * an outline-none) still win. Paper cards (offline report, haul card, the newspaper) ring in ink, not gaslight.
+ */
+@layer base {
+  :where(
+      button,
+      [role="button"],
+      [role="tab"],
+      [role="radio"],
+      [role="switch"],
+      [role="checkbox"],
+      [role="menuitem"],
+      [role="option"],
+      a[href],
+      summary,
+      input,
+      textarea,
+      select,
+      [tabindex]:not([tabindex="-1"])
+    ):focus-visible {
+    outline: 2px solid var(--gaslight);
+    outline-offset: 2px;
+  }
+  .hud-paper :focus-visible {
+    outline-color: #2a1f14;
+  }
+  :where(button, [role="button"], [role="tab"], [role="radio"], [role="switch"], summary) {
+    touch-action: manipulation;
+  }
+}
+
+/*
+ * v3 SHL-4: `hit-slop` grows a small control's tap area to ≥ 40 px without growing its look (a 32-px pip, a slim tab,
+ * the ticker). The element becomes position: relative (a positioning utility on it still wins); --slop reshapes the
+ * pad, e.g. `[--slop:-6px_0]` for vertical only. The pad is clipped by the element's own overflow: hidden.
+ */
+@layer components {
+  .hit-slop {
+    position: relative;
+  }
+  .hit-slop::after {
+    content: "";
+    position: absolute;
+    inset: var(--slop, -6px);
+  }
+}
+
+/*
+ * v3 SHL-4 (visuals-13): one motion switch. GameRoot writes html[data-motion]: "off" (⚙ «Меньше движения»), "os"
+ * (follows the OS) or "on" (motion switched back on by hand). Every decorative loop carries data-decor and stands
+ * still here — new loops need no list; status signals (blinks, alarms) stay untagged. The older HUD loops below keep
+ * their class list (and .hud-calm for the ⚙ switch).
+ */
+html[data-motion="off"] :is([data-decor], [data-decor] *) {
+  animation-play-state: paused !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  html:not([data-motion="on"]) :is([data-decor], [data-decor] *) {
+    animation-play-state: paused !important;
+  }
+  /* SH-4: the OS «reduce motion» stops the HUD's decorative loops (unless motion was switched back on in ⚙) */
   html:not([data-motion="on"]) :is(.hud-blink2, .hud-over, .hud-twinkle, .hud-alarm, .hud-throb, .hud-shiver, .hud-shine, .hud-rays, .sk-leg, .sk-spin, .sk-smoke, .sk-bigsmoke, .sk-rain, .sk-flicker, .sk-tail, .sk-eyes, .sk-note, .sk-bob, .sk-capsule, .sk-puff, .sk-glow, .sk-ripple, .sk-shake, .sk-board-blink) {
     animation: none !important;
   }

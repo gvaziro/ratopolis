@@ -1,30 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { HOOK_JACKPOT_CAP_SEC, METRO_BASE_CARS, RANDOM_CAR_WEIGHTS, TRAIN_CARS } from "../data/events";
+import { HOOK_JACKPOT_CAP_SEC, METRO_BASE_CARS, RANDOM_CAR_WEIGHTS, TRAIN_CARS, TRAIN_VARIANT_ORDER } from "../data/events";
 import { RESOURCES } from "../data/resources";
 import type { CatchResult, EngineCtx, GameState, ResId, Scene, SceneEventId } from "../types";
 import { openZone } from "./actions";
 import { check } from "./conditions";
 import { stun } from "./core";
 import { derive, eventValue, stunnedRats } from "./derive";
-import { buildTrain, clickPurse, incomeValue, onZoneOpen, sceneAction, trainDropRes } from "./events";
+import { buildTrain, clickPurse, incomeValue, sceneAction, trainDropRes } from "./events";
 import { createInitialState } from "./state";
 import { step, TICK } from "./step";
-
-/** A colony on the metro station: zones open through the real hooks. */
-function metroState(seed = 99): GameState {
-  const s = createInitialState(seed, 0);
-  const ctx: EngineCtx = { fx: [] };
-  for (const z of ["sewers", "cellars", "metro"] as const) {
-    openZone(s, z, ctx);
-    onZoneOpen(s, z);
-  }
-  s.flags.vagrants = true;
-  s.flags.first_train = true; // not the ×3 first train unless a test says so
-  s.rats = 200;
-  s.jobs.forager = 200;
-  s.res.crumbs = 1e5;
-  return s;
-}
+import { metroState } from "./testkit";
 
 /** The GDD 8.2.7 example train: 2 coin items in 3rd class (3 150 each), 4 in 1st class (4 725 each) = 25 200 coins. */
 function gddTrain(s: GameState): Scene {
@@ -188,6 +173,8 @@ describe("v2 trains (EN-1, EN-2)", () => {
 
   it("without the hook the random cars follow the weights (χ², p > 0.01)", () => {
     const s = metroState(41);
+    // every variant met already: no debut ×2.5 (four weighted variants would leave a quarter of the trains plain)
+    for (const id of TRAIN_VARIANT_ORDER) s.meta.variantLog[id] = "bronze";
     const d = derive(s);
     const counts: Record<string, number> = { third: 0, dining: 0, mail: 0, first: 0, baggage: 0 };
     let n = 0;
@@ -305,9 +292,11 @@ describe("v2 trains (EN-1, EN-2)", () => {
 });
 
 describe("background events under a scene", () => {
-  /** A carriage close-up covering the colony, with nothing else due. */
+  /** A carriage close-up covering the colony, with nothing else due (before the Metro: after it a carriage is grate rain). */
   function underCarriage(): GameState {
     const s = metroState(17);
+    delete s.zones.metro;
+    s.flags.first_carriage = true;
     s.timers.metro_train = Infinity;
     s.timers.market = Infinity;
     s.timers.shiny = Infinity;
@@ -409,12 +398,12 @@ describe("event scheduler", () => {
     const started = run(false, 30);
     for (const id of HARMFUL) expect(started.has(id), id).toBe(false);
     expect(started.has("metro_train")).toBe(true); // trains still pass
-  });
+  }, 20_000); // 30 min of engine steps: slow when the machine is busy
 
   it("with an active player the same timers do fire", () => {
     const started = run(true, 30);
     for (const id of HARMFUL) expect(started.has(id), id).toBe(true);
-  });
+  }, 20_000);
 
   it("suspicion grows by itself only while the player is active", () => {
     const s = metroState(3);

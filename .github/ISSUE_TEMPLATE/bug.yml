@@ -1,0 +1,75 @@
+name: "🐀 Ошибка в колонии / Bug report"
+description: "Что-то сломалось, зависло или выглядит не так. Something broke, froze or looks wrong."
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо, что спустились в туннели с фонарём! Лучшая улика — **файл сохранения**: с ним мы откроем вашу колонию
+        в том же виде, что и вы.
+        *Thank you for the report! The best clue is your **save file**: with it we can open your colony exactly as you see it.*
+
+        Где взять сохранение / where to get the save:
+        - вкладка ⚙️ «Настройки» → «📁 Файл сохранения» → «💾 Скачать файл» (Settings tab → save file → download);
+        - если игра упала — кнопка «📜 Скачать сохранение» на экране аварии (the crash screen has the same button).
+
+  - type: textarea
+    id: what
+    attributes:
+      label: "Что случилось / What happened"
+      description: "И чего вы ждали вместо этого. And what you expected instead."
+      placeholder: "Поезд прошёл, но улов не засчитался: окно «Улов» пустое…"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: "Как повторить / Steps to reproduce"
+      description: "Шаги по порядку, если знаете. Step by step, if you know them."
+      placeholder: |
+        1. Открыть вкладку «Расписание»
+        2. Дождаться поезда метро
+        3. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: save
+    attributes:
+      label: "Файл сохранения / Save file"
+      description: |
+        Перетащите сюда файл `ratropolis-save-….txt` (или вставьте его текст). Сохранение не содержит личных данных —
+        только вашу колонию. Drag the `ratropolis-save-….txt` file here (or paste its text); it holds nothing but your colony.
+      placeholder: "Перетащите файл сюда / drop the file here"
+    validations:
+      required: false
+
+  - type: input
+    id: browser
+    attributes:
+      label: "Браузер и устройство / Browser and device"
+      placeholder: "Chrome 141, Android 15, Pixel 8 (телефон боком) / Firefox 144, Windows 11"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: build
+    attributes:
+      label: "Где играли / Where you played"
+      options:
+        - "GitHub Pages (gvaziro.github.io/ratopolis)"
+        - "Другой сайт / another host"
+        - "Локально, npm run dev / local dev"
+        - "Локально, продакшен-сборка / local production build"
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: "Скриншоты, консоль / Screenshots, console"
+      description: "Скриншот или ошибки из консоли браузера (F12), если есть. A screenshot or browser console errors (F12), if any."
+    validations:
+      required: false

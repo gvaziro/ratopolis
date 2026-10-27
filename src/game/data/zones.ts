@@ -1,4 +1,5 @@
-import type { DistrictMods, DistrictTrait, ZoneDef, ZoneId } from "../types";
+import type { DistrictTrait, Meta, ZoneDef, ZoneId } from "../types";
+import { DISTRICTS as DISTRICT_DEFS, DISTRICT_TRAITS, LEGACY_DISTRICT_SEQ, amplifyMods, districtAt, lapNumeral } from "./districts";
 
 export const ZONES: Record<ZoneId, ZoneDef> = {
   burrow: {
@@ -84,112 +85,39 @@ export const ZONE_FROM: Record<ZoneId, string> = {
   terminal: "с Большого вокзала",
 };
 
-/** London districts for migrations. */
-export const DISTRICTS = ["Уайтчепел", "Саутварк", "Ламбет", "Блумсбери", "Мэйфэр", "Вестминстер"];
+/**
+ * London districts for migrations: the names of the legacy route (the v1/v2 sequence, then the six v3 districts),
+ * index = run. v3 (ENG-11): the route is chosen on the map — read a colony's districts with districtInfo(meta) /
+ * districtAt(meta, i) from data/districts.ts; these helpers answer for the legacy route, or for `meta`'s real one.
+ */
+export const DISTRICTS = LEGACY_DISTRICT_SEQ.map((id) => DISTRICT_DEFS[id].name);
 
-export function districtName(index: number): string {
-  if (index < DISTRICTS.length) return DISTRICTS[index];
-  const n = index - DISTRICTS.length + 2;
-  return `Вестминстер ${toRoman(n)}`;
-}
+/** The legacy route (no `visited` record). */
+const NO_ROUTE: Pick<Meta, "visited"> = { visited: [] };
 
-function toRoman(n: number): string {
-  const map: [number, string][] = [
-    [10, "X"],
-    [9, "IX"],
-    [5, "V"],
-    [4, "IV"],
-    [1, "I"],
-  ];
-  let out = "";
-  for (const [v, s] of map) {
-    while (n >= v) {
-      out += s;
-      n -= v;
-    }
-  }
-  return out;
+/** The name of run `index`'s district («Сити», «Сити II» on the second lap); `meta` = this colony's route. */
+export function districtName(index: number, meta?: Pick<Meta, "visited">): string {
+  return districtAt(meta ?? NO_ROUTE, index).name;
 }
 
 export const WEEKDAYS = ["Вт", "Ср", "Чт", "Пт", "Сб", "Вс", "Пн"];
 export const WEEKDAYS_FULL = ["вторник", "среда", "четверг", "пятница", "суббота", "воскресенье", "понедельник"];
 
-/** «Обустраивается {loc}»: the locative of each district (EN-10); index ≥ 6 → Вестминстер. */
-export const DISTRICT_LOC = ["в Уайтчепеле", "в Саутварке", "в Ламбете", "в Блумсбери", "в Мэйфэре", "в Вестминстере"];
+/** «Обустраивается {loc}»: the locative of each district of the legacy route (EN-10). */
+export const DISTRICT_LOC = LEGACY_DISTRICT_SEQ.map((id) => DISTRICT_DEFS[id].loc);
 
-export function districtLoc(index: number): string {
-  return DISTRICT_LOC[Math.max(0, Math.min(DISTRICT_LOC.length - 1, Math.floor(index)))];
+/** The locative of run `index`'s district («в Сити», «в Сити II»); `meta` = this colony's route. */
+export function districtLoc(index: number, meta?: Pick<Meta, "visited">): string {
+  return districtAt(meta ?? NO_ROUTE, index).loc;
 }
 
 /**
- * London district traits (EN-9): a perk and a quirk per district, applied in derive.ts and the event timers.
- * Index = meta.district. v2: the effects are applied by EN-9; this table and districtTrait() are final.
+ * The trait of run `index`'s district (EN-9). v3 (ENG-11): every district keeps its own trait, ×1.25 per extra lap of
+ * London («II» in the name); `meta` = this colony's route, else the legacy one.
  */
-export const DISTRICT_TRAITS: DistrictTrait[] = [
-  { name: "Туман", icon: "🌫️", perk: "Ничего особенного — только туман гуще похлёбки", quirk: "Никаких сюрпризов", mods: {} },
-  {
-    name: "Боро-маркет",
-    icon: "🧺",
-    perk: "Рынок чаще, 🧀 ×1.5",
-    quirk: "Кот наглее: проверки ×1.3",
-    mods: { marketInterval: [240, 300], res: { cheese: 1.5 }, catCheckMult: 1.3 },
-  },
-  {
-    name: "Гончарни",
-    icon: "🏺",
-    perk: "⚙️ ×1.5, запас 💨 ×1.5",
-    quirk: "Капсулы реже: раз в 3 минуты",
-    mods: { res: { gears: 1.5 }, steamBufferMult: 1.5, capsuleInterval: 180 },
-  },
-  {
-    name: "Читальный зал",
-    icon: "📚",
-    perk: "📜 ×2",
-    quirk: "Поезда подземки на вагон короче",
-    mods: { res: { blueprints: 2 }, metroCarsDelta: -1 },
-  },
-  {
-    name: "Особняки",
-    icon: "🎩",
-    perk: "🪙 ×1.5, кошельки вдвое чаще",
-    quirk: "Крысолов приходит уже при 80% подозрения",
-    mods: { res: { coins: 1.5 }, purseFreqMult: 2, ratcatcherThreshold: 80 },
-  },
-  {
-    name: "Биг-Бен",
-    icon: "🕰️",
-    perk: "Королевский экспресс чаще (×0.6 интервал), 💍 ×1.5",
-    quirk: "Подозрение растёт ×1.4",
-    mods: { expressIntervalMult: 0.6, res: { trinkets: 1.5 }, suspicionMult: 1.4 },
-  },
-];
-
-/** Scale a multiplier's effect size: 1.5 → 1 + 0.5·k, 0.6 → 1 − 0.4·k. */
-function amplify(m: number, k: number): number {
-  return 1 + (m - 1) * k;
+export function districtTrait(index: number, meta?: Pick<Meta, "visited">): DistrictTrait {
+  return districtAt(meta ?? NO_ROUTE, index).trait;
 }
 
-/**
- * The trait of district `index`. Districts ≥ 6 cycle traits 1–5 with perk and quirk magnitudes ×1.25
- * (the name gets «II», «III», …).
- */
-export function districtTrait(index: number): DistrictTrait {
-  const i = Math.max(0, Math.floor(index));
-  if (i < DISTRICT_TRAITS.length) return DISTRICT_TRAITS[i];
-  const base = DISTRICT_TRAITS[1 + ((i - DISTRICT_TRAITS.length) % (DISTRICT_TRAITS.length - 1))];
-  const k = 1.25;
-  const m = base.mods;
-  const mods: DistrictMods = {};
-  if (m.marketInterval) mods.marketInterval = [Math.round(m.marketInterval[0] / k), Math.round(m.marketInterval[1] / k)];
-  if (m.catCheckMult !== undefined) mods.catCheckMult = amplify(m.catCheckMult, k);
-  if (m.steamBufferMult !== undefined) mods.steamBufferMult = amplify(m.steamBufferMult, k);
-  if (m.capsuleInterval !== undefined) mods.capsuleInterval = Math.round(150 + (m.capsuleInterval - 150) * k);
-  if (m.metroCarsDelta !== undefined) mods.metroCarsDelta = m.metroCarsDelta;
-  if (m.purseFreqMult !== undefined) mods.purseFreqMult = amplify(m.purseFreqMult, k);
-  if (m.ratcatcherThreshold !== undefined) mods.ratcatcherThreshold = Math.round(100 - (100 - m.ratcatcherThreshold) * k);
-  if (m.expressIntervalMult !== undefined) mods.expressIntervalMult = amplify(m.expressIntervalMult, k);
-  if (m.suspicionMult !== undefined) mods.suspicionMult = amplify(m.suspicionMult, k);
-  if (m.res) mods.res = Object.fromEntries(Object.entries(m.res).map(([r, v]) => [r, amplify(v as number, k)]));
-  const lap = Math.floor((i - DISTRICT_TRAITS.length) / (DISTRICT_TRAITS.length - 1)) + 2;
-  return { ...base, name: `${base.name} ${toRoman(lap)}`, perk: `${base.perk} — и ещё на четверть сильнее`, quirk: `${base.quirk} — и на четверть злее`, mods };
-}
+// v3 (ENG-11): the trait table and the lap helpers moved to data/districts.ts
+export { DISTRICT_TRAITS, amplifyMods, lapNumeral };

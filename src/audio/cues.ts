@@ -2,40 +2,49 @@
  * v2 named sound cues (UiFx {k:"sfx", cue, intensity, pitch} from scenes and the shell) and the voices of the
  * new engine Fx (scout, migration, record, commission). Every cue is an ordinary throttled voice, so the voice
  * caps and the limiter hold; `intensity` 0..1 is the voice gain, `pitch` multiplies its frequencies.
+ * v3: the giant steps and the arrival thump play on the world bus with a giantBody a phone can hear (AUD-2); the
+ * live-rating cues are foreground (the world dips under them), the crown ticks are ceremony voices (AUD-1).
  */
 import type { SfxCue } from "@/game/fx";
 import { play } from "./core";
-import { brass, CHIME, coinTink, GLOCK, HAND_BELL, ping, ratchet, rustle, SMALL_BELL, stampAt } from "./instruments";
+import { brass, CHIME, coinTink, giantBody, GLOCK, HAND_BELL, ping, ratchet, rustle, SMALL_BELL, stampAt } from "./instruments";
 import { rumbleCut } from "./loops";
 import { filter, noise, panner, rnd, semi, strike, tone, vibrato } from "./synth";
+import { dopplerPitch } from "./trainVoices";
 
 type CueFn = (gain: number, p: number) => void;
 
 const CUES: Record<SfxCue, CueFn> = {
-  /** A giant hobnailed boot on stone: a 45 → 30 Hz sine under low-passed brown noise (+ a sole knock small speakers carry). */
+  /** A giant hobnailed boot on stone: a 45 → 30 Hz sine under low-passed brown noise, the sole's knock and a giantBody. */
   footstep: (gain, p) =>
-    play("footstep", { max: 3, gapMs: 120 }, { gain, send: 0.25 }, (v) => {
+    play("footstep", { max: 3, gapMs: 120 }, { gain, bus: "world" }, (v) => {
       const t = v.t;
-      tone(v, { f: 45 * p, to: 30 * p, glide: 0.3, t, a: 0.006, d: 0.3, peak: 0.75 });
+      tone(v, { f: 45 * p, to: 30 * p, glide: 0.3, t, a: 0.006, d: 0.3, peak: 0.67 });
       tone(v, { type: "triangle", f: 140 * p, to: 80 * p, glide: 0.08, t, a: 0.003, d: 0.1, peak: 0.16 });
-      noise(v, { kind: "brown", t, a: 0.004, d: 0.24, peak: 0.5, filter: "lowpass", f: 320 * p });
+      noise(v, { kind: "brown", t, a: 0.004, d: 0.24, peak: 0.45, filter: "lowpass", f: 320 * p });
       noise(v, { kind: "pink", t: t + 0.008, a: 0.002, d: 0.06, peak: 0.07, filter: "bandpass", f: 900, q: 0.8 });
+      giantBody(v, t, 45 * p, 0.3, 0.65);
     }),
 
-  /** The train's arrival: a 38 Hz sine under 120 Hz low-passed noise, with a little crack of the impact. */
+  /** The train's arrival: a 38 Hz sine under 120 Hz low-passed noise, the crack of the impact and a giantBody. */
   thump: (gain, p) =>
-    play("thump", { max: 2, gapMs: 150 }, { gain, send: 0.3 }, (v) => {
+    play("thump", { max: 2, gapMs: 150 }, { gain, bus: "world" }, (v) => {
       const t = v.t;
-      tone(v, { f: 38 * p, to: 32 * p, glide: 0.35, t, a: 0.004, d: 0.35, peak: 0.85 });
+      tone(v, { f: 38 * p, to: 32 * p, glide: 0.35, t, a: 0.004, d: 0.35, peak: 0.76 });
       tone(v, { type: "triangle", f: 76 * p, to: 48 * p, glide: 0.2, t, a: 0.003, d: 0.18, peak: 0.22 });
-      noise(v, { kind: "brown", t, a: 0.003, d: 0.32, peak: 0.6, filter: "lowpass", f: 120 * p, q: 0.8 });
+      noise(v, { kind: "brown", t, a: 0.003, d: 0.32, peak: 0.54, filter: "lowpass", f: 120 * p, q: 0.8 });
       noise(v, { t, a: 0.001, d: 0.04, peak: 0.1, filter: "bandpass", f: 650, q: 0.9 });
+      giantBody(v, t, 38 * p, 0.35, 1);
     }),
 
-  /** The engine's whistle as it passes the middle of the screen: gliding down 1.5 semitones over 0.6 s. */
-  doppler: (gain, p) =>
+  /**
+   * The engine's whistle as it passes the middle of the screen: gliding down 1.5 semitones over 0.6 s. v3 (AUD-4):
+   * at the train's own whistle (chord root / 880, its ±25 cent detune; trainVoices.ts).
+   */
+  doppler: (gain, pitch) =>
     play("doppler", { max: 1, gapMs: 500 }, { gain, send: 0.35 }, (v) => {
       const t = v.t;
+      const p = pitch * dopplerPitch();
       const dur = 0.6;
       const lp = filter(v, "lowpass", 2600, 0.7);
       for (const [f, pk] of [
@@ -61,7 +70,7 @@ const CUES: Record<SfxCue, CueFn> = {
 
   /** A rising 3-note brass arpeggio (a live rating tier reached). */
   medalTier: (gain, p) =>
-    play("medalTier", { max: 2, gapMs: 200 }, { gain, send: 0.25 }, (v) => {
+    play("medalTier", { max: 2, gapMs: 200 }, { gain, send: 0.25, fg: true }, (v) => {
       const t = v.t;
       brass(v, t, 523.25 * p, 0.08, 0.075);
       brass(v, t + 0.085, 659.25 * p, 0.08, 0.075);
@@ -79,7 +88,7 @@ const CUES: Record<SfxCue, CueFn> = {
 
   /** «Вагон чист!»: a rail clack and a 2-note chime. */
   carClear: (gain, p) =>
-    play("carClear", { max: 3, gapMs: 90 }, { gain, send: 0.25 }, (v) => {
+    play("carClear", { max: 3, gapMs: 90 }, { gain, send: 0.25, fg: true }, (v) => {
       const t = v.t;
       noise(v, { t, a: 0.0008, d: 0.03, peak: 0.26, filter: "bandpass", f: 2200, q: 1.8 });
       tone(v, { f: 1180 * rnd(0.98, 1.02), t, a: 0.001, d: 0.06, peak: 0.12 });
@@ -88,8 +97,12 @@ const CUES: Record<SfxCue, CueFn> = {
       strike(v, t + 0.17, 2093 * p, CHIME, 1.3);
     }),
 
-  /** A paper thud: a rubber stamp hits the form. */
-  stamp: (gain, p) => play("stamp", { max: 3, gapMs: 80 }, { gain, send: 0.12 }, (v) => stampAt(v, v.t, p * rnd(0.97, 1.03), 1)),
+  /** A paper thud: a rubber stamp hits the form (a giant's stamp: the lineman's, on the rat's scale). */
+  stamp: (gain, p) =>
+    play("stamp", { max: 3, gapMs: 80 }, { gain, send: 0.12 }, (v) => {
+      stampAt(v, v.t, p * rnd(0.97, 1.03), 1);
+      giantBody(v, v.t, 150 * p, 0.13, 0.3);
+    }),
 
   /** A short clock click at the pitch multiplier (countdowns: pitch 1, 1.12, 1.26…). */
   tick: (gain, p) =>
@@ -103,13 +116,14 @@ const CUES: Record<SfxCue, CueFn> = {
   /** Two low thumps, lub-dub (a piper's note about to reach the burrow). */
   heartbeat: (gain, p) =>
     play("heartbeat", { max: 2, gapMs: 350 }, { gain, send: 0.12 }, (v) => {
-      const beat = (t: number, g: number) => {
+      const beat = (t: number, g: number, body: number) => {
         tone(v, { f: 64 * p, to: 42 * p, glide: 0.12, t, a: 0.006, d: 0.17, peak: 0.6 * g });
         tone(v, { type: "triangle", f: 124 * p, to: 82 * p, glide: 0.07, t, a: 0.004, d: 0.08, peak: 0.13 * g });
         noise(v, { kind: "brown", t, a: 0.004, d: 0.09, peak: 0.25 * g, filter: "lowpass", f: 220 });
+        giantBody(v, t, 64 * p, 0.17, body);
       };
-      beat(v.t, 1);
-      beat(v.t + 0.26, 0.72);
+      beat(v.t, 1, 0.5);
+      beat(v.t + 0.26, 0.72, 0.36);
     }),
 
   /** A patent granted: the stamp, then a gear ratchet. */
@@ -166,15 +180,19 @@ const CUES: Record<SfxCue, CueFn> = {
       }
     }),
 
-  /** A high coin tink (the crown counter ticking up every 60 ms). */
-  crownTick: (gain, p) => play("crownTick", { max: 6, gapMs: 40 }, { gain: gain * 0.7, send: 0.15, pan: rnd(-0.2, 0.2) }, (v) => coinTink(v, v.t, 2637 * p * rnd(0.998, 1.002), 1)),
+  /** A high coin tink (the crown counter ticking up every 60 ms; a ceremony voice). */
+  crownTick: (gain, p) =>
+    play("crownTick", { max: 6, gapMs: 40 }, { gain: gain * 0.7, send: 0.15, pan: rnd(-0.2, 0.2), prio: "ceremony" }, (v) => coinTink(v, v.t, 2637 * p * rnd(0.998, 1.002), 1)),
 
   /** A small bell. */
   chime: (gain, p) => play("chime", { max: 3, gapMs: 100 }, { gain, send: 0.3 }, (v) => strike(v, v.t, 1318.5 * p * rnd(0.997, 1.003), HAND_BELL, 1)),
 };
 
-const clampGain = (x: number | undefined): number => (x === undefined || !Number.isFinite(x) ? 1 : Math.max(0, Math.min(1, x)));
-const clampPitch = (x: number | undefined): number => (x === undefined || !Number.isFinite(x) || x <= 0 ? 1 : Math.max(0.25, Math.min(4, x)));
+/** Every SfxCue (the test bench renders each). */
+export const CUE_NAMES = Object.keys(CUES) as SfxCue[];
+
+export const clampGain = (x: number | undefined): number => (x === undefined || !Number.isFinite(x) ? 1 : Math.max(0, Math.min(1, x)));
+export const clampPitch = (x: number | undefined): number => (x === undefined || !Number.isFinite(x) || x <= 0 ? 1 : Math.max(0.25, Math.min(4, x)));
 
 /** Play one named cue: intensity 0..1 (default 1) scales the volume, pitch (default 1) multiplies the frequency. */
 export function playCue(cue: SfxCue, intensity?: number, pitch?: number): void {
@@ -197,9 +215,9 @@ export function scoutVoice(step: number): void {
   });
 }
 
-/** The Great Migration: a low brass swell, C major opening out over two seconds. */
+/** The Great Migration: a low brass swell, C major opening out over two seconds (a ceremony voice). */
 export function migrationVoice(): void {
-  play("migration", { max: 1, gapMs: 3000 }, { send: 0.4 }, (v) => {
+  play("migration", { max: 1, gapMs: 3000 }, { send: 0.4, prio: "ceremony" }, (v) => {
     const t = v.t;
     brass(v, t, 65.41, 2.2, 0.07, undefined, 1.1);
     brass(v, t, 130.81, 2.2, 0.075, undefined, 1.0);
@@ -210,9 +228,9 @@ export function migrationVoice(): void {
   });
 }
 
-/** A colony record: a four-note fanfare to a full chord, with glockenspiel sparkle on top. */
+/** A colony record: a four-note fanfare to a full chord, with glockenspiel sparkle on top (a ceremony voice). */
 export function recordVoice(): void {
-  play("record", { max: 1, gapMs: 1500 }, { send: 0.3 }, (v) => {
+  play("record", { max: 1, gapMs: 1500 }, { send: 0.3, prio: "ceremony" }, (v) => {
     const t = v.t;
     brass(v, t, 392, 0.09, 0.1);
     brass(v, t + 0.11, 523.25, 0.09, 0.1);

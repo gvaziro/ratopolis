@@ -1,16 +1,19 @@
 "use client";
 
 /**
- * "Переселение" (GDD 10, v2 PA-6): district, its trait and the human weekday, crown forecast, the Rat King's portrait,
- * the Great Seals, royal edicts with ranks I·II·III and their decrees, and the Great Migration button with a
- * confirmation card built from engine migrationPreview() (what the crowns will buy, the next district and its trait).
- * The tab samples one pre-formatted model three times a second; cards are memoized (PA-1).
+ * "Переселение" (GDD 10, v2 PA-6, v3 PAN-2): a newspaper masthead with the map of London (the route so far, a crown
+ * pin on the current district, the next migration's choices), the district's trait and the human weekday, crown
+ * forecast, the Rat King's portrait, the Great Seals (their SEALS texts), royal edicts with ranks I·II·III and their
+ * decrees, and the Great Migration button with a confirmation card built from engine migrationPreview(): what the
+ * crowns will buy and the two districts to choose from (migrate(to)).
+ * The tab samples one pre-formatted model three times a second; cards and the map are memoized (PA-1).
  */
 import { memo, useMemo, useState } from "react";
+import { DISTRICTS, districtInfo, legacyVisited, type DistrictId } from "@/game/data/districts";
 import { EDICT_ORDER, EDICTS, SEAL_ORDER, SEALS } from "@/game/data/meta";
-import { districtName, districtTrait } from "@/game/data/zones";
 import { edictRank } from "@/game/engine/core";
 import { canMigrate, crownsForRun, nextCrownAt, prevCrownAt } from "@/game/engine/formulas";
+import { crownBonusMult } from "@/game/engine/metaMath";
 import { humanWeekday, migrationPreview } from "@/game/engine/narrative";
 import { emitUiFx } from "@/game/fx";
 import { useGame } from "@/game/store";
@@ -21,13 +24,16 @@ import { Badge, Bar, BrassButton, Stamp, cx } from "@/components/ui/kit";
 import { isFresh } from "./alerts";
 import { SectionTitle, Toolbar, plural } from "./common";
 import KingPortrait from "./KingPortrait";
+import LondonMap from "./LondonMap";
+import { LAP } from "./londonGeo";
+import { charterText, crownBonus, multText, pctText } from "./metaText";
 
 const KEPT = [
   "венцы 👑 (свободные и полученные за всё время)",
   "королевские указы и печати",
   "медали, рекорды и летопись",
-  "номер района и день недели",
-  "трофеи, Бестиарий, журнал путейца",
+  "маршрут по Лондону и день недели",
+  "Кунсткамера, Бестиарий, журнал путейца",
   "настройки; по указам — часть улучшений и этапы экспресса",
 ];
 const RESET = [
@@ -59,11 +65,27 @@ interface SealRow {
   ok: boolean;
 }
 
+/** A district the next migration may lead to, as its card shows it. */
+interface DestRow {
+  id: DistrictId;
+  name: string;
+  icon: string;
+  landmark: string;
+  trait: string;
+  perk: string;
+  quirk: string;
+}
+
 interface MigrationModel {
   district: string;
   trait: string;
   weekday: string;
   migrations: number;
+  /** The map: meta.visited joined by commas, the current run's index, its lap and the next run's lap. */
+  route: string;
+  index: number;
+  lap: number;
+  nextLap: number;
   gilded: boolean;
   crowned: boolean;
   crowns: string;
@@ -76,6 +98,9 @@ interface MigrationModel {
   gain: number;
   coronated: boolean;
   charters: number;
+  /** crownBonusMult: the coronation × charters × seal on this run's crowns. */
+  crownMult: string;
+  charterMult: string;
   e: string;
   eDone: boolean;
   first: boolean;
@@ -83,42 +108,46 @@ interface MigrationModel {
   /** Progress from the current crown to the next one, 1% steps. */
   frac: number;
   left: string;
-  preview: { bonusBefore: string; bonusAfter: string; buys: string[]; nextDistrict: string; weekday: string; trait: string };
+  preview: { bonusBefore: string; bonusAfter: string; buys: string[]; weekday: string; options: DestRow[] };
   swapOpen: boolean;
   seals: SealRow[];
   edicts: EdictRow[];
 }
 
-function traitLine(i: number): string {
-  const t = districtTrait(i);
-  return `${t.icon} ${t.name}: ${t.perk} · ${t.quirk}`;
-}
-
 function migrationModel(s: GameState): MigrationModel {
   const meta = s.meta;
-  const per = meta.edicts.kings_favor ? 3 : 2;
+  const here = districtInfo(meta);
+  const t = here.trait;
+  const crown = crownBonus(meta);
   const e = s.eRun;
   const first = e < 1e6;
   const from = first ? 0 : prevCrownAt(s);
   const to = first ? 1e6 : nextCrownAt(s);
   const ranksOn = meta.achievements.coronation !== undefined;
   const p = migrationPreview(s);
+  const index = Math.max(0, Math.floor(meta.district));
   return {
-    district: districtName(meta.district),
-    trait: traitLine(meta.district),
+    district: here.name,
+    trait: `${t.icon} ${t.name}: ${t.perk} · ${t.quirk}`,
     weekday: humanWeekday(s),
     migrations: meta.migrations,
+    route: (meta.visited?.length ? meta.visited : legacyVisited(index)).join(","),
+    index,
+    lap: here.lap,
+    nextLap: Math.floor((index + 1) / LAP) + 1,
     gilded: meta.achievements.before_noon !== undefined,
     crowned: meta.achievements.coronation !== undefined,
     crowns: fmtInt(meta.crowns),
     crownsEver: fmtInt(meta.crownsEver),
-    pct: fmt(per * meta.crownsEver),
-    per,
+    pct: crown.total,
+    per: crown.per,
     ready: canMigrate(s),
     metro: !!s.zones.metro,
     gain: crownsForRun(s),
     coronated: s.coronatedThisRun,
     charters: s.charters,
+    crownMult: multText(crownBonusMult(s)),
+    charterMult: charterText(s).mult,
     e: fmt(e),
     eDone: e >= 1e6,
     first,
@@ -126,12 +155,19 @@ function migrationModel(s: GameState): MigrationModel {
     frac: to > from ? Math.floor(((e - from) / (to - from)) * 100) / 100 : 1,
     left: fmt(Math.max(0, to - e)),
     preview: {
-      bonusBefore: fmt(p.bonusBefore),
-      bonusAfter: fmt(p.bonusAfter),
+      bonusBefore: pctText(p.bonusBefore),
+      bonusAfter: pctText(p.bonusAfter),
       buys: [...p.affordable.map((id) => `${EDICTS[id].icon} ${EDICTS[id].name}`), ...p.affordableRanks.map((x) => `${EDICTS[x.id].icon} ${EDICTS[x.id].name} ${ROMAN[x.rank]}`)],
-      nextDistrict: p.nextDistrict,
       weekday: p.weekday,
-      trait: `${p.nextTrait.icon} ${p.nextTrait.name}: ${p.nextTrait.perk} · ${p.nextTrait.quirk}`,
+      options: (p.options ?? []).map((o) => ({
+        id: o.id,
+        name: o.name,
+        icon: o.icon,
+        landmark: DISTRICTS[o.id]?.landmark ?? "",
+        trait: `${o.trait.icon} ${o.trait.name}`,
+        perk: o.trait.perk,
+        quirk: o.trait.quirk,
+      })),
     },
     swapOpen: s.time < 60,
     seals: SEAL_ORDER.map((id) => {
@@ -153,20 +189,37 @@ function migrationModel(s: GameState): MigrationModel {
 export default function MigrationTab() {
   const json = useSampled((s) => JSON.stringify(migrationModel(s.game)), 3, Object.is);
   const m = useMemo(() => JSON.parse(json) as MigrationModel, [json]);
+  const calm = useGame((s) => s.game.settings.reducedMotion);
   const tails = 1 + m.migrations;
+  // the migration card is open (the map then picks the destination too) and where it leads
+  const [confirm, setConfirm] = useState(false);
+  const [pick, setPick] = useState<DistrictId | null>(null);
+  const options = m.preview.options;
+  const dest = options.find((o) => o.id === pick)?.id ?? options[0]?.id ?? null;
+  const choosing = confirm && m.ready;
 
   return (
     <>
       <Toolbar icon="👑" title="Великое Переселение" />
 
-      {/* newspaper masthead */}
-      <div className="rounded-sm border border-[#b9a67f] bg-gradient-to-b from-[#efe4c9] to-[#ddcba3] px-3 py-2 text-soot shadow-[0_3px_10px_rgba(0,0,0,.5)]">
+      {/* newspaper masthead with the map of London (the Thames runs off the paper's edges, not past them) */}
+      <div className="overflow-hidden rounded-sm border border-[#b9a67f] bg-gradient-to-b from-[#efe4c9] to-[#ddcba3] px-3 py-2 text-soot shadow-[0_3px_10px_rgba(0,0,0,.5)]">
         <p className="border-b border-soot/40 pb-0.5 text-center font-display text-[11px] font-bold tracking-[0.3em]">КРЫСИНЫЕ ВЕДОМОСТИ</p>
         <h3 className="mt-1 text-center font-display text-xl font-bold leading-tight">Район: {m.district}</h3>
         <p className="text-center text-[11px] font-bold leading-snug">{m.trait}</p>
         <p className="text-center text-[11px] italic">
           Наверху {m.weekday} · переселений: {m.migrations}
         </p>
+        <LondonMap
+          routeKey={m.route}
+          district={m.index}
+          optionsKey={options.map((o) => o.id).join(",")}
+          dest={choosing ? dest : null}
+          pulse={m.ready && !calm}
+          lap={m.lap}
+          nextLap={m.nextLap}
+          onDest={choosing ? setPick : undefined}
+        />
       </div>
 
       <div className="mt-3 grid grid-cols-[7.5rem_minmax(0,1fr)] gap-3">
@@ -186,7 +239,7 @@ export default function MigrationTab() {
       <SectionTitle>Прогноз венцов</SectionTitle>
       <Forecast m={m} />
 
-      <MigrateBox m={m} />
+      <MigrateBox m={m} open={confirm} setOpen={setConfirm} dest={dest} setDest={setPick} />
 
       {(m.crowned || m.seals.some((x) => x.owned)) && (
         <>
@@ -223,6 +276,15 @@ const Stat = memo(function Stat({ label, value, sub, good }: { label: string; va
   );
 });
 
+/** «Венцов за забег ×1.31: коронация в этом забеге и 1 королевская грамота (×1.05)» — the engine's crownBonusMult. */
+function crownMultLine(m: MigrationModel): string {
+  const parts = [
+    m.coronated ? "коронация в этом забеге" : "",
+    m.charters > 0 ? `${m.charters} ${plural(m.charters, "королевская грамота", "королевские грамоты", "королевских грамот")} (×${m.charterMult})` : "",
+  ].filter(Boolean);
+  return `Венцов за забег ×${m.crownMult}${parts.length ? `: ${parts.join(" и ")}` : ""}`;
+}
+
 function Forecast({ m }: { m: MigrationModel }) {
   return (
     <div className="rounded-md border border-line bg-black/20 p-2.5">
@@ -244,20 +306,26 @@ function Forecast({ m }: { m: MigrationModel }) {
           </>
         )}
       </p>
-      {m.coronated && <p className="mt-0.5 text-[11px] text-good">Коронация в этом забеге: венцов ×1.25</p>}
-      {m.charters > 0 && (
-        <p className="mt-0.5 text-[11px] text-good">
-          Королевские грамоты: {m.charters} · венцов ×{Math.min(1.5, Math.pow(1.05, m.charters)).toFixed(2)}
-        </p>
-      )}
+      {m.crownMult !== "1" && <p className="mt-0.5 text-[11px] text-good">{crownMultLine(m)}</p>}
       <p className="mt-0.5 text-[10px] leading-snug text-parchment-dim">Считаются все монетки забега: пассив, клики, поезда. Траты не вычитаются.</p>
     </div>
   );
 }
 
-function MigrateBox({ m }: { m: MigrationModel }) {
-  const [step, setStep] = useState<0 | 1>(0);
-
+function MigrateBox({
+  m,
+  open,
+  setOpen,
+  dest,
+  setDest,
+}: {
+  m: MigrationModel;
+  open: boolean;
+  setOpen: (open: boolean) => void;
+  /** The chosen district (options[0] until the player picks another). */
+  dest: DistrictId | null;
+  setDest: (id: DistrictId) => void;
+}) {
   if (!m.ready) {
     const metro = m.metro;
     return (
@@ -277,27 +345,39 @@ function MigrateBox({ m }: { m: MigrationModel }) {
     );
   }
 
+  const p = m.preview;
+  const to = p.options.find((o) => o.id === dest) ?? p.options[0];
   const go = () => {
     if (!useGame.getState().game.settings.reducedMotion) emitUiFx({ k: "shake", px: 8, ms: 600 });
-    useGame.getState().migrate();
-    setStep(0);
+    // the engine accepts any district still free on this lap and falls back to options[0]
+    useGame.getState().migrate(to?.id);
+    setOpen(false);
   };
-  const p = m.preview;
 
   return (
     <div className="mt-3">
-      {step === 0 ? (
-        <BrassButton size="lg" className="rr-glow min-h-14 w-full" onClick={() => setStep(1)}>
+      {!open ? (
+        <BrassButton size="lg" className="rr-glow min-h-14 w-full" onClick={() => setOpen(true)}>
           <span className="block font-display text-lg leading-tight tracking-wider">👑 Великое Переселение</span>
           <span className="block text-xs font-bold opacity-80">унести в новый район +{fmtInt(m.gain)} 👑</span>
         </BrassButton>
       ) : (
-        <div className="rounded-md border-2 border-brass bg-gradient-to-b from-[#efe4c9] to-[#d8c59a] p-3 text-soot shadow-[0_0_24px_rgba(242,184,75,.3)]">
+        <div className="@container rounded-md border-2 border-brass bg-gradient-to-b from-[#efe4c9] to-[#d8c59a] p-3 text-soot shadow-[0_0_24px_rgba(242,184,75,.3)]">
           <p className="text-center font-display text-[11px] font-bold tracking-[0.25em]">ЭКСТРЕННЫЙ ВЫПУСК</p>
           <p className="text-center font-display text-lg font-bold leading-tight">ВЕЛИКОЕ ЗЛОВОНИЕ!</p>
           <p className="mt-1 text-center text-xs italic">
-            Люди перекладывают канализацию. Колония с узелками уходит в {p.nextDistrict}.
+            Люди перекладывают канализацию. {to ? `Колония с узелками уходит в ${to.name}.` : "Колония с узелками уходит."}
           </p>
+          {p.options.length > 0 && (
+            <>
+              <p className="mt-2 text-[11px] font-bold uppercase tracking-wider text-[#7a2620]">{p.options.length > 1 ? "Куда уводим колонию?" : "Последний свободный район круга"}</p>
+              <div role="radiogroup" aria-label="Новый район" className="mt-1 grid gap-1.5 @min-[21rem]:grid-cols-2">
+                {p.options.map((o) => (
+                  <DestCard key={o.id} o={o} picked={o.id === to?.id} single={p.options.length === 1} onPick={() => setDest(o.id)} />
+                ))}
+              </div>
+            </>
+          )}
           <ul className="mt-2 space-y-1 rounded border border-soot/25 bg-white/30 px-2 py-1.5 text-[12px] leading-snug">
             <li>
               <b>+{fmtInt(m.gain)} 👑</b> → бонус ко всему +{p.bonusBefore}% → <b>+{p.bonusAfter}%</b>
@@ -306,7 +386,7 @@ function MigrateBox({ m }: { m: MigrationModel }) {
               <b>Хватит на:</b> {p.buys.length ? p.buys.join(", ") : "пока ни на один указ — копите венцы"}
             </li>
             <li>
-              <b>Новый район:</b> {p.nextDistrict} · {p.weekday} — {p.trait}
+              <b>Наверху будет:</b> {p.weekday}, и часы снова покажут 05:00
             </li>
           </ul>
           <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] leading-snug">
@@ -328,16 +408,51 @@ function MigrateBox({ m }: { m: MigrationModel }) {
             </div>
           </div>
           <div className="mt-3 flex gap-2">
-            <BrassButton tone="ghost" className="min-h-10 flex-1 text-parchment" onClick={() => setStep(0)}>
+            <BrassButton tone="ghost" className="min-h-10 flex-1 text-parchment" onClick={() => setOpen(false)}>
               Повременим
             </BrassButton>
             <BrassButton tone="danger" className="min-h-10 flex-[2]" onClick={go}>
-              Да, уводим колонию!
+              {to ? `Да, уводим в ${to.name}!` : "Да, уводим колонию!"}
             </BrassButton>
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+/** One district of the migration card: name, landmark, the trait's perk and quirk (radio; the map picks too). */
+function DestCard({ o, picked, single, onPick }: { o: DestRow; picked: boolean; single: boolean; onPick: () => void }) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={picked}
+      onClick={onPick}
+      className={cx(
+        "relative min-w-0 rounded-md border-2 px-2 py-1.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#a23a2c]",
+        picked ? "border-[#a23a2c] bg-white/55 shadow-[0_2px_8px_rgba(122,38,32,.25)]" : "border-soot/25 bg-white/20 hover:border-soot/50",
+      )}
+    >
+      <span className="flex items-center gap-1.5">
+        <span className="text-xl leading-none">{o.icon}</span>
+        <span className="min-w-0 flex-1">
+          <span className="block font-display text-[15px] font-bold leading-tight">{o.name}</span>
+          {o.landmark && <span className="block truncate text-[11px] italic leading-tight text-soot/75">{o.landmark}</span>}
+        </span>
+        {!single && (
+          <span
+            aria-hidden
+            className={cx("grid h-5 w-5 shrink-0 place-items-center rounded-full border-2 text-[11px] font-bold", picked ? "border-[#a23a2c] bg-[#a23a2c] text-[#efe4c9]" : "border-soot/40")}
+          >
+            {picked ? "✓" : ""}
+          </span>
+        )}
+      </span>
+      <span className="mt-1 block text-[11px] font-bold leading-snug">{o.trait}</span>
+      <span className="block text-[11px] leading-snug text-[#2d5f53]">＋ {o.perk}</span>
+      <span className="block text-[11px] leading-snug text-[#7a2620]">－ {o.quirk}</span>
+    </button>
   );
 }
 
@@ -380,7 +495,7 @@ function RankPips({ rank, max }: { rank: number; max: number }) {
       {Array.from({ length: max }, (_, i) => (
         <span
           key={i}
-          className={cx("grid h-4 min-w-4 place-items-center rounded-sm border px-0.5 font-display text-[9px] font-bold leading-none", i < rank ? "border-gaslight bg-gaslight/25 text-gaslight" : "border-line text-parchment-dim/60")}
+          className={cx("grid h-4 min-w-4 place-items-center rounded-sm border px-0.5 font-display text-[10px] font-bold leading-none", i < rank ? "border-gaslight bg-gaslight/25 text-gaslight" : "border-line text-parchment-dim/60")}
         >
           {ROMAN[i + 1]}
         </span>

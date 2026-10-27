@@ -10,14 +10,16 @@ import { memo, useEffect, useMemo, useRef } from "react";
 import { UPGRADES } from "@/game/data/upgrades";
 import { ZONE_ORDER, ZONES } from "@/game/data/zones";
 import { currentExpedition, fmtRunTime } from "@/game/engine/actions";
+import { check } from "@/game/engine/conditions";
+import { metroTeaser } from "@/game/engine/events";
 import { entries, expeditionCost, isComplete } from "@/game/engine/formulas";
 import { useGame } from "@/game/store";
-import type { GameState, ResId, ZoneId } from "@/game/types";
+import type { Cond, GameState, ResId, ZoneId } from "@/game/types";
 import { useSampled } from "@/game/useSampled";
 import { fmtInt, fmtTime } from "@/lib/format";
 import { Badge, Bar, BrassButton, Stamp, cx } from "@/components/ui/kit";
 import { isFresh } from "./alerts";
-import { ContribRow, Switch, Toolbar, contribKey } from "./common";
+import { ContribRow, Switch, Toolbar, condHint, contribKey } from "./common";
 import ExpressPanel from "./ExpressPanel";
 
 const DEPTH: Record<ZoneId, string> = {
@@ -33,21 +35,42 @@ type Stage = "open" | "project" | "next" | "unknown";
 interface MapModel {
   plan: boolean;
   terminal: boolean;
-  /** record: best run time to open the zone (EN-11), m:ss, empty when none. */
-  strata: { z: ZoneId; stage: Stage; fresh: boolean; record: string }[];
+  /** The blueprint is still locked: the unmet part of its condition («после первого Великого Переселения», ENG-3). */
+  planLock: string | null;
+  /** …and what keeps it locked is the migration gate. */
+  planGate: boolean;
+  /** record: best run time to open the zone (EN-11), m:ss, empty when none; teaser: metroTeaser (ENG-9) on the Metro. */
+  strata: { z: ZoneId; stage: Stage; fresh: boolean; record: string; teaser: string }[];
   rats: string;
+}
+
+/** Some unmet leaf of `c` asks for a Great Migration. */
+function migrationGate(s: GameState, c: Cond): boolean {
+  if ("all" in c) return c.all.some((x) => migrationGate(s, x));
+  if ("any" in c) return c.any.every((x) => migrationGate(s, x));
+  return "migrations" in c && !check(s, c);
 }
 
 function mapModel(s: GameState): MapModel {
   const exp = currentExpedition(s);
   const firstClosed = ZONE_ORDER.findIndex((z) => !s.zones[z]);
+  const plan = UPGRADES.express_plan.unlock;
+  const locked = !s.upgrades.express_plan && !check(s, plan);
   return {
     plan: !!s.upgrades.express_plan,
     terminal: !!s.zones.terminal,
+    planLock: locked ? condHint(s, plan) : null,
+    planGate: locked && migrationGate(s, plan),
     strata: ZONE_ORDER.map((z, i) => {
       const stage: Stage = s.zones[z] ? "open" : i === firstClosed ? (exp === z ? "project" : "next") : "unknown";
       const rec = z === "burrow" ? undefined : s.meta.records[z];
-      return { z, stage, fresh: stage === "project" && isFresh(s, `x_${z}`), record: rec !== undefined && Number.isFinite(rec) ? fmtRunTime(rec) : "" };
+      return {
+        z,
+        stage,
+        fresh: stage === "project" && isFresh(s, `x_${z}`),
+        record: rec !== undefined && Number.isFinite(rec) ? fmtRunTime(rec) : "",
+        teaser: z === "metro" ? (metroTeaser(s) ?? "") : "",
+      };
     }),
     rats: fmtInt(s.rats),
   };
@@ -78,7 +101,15 @@ export default function MapTab() {
       ) : (
         m.terminal && (
           <p className="mb-4 rounded-md border border-dashed border-brass-dark/70 bg-brass/5 px-3 py-2 text-xs leading-snug text-parchment-dim">
-            <b className="text-brass-light">🚂 Слухи на вокзале:</b> из хлама можно собрать собственный поезд. Нужен «{UPGRADES.express_plan.name}» во вкладке «Улучшения».
+            <b className="text-brass-light">🚂 Слухи на вокзале:</b> из хлама можно собрать собственный поезд.{" "}
+            {m.planLock ? (
+              <>
+                {m.planGate ? "🔒" : ""} «{UPGRADES.express_plan.name}» откроется: <b className="text-parchment">{m.planLock}</b>.
+                {m.planGate && <i className="mt-0.5 block">«Король выдаёт чертёж только колонии, пережившей Переселение».</i>}
+              </>
+            ) : (
+              <>Нужен «{UPGRADES.express_plan.name}» во вкладке «Улучшения».</>
+            )}
           </p>
         )
       )}
@@ -87,7 +118,7 @@ export default function MapTab() {
         {/* the shaft connecting the strata */}
         <span aria-hidden className="absolute bottom-6 left-[19px] top-6 w-0.5 bg-[repeating-linear-gradient(to_bottom,var(--brass-dark)_0_6px,transparent_6px_11px)]" />
         {m.strata.map((st) => (
-          <Stratum key={st.z} z={st.z} stage={st.stage} fresh={st.fresh} record={st.record} rats={st.stage === "next" ? m.rats : ""} />
+          <Stratum key={st.z} z={st.z} stage={st.stage} fresh={st.fresh} record={st.record} teaser={st.teaser} rats={st.stage === "next" ? m.rats : ""} />
         ))}
       </ol>
     </>
@@ -100,7 +131,7 @@ function lum(hex: string): number {
   return 0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255);
 }
 
-const Stratum = memo(function Stratum({ z, stage, fresh, rats, record }: { z: ZoneId; stage: Stage; fresh: boolean; rats: string; record: string }) {
+const Stratum = memo(function Stratum({ z, stage, fresh, rats, record, teaser }: { z: ZoneId; stage: Stage; fresh: boolean; rats: string; record: string; teaser: string }) {
   const def = ZONES[z];
   const pal = def.palette;
   const ink = lum(pal.glow) >= lum(pal.accent) ? pal.glow : pal.accent;
@@ -122,7 +153,7 @@ const Stratum = memo(function Stratum({ z, stage, fresh, rats, record }: { z: Zo
         )}
         style={{ background: known ? pal.bg : "#14110f" }}
       >
-        {known ? def.icon : "❓"}
+        {known ? def.icon : teaser ? <span className="rr-silhouette">{def.icon}</span> : "❓"}
         {stage === "open" && (
           <span className="absolute -bottom-1 -right-1 grid h-4 w-4 place-items-center rounded-full bg-good text-[10px] font-bold text-soot">✓</span>
         )}
@@ -178,13 +209,19 @@ const Stratum = memo(function Stratum({ z, stage, fresh, rats, record }: { z: Zo
             {stage === "project" && <Expedition z={z} />}
           </div>
         ) : (
-          <p className="px-2.5 pb-2 pt-1 text-[11px] leading-snug text-parchment-dim">
-            {stage === "next"
-              ? `Разведчики покажут путь, когда в колонии будет ${fmtInt(def.mapRevealRats)} 🐀 (сейчас ${rats})${
-                  (def.expedition?.rats ?? 0) > def.mapRevealRats ? `; для похода нужно ${fmtInt(def.expedition!.rats)} 🐀` : ""
-                }.`
-              : "Глубже не спускался ни один хвост. Говорят, там гудит земля."}
-          </p>
+          <div className="px-2.5 pb-2 pt-1 text-[11px] leading-snug text-parchment-dim">
+            {/* ENG-9: after «Гул из глубины» the Metro's card names what rumbles down there */}
+            {teaser && <p className="mb-0.5 font-display text-sm font-bold text-brass-light">{teaser}</p>}
+            <p>
+              {stage === "next"
+                ? `Разведчики покажут путь, когда в колонии будет ${fmtInt(def.mapRevealRats)} 🐀 (сейчас ${rats})${
+                    (def.expedition?.rats ?? 0) > def.mapRevealRats ? `; для похода нужно ${fmtInt(def.expedition!.rats)} 🐀` : ""
+                  }.`
+                : teaser
+                  ? "Старейшина клянётся: земля там дрожит каждые четыре минуты. Кто-то очень большой ходит по расписанию."
+                  : "Глубже не спускался ни один хвост. Говорят, там гудит земля."}
+            </p>
+          </div>
         )}
       </div>
     </li>

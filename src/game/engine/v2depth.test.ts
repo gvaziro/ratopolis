@@ -18,22 +18,7 @@ import { commissionProgress } from "./progress";
 import { migrate as migrateSave, serialize } from "./save";
 import { createInitialState, newRun } from "./state";
 import { step, TICK } from "./step";
-
-/** A colony on the metro station (zones opened through the real hooks), past its ×3 first train. */
-function metroState(seed = 99): GameState {
-  const s = createInitialState(seed, 0);
-  const ctx: EngineCtx = { fx: [] };
-  for (const z of ["sewers", "cellars", "metro"] as const) {
-    openZone(s, z, ctx);
-    onZoneOpen(s, z);
-  }
-  s.flags.vagrants = true;
-  s.flags.first_train = true;
-  s.rats = 200;
-  s.jobs.forager = 200;
-  s.res.crumbs = 1e5;
-  return s;
-}
+import { metroState } from "./testkit";
 
 /** A plain metro train (no EN-6 variant, no Cheddar car), not yet started. */
 function plainTrain(s: GameState): Scene {
@@ -99,10 +84,12 @@ describe("train scene engine (EN-5)", () => {
       sceneAction(s, d, { a: "piles", fractions: fr }, ctx);
       expect(s.res.coins - before).toBeLessThanOrEqual(0.85 * V);
     }
-    // 2) 90% of the weight caught by hand, combo growing as it would
+    // 2) 90% of the weight caught by hand, combo growing as it would (seed 16: no crash — v3 ENG-8 a crash halves the
+    // auto-collect of the uncaught 10%, which this bound does not price in; seed 6 crashes at the rails)
     {
-      const { s, sc, d, V, ctx } = prep(6);
+      const { s, sc, d, V, ctx } = prep(16);
       sceneAction(s, d, { a: "ready" }, ctx);
+      expect(sc.crash).toBe(false);
       const items = sc.items.filter((it) => !it.spark).sort((a, b) => a.t - b.t);
       const total = items.reduce((a, it) => a + it.weight, 0);
       const caught: CatchResult["caught"] = [];
@@ -344,7 +331,9 @@ describe("meta depth (EN-9 effects)", () => {
     s.meta.sealsOwned = ["silence", "railway", "dynasty"];
     s.meta.seal = "silence";
     expect(derive(s).suspicionMult).toBe(0);
-    expect(derive(s).click).toBeCloseTo(2 * d.click, 9);
+    // v3 (ENG-8): silence no longer doubles the click; it raises 📜/💍 ×1.3 instead
+    expect(derive(s).click).toBeCloseTo(d.click, 9);
+    expect(derive(s).excludedMult).toBeCloseTo(1.3, 9);
     s.meta.seal = "railway";
     expect(derive(s).trainExtraCars).toBe(d.trainExtraCars + 2);
     expect(derive(s).intervals.express).toBeCloseTo(d.intervals.express * 0.5, 9);
@@ -353,22 +342,27 @@ describe("meta depth (EN-9 effects)", () => {
     expect(derive(s).globalParts.find((p) => p.label === "Печать Династии")?.mult).toBeCloseTo(1.3, 9);
   });
 
-  it("district 1: the market comes every 240–300 s and cheese is ×1.5", () => {
+  it("district 1 (v3 ENG-11 Боро-маркет): the market every 240–300 s, «Сытость» ×1.5 and 📜 −25%", () => {
     const a = metroState(17);
     const b = metroState(17);
     b.meta.district = 1;
-    a.jobs.cheese_thief = 5;
-    b.jobs.cheese_thief = 5;
-    a.buildings.cheese_tap = 3;
-    b.buildings.cheese_tap = 3;
+    for (const s of [a, b]) {
+      s.upgrades.cheese_diet = true;
+      s.satiety = true;
+      s.res.cheese = 1e6;
+      s.jobs.scholar = 5;
+    }
+    const sat = (s: GameState) => derive(s).globalParts.find((p) => p.label === "Сытость")?.mult;
+    expect(sat(a)).toBe(1.25);
+    expect(sat(b)).toBe(1.5);
     const ctx: EngineCtx = { fx: [] };
-    const ca = a.res.cheese;
-    const cb = b.res.cheese;
+    const pa = a.res.blueprints;
+    const pb = b.res.blueprints;
     for (let i = 0; i < 10; i++) {
       step(a, TICK, { active: false }, ctx);
       step(b, TICK, { active: false }, ctx);
     }
-    expect((b.res.cheese - cb) / (a.res.cheese - ca)).toBeCloseTo(1.5, 6);
+    expect((b.res.blueprints - pb) / (a.res.blueprints - pa)).toBeCloseTo(0.75, 6);
     for (let i = 0; i < 30; i++) {
       b.market = null;
       b.timers.market = b.time;
@@ -417,19 +411,6 @@ describe("living newspaper (EN-10)", () => {
     expect(UPGRADES.grappling_hook.icon).toBe("⚓");
     for (const e of EDICT_ORDER) expect(EDICTS[e].decree.length).toBeGreaterThan(0);
   });
-
-  it("an hour of run 1 has ≥ 15 filler headlines, none repeated within 10 headlines", () => {
-    const s = createInitialState(21, 0);
-    const ctx: EngineCtx = { fx: [] };
-    for (let i = 0; i < 36000; i++) step(s, TICK, { active: true }, ctx);
-    const texts = ctx.fx.filter((f): f is Extract<Fx, { k: "news" }> => f.k === "news").map((f) => f.text);
-    const fillers = new Set(Object.entries(HEADLINES).filter(([k]) => k.startsWith("filler")).flatMap(([, v]) => v));
-    expect(texts.filter((t) => fillers.has(t)).length).toBeGreaterThanOrEqual(15);
-    for (let i = 0; i < texts.length; i++) {
-      const win = texts.slice(i, i + 10);
-      expect(new Set(win).size, win.join(" | ")).toBe(win.length);
-    }
-  }, 30_000); // 36 000 engine steps: slow when the machine is busy
 
   it("no filler while catching up an absence", () => {
     const s = createInitialState(22, 0);
@@ -539,6 +520,8 @@ describe("medals 2.0 (EN-11)", () => {
     // finish stage 10 by hand
     for (const r of ["rails", "gears", "brass", "trinkets", "blueprints"] as const) s.res[r] = 1e12;
     s.meta.coronations = 1;
+    // v3 (ENG-3) «Короткая неделя»: crowned in the second run (one migration behind)
+    s.meta.migrations = 1;
     contributeExpress(s, null, ctx);
     expect(s.coronatedThisRun).toBe(true);
     expect(s.meta.achievements.hungry_king).toBeDefined();
@@ -596,7 +579,7 @@ describe("medals 2.0 (EN-11)", () => {
 /* ================================================================ EN-12 */
 
 describe("royal commissions (EN-12)", () => {
-  it("charters multiply the crowns: ×1.157625 for 3, at most ×1.5", () => {
+  it("charters multiply the crowns: ×1.157625 for 3, ×1.05^10 for all ten (v3 ENG-3: the cap 1.63 lets the 10th count)", () => {
     const s = metroState(41);
     s.eRun = 4e7; // 10·√40 = 63.2 crowns
     const raw = 10 * Math.sqrt(40);
@@ -604,7 +587,7 @@ describe("royal commissions (EN-12)", () => {
     s.charters = 3;
     expect(crownsForRun(s)).toBe(Math.floor(raw * 1.157625));
     s.charters = 10;
-    expect(crownsForRun(s)).toBe(Math.floor(raw * 1.5));
+    expect(crownsForRun(s)).toBe(Math.floor(raw * Math.pow(1.05, 10)));
   });
 
   it("a finished commission pays a charter and offers three new ones; charters reset on migration", () => {

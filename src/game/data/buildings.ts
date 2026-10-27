@@ -260,7 +260,7 @@ export const BUILDINGS: Record<BuildingId, BuildingDef> = {
     ],
     unlock: { zone: "metro" },
     desc: `+0.5 🪨/с; +2 места угольщика за уровень. Угольщики ×${MILESTONE_JOB_BOOST} ${MS_TEXT}.`,
-    flavor: "Желоб под тендером. Уголь сыплется сам, только успевай.",
+    flavor: "Жёлоб под тендером. Уголь сыплется сам, только успевай.",
   },
   boiler: {
     id: "boiler",
@@ -269,13 +269,15 @@ export const BUILDINGS: Record<BuildingId, BuildingDef> = {
     zone: "metro",
     cost: { wire: 6000, gears: 1000, coal: 150 },
     growth: 1.25,
+    // v3 (ENG-4, K4): a cap makes steam a budget (24 stokers × 3 × 1.5 × 1.25 = 135 💨/s); district boilerMaxDelta adds
+    maxLevel: 12,
     effects: [
       { t: "slots", job: "stoker", amt: 2 },
       { t: "steamCap", amt: 100 },
     ],
     unlock: { all: [{ zone: "metro" }, { resEver: "coal", gte: 150 }] },
-    desc: "+2 места кочегара; буфер 💨 +100 за уровень.",
-    flavor: "Медный чайник леди Пемберли. Теперь он свистит для крыс.",
+    desc: "+2 места кочегара; буфер 💨 +100 за уровень (макс. 12).",
+    flavor: "Леди Пемберли (дом №12) снова без чайника. Теперь он свистит для крыс.",
   },
   brass_foundry: {
     id: "brass_foundry",

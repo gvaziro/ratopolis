@@ -1,93 +1,38 @@
 "use client";
 
 /**
- * «Цели колонии» (top-left of the colony): the elder's hint with «Сделать», then the goals — something
- * affordable right now, the expedition (with its bottleneck) or the next unlock, the crowns / the coronation,
- * the Rat Express stage, and the nearest building and upgrade with time-to-afford. Never empty once revealed.
- * Sampled once a second. Shrinks to a pill when the grate leaves too little room beside it, and drops under
- * the grate when even the pill would not fit there. Clicking a goal opens its tab and glows its card.
+ * «Цели колонии» (top-left of the colony): the elder's hint with «Сделать», then the goals from goalModel (COL-2) —
+ * what is worth building now, the expedition with its slowest resource (or «склад полон — внесите»: a click puts it
+ * in), the crowns / the coronation, the Rat Express stage or the next wagon, the King's commission, the nearest
+ * building and upgrade. Sampled once a second.
+ * COL-2: compact by default — the hint and the first goal, the rest behind «+N цели ▾» (remembered for the session);
+ * while it covers a built chamber and nobody has hovered or focused it for 6 s it fades to 0.55 (back on hover,
+ * focus or a new goal). Shrinks to a pill when the grate leaves too little room beside it (always on phones), and
+ * drops under the grate when even the pill would not fit there; the pill's popover closes with the system Back.
  */
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Bar, cx } from "@/components/ui/kit";
-import { BUILDINGS, BUILDING_ORDER } from "@/game/data/buildings";
-import { RESOURCES } from "@/game/data/resources";
-import { UPGRADES, UPGRADE_ORDER } from "@/game/data/upgrades";
-import { ZONES } from "@/game/data/zones";
-import { buildingVisible, currentExpedition, expressCost, upgradeVisible } from "@/game/engine/actions";
 import type { Derived } from "@/game/engine/derive";
-import {
-  affordFraction,
-  buildingCost,
-  canAfford,
-  canMigrate,
-  crownsForRun,
-  entries,
-  expeditionCost,
-  lockedByCap,
-  marketValue,
-  nextCrownAt,
-  prevCrownAt,
-  timeToAfford,
-} from "@/game/engine/formulas";
 import { nextHint, type Hint } from "@/game/engine/hints";
+import { onFx } from "@/game/fx";
 import { derivedOf, useGame, type TabId } from "@/game/store";
-import { RES_IDS, T1, type Amounts, type BuildingId, type GameState, type ResId } from "@/game/types";
+import { BUILDING_IDS, RES_IDS, type GameState, type ResId } from "@/game/types";
 import { useSampled } from "@/game/useSampled";
-import { fmt, fmtInt, fmtTime } from "@/lib/format";
-import { onCamera } from "./camera";
-import { GRATE, nextLocked } from "./geometry";
-
-interface Goal {
-  icon: string;
-  name: string;
-  /** Seconds to afford; -1 = never at current rates; -2 = not applicable (the note is shown instead). */
-  eta: number;
-  frac: number;
-  note?: string;
-  /** Second line (the expedition's bottleneck). */
-  sub?: string;
-  /** The sub line is bad news (a resource nobody gathers). */
-  warn?: boolean;
-  locked?: boolean;
-  /** Icons of missing resources nobody produces (eta −1). */
-  dry?: string;
-  tone?: "good" | "gold";
-  tab: TabId;
-  target?: string;
-  /** Short label for the compact pill when there is no ETA. */
-  short: string;
-}
+import { plural } from "@/lib/format";
+import { useBackCloses } from "@/lib/useBackCloses";
+import { camView, onCamera, type CamView } from "./camera";
+import { BUILDING_SLOT, GRATE, SLOT_H, SLOT_W } from "./geometry";
+import { etaText, goalModel, pillText, type Goal } from "./goalModel";
 
 interface View {
   hint: Hint | null;
   goals: Goal[];
 }
 
-/* ------------------------------------------------------------ storage-only buildings */
-
-const T1G: readonly ResId[] = [...T1, "gears", "cheese"];
-
-/** Buildings whose every effect is a storage limit (cap / capMult / steamCap) → the resources they hold. */
-const STORAGE_RES: Partial<Record<BuildingId, ResId[]>> = (() => {
-  const out: Partial<Record<BuildingId, ResId[]>> = {};
-  for (const id of BUILDING_ORDER) {
-    const effs = BUILDINGS[id].effects;
-    if (!effs.length || !effs.every((e) => e.t === "cap" || e.t === "capMult" || e.t === "steamCap")) continue;
-    const rs = new Set<ResId>();
-    for (const e of effs) {
-      if (e.t === "cap") rs.add(e.res);
-      else if (e.t === "capMult") (e.group === "T1" ? T1 : T1G).forEach((r) => rs.add(r));
-      else if (e.t === "steamCap") rs.add("steam");
-    }
-    out[id] = [...rs];
-  }
-  return out;
-})();
-
 /** game.time since which each resource has sat at ≥ 99% of its limit (module state: there is one widget). */
 const fullSince: Partial<Record<ResId, number>> = {};
 
-/** Resources that have been ≥ 99% full for 30 s. */
+/** Resources that have been ≥ 99% full for 30 s (the storage rule waits that long before it suggests a store). */
 function longFull(s: GameState, d: Derived): Set<ResId> {
   const out = new Set<ResId>();
   for (const r of RES_IDS) {
@@ -103,242 +48,31 @@ function longFull(s: GameState, d: Derived): Set<ResId> {
   return out;
 }
 
-/* ------------------------------------------------------------ maths */
-
-const round50 = (f: number) => (Number.isFinite(f) ? Math.round(Math.max(0, Math.min(1, f)) * 50) / 50 : 0);
-
-/** Missing parts of a price that nobody produces (net rate ≤ 0), as icons. */
-function dryIcons(s: GameState, cost: Amounts): string {
-  let out = "";
-  for (const [r, v] of entries(cost)) if (v > s.res[r] + 1e-9 && s.rates[r] <= 0) out += RESOURCES[r].icon;
-  return out;
-}
-
-/** The slowest part of a project: (need − contributed − stock) / net rate, Infinity when nobody produces it. */
-function bottleneck(s: GameState, cost: Amounts, prog: Amounts): { res: ResId; t: number } | null {
-  let worst: { res: ResId; t: number } | null = null;
-  for (const [r, v] of entries(cost)) {
-    const lack = v - (prog[r] ?? 0) - s.res[r];
-    if (lack <= 1e-9) continue;
-    const t = s.rates[r] > 0 ? lack / s.rates[r] : Infinity;
-    if (!worst || t > worst.t) worst = { res: r, t };
-  }
-  return worst;
-}
-
-function projectFrac(cost: Amounts, prog: Amounts): number {
-  const list = entries(cost);
-  return list.length ? list.reduce((a, [r, v]) => a + Math.min(1, (prog[r] ?? 0) / v), 0) / list.length : 0;
-}
-
-function computeGoals(s: GameState, d: Derived, full: Set<ResId>): Goal[] {
-  const out: Goal[] = [];
-  const maxed = (id: BuildingId) => BUILDINGS[id].maxLevel !== undefined && s.buildings[id] >= BUILDINGS[id].maxLevel!;
-
-  // storage only when a visible goal is held back by a limit, or a store has been brim-full for 30 s
-  const wanted = new Set(full);
-  for (const id of BUILDING_ORDER) {
-    if (STORAGE_RES[id] || maxed(id) || !buildingVisible(s, id)) continue;
-    for (const r of lockedByCap(buildingCost(id, s.buildings[id]), d)) wanted.add(r);
-  }
-  for (const id of UPGRADE_ORDER) {
-    if (s.upgrades[id] || !upgradeVisible(s, id)) continue;
-    for (const r of lockedByCap(UPGRADES[id].cost, d)) wanted.add(r);
-  }
-  const skip = (id: BuildingId) => {
-    const rs = STORAGE_RES[id];
-    return !!rs && !rs.some((r) => wanted.has(r));
-  };
-
-  // 1. something to build right now
-  let ok: BuildingId | null = null;
-  let okV = Infinity;
-  for (const id of BUILDING_ORDER) {
-    if (maxed(id) || skip(id) || !buildingVisible(s, id)) continue;
-    const cost = buildingCost(id, s.buildings[id]);
-    if (!canAfford(s, cost)) continue;
-    const v = marketValue(cost);
-    if (v < okV) {
-      okV = v;
-      ok = id;
-    }
-  }
-  if (ok) {
-    const def = BUILDINGS[ok];
-    out.push({ icon: "✓", name: `Можно построить: ${def.name} (${fmtInt(s.buildings[ok] + 1)})`, eta: -2, frac: 1, tone: "good", tab: "buildings", target: `b_${ok}`, short: `${def.icon} ${def.name}` });
-  }
-
-  // 2. the crowns of this run / the coronation
-  if (s.coronatedThisRun) {
-    const k = crownsForRun(s);
-    out.push({ icon: "🧳", name: "Король коронован — переселиться ×1.25", note: `+${fmtInt(k)} 👑`, eta: -2, frac: 1, tone: "gold", tab: "migration", short: `+${fmtInt(k)} 👑` });
-  } else if (canMigrate(s)) {
-    const k = crownsForRun(s);
-    const next = nextCrownAt(s);
-    const prev = prevCrownAt(s);
-    out.push({
-      icon: "👑",
-      name: `Венцы: +${fmtInt(k)} 👑`,
-      note: `след. через ${fmt(Math.max(0, next - s.eRun))} 🪙`,
-      eta: -2,
-      frac: round50(next > prev ? (s.eRun - prev) / (next - prev) : 1),
-      tab: "migration",
-      short: `+${fmtInt(k)} 👑`,
-    });
-  }
-
-  // 3. the dig, the expedition or the next unlock
-  if (s.digging) {
-    const z = s.digging.zone;
-    const left = Math.max(0, s.digging.until - s.time);
-    out.push({ icon: "⛏️", name: `Копаем: ${ZONES[z].name}`, eta: Math.ceil(left), frac: round50(1 - left / 5), tab: "map", target: `z_${z}`, short: "копаем!" });
-  } else {
-    const z = currentExpedition(s);
-    if (z) {
-      const cost = expeditionCost(s, z);
-      const prog = s.projects[z] ?? {};
-      const need = ZONES[z].expedition?.rats ?? 0;
-      const b = bottleneck(s, cost, prog);
-      const icon = b ? RESOURCES[b.res].icon : "";
-      const dry = !!b && !Number.isFinite(b.t);
-      const sub = !b ? (s.rats >= need ? "всё собрано — несите в экспедицию!" : "запасы есть, ждём крыс") : dry ? `${icon} не добывается` : `${icon} узкое место ≈ ${fmtTime(b.t)}`;
-      out.push({
-        icon: "🗺️",
-        name: `Экспедиция: ${ZONES[z].name}`,
-        note: `🐀 ${fmtInt(s.rats)}/${fmtInt(need)}`,
-        sub,
-        warn: dry,
-        eta: -2,
-        frac: round50(projectFrac(cost, prog)),
-        tab: "map",
-        target: `z_${z}`,
-        short: !b ? `🐀 ${fmtInt(s.rats)}/${fmtInt(need)}` : dry ? `${icon} не добывается` : `≈ ${fmtTime(b.t)}`,
-      });
-    } else {
-      const nz = nextLocked(s);
-      if (nz) {
-        // two thresholds, both named: the scouts find the way at mapRevealRats, the expedition itself takes more
-        const need = ZONES[nz].mapRevealRats;
-        const crew = ZONES[nz].expedition?.rats ?? 0;
-        out.push({
-          icon: "🗺️",
-          name: `${ZONES[nz].name}: разведка при ${fmtInt(need)} 🐀 (сейчас ${fmtInt(s.rats)})${crew > need ? `, поход — ${fmtInt(crew)} 🐀` : ""}`,
-          eta: -2,
-          frac: round50(need > 0 ? s.rats / need : 1),
-          tab: "map",
-          target: `z_${nz}`,
-          short: `${fmtInt(s.rats)}/${fmtInt(need)} 🐀`,
-        });
-      }
-    }
-  }
-
-  // 4. the Rat Express
-  if (s.upgrades.express_plan && s.express.stage < 10) {
-    const cost = expressCost(s);
-    const prog = s.express.progress;
-    const b = bottleneck(s, cost, prog);
-    const dry = !!b && !Number.isFinite(b.t);
-    out.push({
-      icon: "🚂",
-      name: `Экспресс: этап ${fmtInt(s.express.stage + 1)}/10`,
-      note: b ? undefined : "можно внести!",
-      eta: !b ? -2 : dry ? -1 : Math.ceil(b.t),
-      dry: dry ? RESOURCES[b.res].icon : undefined,
-      frac: round50(projectFrac(cost, prog)),
-      tab: "map",
-      target: "x_express",
-      short: !b ? "внести!" : `этап ${fmtInt(s.express.stage + 1)}`,
-    });
-  }
-
-  // 5. the nearest building out of reach
-  let best: Goal | null = null;
-  let bestT = Infinity;
-  let bestV = Infinity;
-  for (const id of BUILDING_ORDER) {
-    if (maxed(id) || skip(id) || !buildingVisible(s, id)) continue;
-    const def = BUILDINGS[id];
-    const cost = buildingCost(id, s.buildings[id]);
-    if (canAfford(s, cost)) continue;
-    const t = timeToAfford(s, cost);
-    const v = marketValue(cost);
-    if (t < bestT || (t === bestT && v < bestV)) {
-      bestT = t;
-      bestV = v;
-      best = {
-        icon: def.icon,
-        name: s.buildings[id] > 0 ? `${def.name} (${fmtInt(s.buildings[id] + 1)})` : def.name,
-        eta: Number.isFinite(t) ? Math.ceil(t) : -1,
-        dry: Number.isFinite(t) ? undefined : dryIcons(s, cost),
-        frac: round50(affordFraction(s, cost)),
-        locked: lockedByCap(cost, d).length > 0,
-        tab: "buildings",
-        target: `b_${id}`,
-        short: def.name,
-      };
-    }
-  }
-  if (best) out.push(best);
-
-  // 6. the nearest upgrade out of reach
-  let bestU: Goal | null = null;
-  bestT = Infinity;
-  bestV = Infinity;
-  for (const id of UPGRADE_ORDER) {
-    if (s.upgrades[id] || !upgradeVisible(s, id)) continue;
-    const cost = UPGRADES[id].cost;
-    if (canAfford(s, cost)) continue;
-    const t = timeToAfford(s, cost);
-    const v = marketValue(cost);
-    if (t < bestT || (t === bestT && v < bestV)) {
-      bestT = t;
-      bestV = v;
-      bestU = {
-        icon: UPGRADES[id].icon,
-        name: UPGRADES[id].name,
-        eta: Number.isFinite(t) ? Math.ceil(t) : -1,
-        dry: Number.isFinite(t) ? undefined : dryIcons(s, cost),
-        frac: round50(affordFraction(s, cost)),
-        locked: lockedByCap(cost, d).length > 0,
-        tab: "upgrades",
-        target: `u_${id}`,
-        short: UPGRADES[id].name,
-      };
-    }
-  }
-  if (bestU) out.push(bestU);
-
-  if (!out.length) out.push({ icon: "🎩", name: "Колония в полном порядке", note: "копим впрок", eta: -2, frac: 1, tab: "buildings", short: "всё в порядке" });
-  return out;
-}
-
 function computeView(s: GameState): string {
   const d = derivedOf(s);
   const hint = nextHint(s, d);
   if (!s.revealed.goal && !hint) return "";
-  const v: View = { hint, goals: s.revealed.goal ? computeGoals(s, d, longFull(s, d)) : [] };
+  const v: View = { hint, goals: s.revealed.goal ? goalModel(s, d, longFull(s, d)) : [] };
   return JSON.stringify(v);
 }
 
 /* ------------------------------------------------------------ rendering */
 
-function etaText(g: Goal): string {
-  if (g.locked) return "🔒 нужен склад";
-  if (g.eta === -2) return g.note ?? "";
-  if (g.eta === -1) return `нет дохода ${g.dry ?? ""}`.trim();
-  if (g.eta <= 0) return "почти!";
-  return `≈ ${fmtTime(g.eta)}`;
-}
-
-function pillText(g: Goal): string {
-  if (g.locked) return "🔒 склад";
-  if (g.eta === -1) return `нет дохода ${g.dry ?? ""}`.trim();
-  if (g.eta >= 0) return g.eta <= 0 ? "почти!" : fmtTime(g.eta);
-  return g.short;
-}
-
 const tabOpen = (tab: TabId) => tab === "settings" || !!useGame.getState().game.revealed[`tab_${tab}`];
+
+/** A goal row's click: contribute the full stores it names, else open its tab at its card. */
+function runGoal(g: Goal): void {
+  const st = useGame.getState();
+  const c = g.contribute;
+  if (c) {
+    if (c.kind === "expedition") {
+      if (!c.res.length) st.contributeExpedition(c.zone);
+      for (const r of c.res) st.contributeExpedition(c.zone, r);
+    } else for (const r of c.res) st.contributeExpress(r);
+    return;
+  }
+  if (tabOpen(g.tab)) st.focus(g.tab, g.target);
+}
 
 function HintRow({ h, onDone }: { h: Hint; onDone: () => void }) {
   const act = !!h.action && h.action.kind !== "focus";
@@ -384,6 +118,7 @@ function GoalRow({ g, onGo }: { g: Goal; onGo: (g: Goal) => void }) {
       type="button"
       data-nodrag=""
       onClick={() => onGo(g)}
+      aria-label={g.contribute ? `${g.name}: ${g.sub ?? "внести"}` : undefined}
       className={cx(
         "group flex min-h-10 w-full flex-col justify-center rounded border px-2 py-1 text-left transition hover:bg-panel-2",
         g.tone === "good" ? "border-good/50 bg-good/10 hover:border-good" : g.tone === "gold" ? "border-[#ffd34d]/60 bg-[#ffd34d]/10 hover:border-[#ffd34d]" : "border-line/60 bg-panel/70 hover:border-brass-dark",
@@ -394,7 +129,12 @@ function GoalRow({ g, onGo }: { g: Goal; onGo: (g: Goal) => void }) {
         <span className={cx("line-clamp-2 min-w-0 flex-1 leading-4", g.tone === "good" && "text-good", g.tone === "gold" && "font-bold text-[#ffd34d]")}>{g.name}</span>
         <span className={cx("shrink-0 font-mono text-[10px] leading-4 tabular", bad ? "text-danger-light" : g.tone === "gold" ? "text-[#ffd34d]" : "text-brass-light")}>{etaText(g)}</span>
       </span>
-      {g.sub && <span className={cx("mt-0.5 block w-full truncate text-[10px] leading-tight", g.warn ? "font-bold text-danger-light" : "text-parchment-dim")}>{g.sub}</span>}
+      {g.sub && (
+        <span className={cx("mt-0.5 block w-full truncate text-[10px] leading-tight", g.warn ? "font-bold text-danger-light" : g.contribute ? "font-bold text-gaslight" : "text-parchment-dim")}>
+          {g.contribute && <span aria-hidden>📥 </span>}
+          {g.sub}
+        </span>
+      )}
       {g.tone !== "good" && <Bar value={g.frac} className="mt-1 h-1 w-full" color={g.tone === "gold" ? "#ffd34d" : g.tab === "map" ? "var(--verdigris)" : g.tab === "migration" ? "var(--gaslight)" : "var(--brass)"} />}
     </button>
   );
@@ -407,8 +147,28 @@ interface Layout {
   under: number;
   cw: number;
   ch: number;
-  /** Desktop layout (≥ 768 px): 4 goal rows, else 3. */
+  /** Desktop layout (≥ 768 px). */
   wide: boolean;
+}
+
+/** The card fades after this long without hover or focus while it covers a built chamber. */
+const FADE_IDLE_MS = 6000;
+const FADE_TO = 0.55;
+
+/** The card's rect (container px) overlaps a built chamber's niche at this camera. */
+function coversChamber(g: GameState, v: Readonly<CamView>, r: { x: number; y: number; w: number; h: number }): boolean {
+  if (v.cw <= 1 || r.w <= 0) return false;
+  for (const id of BUILDING_IDS) {
+    if (g.buildings[id] <= 0) continue;
+    const slot = BUILDING_SLOT[id];
+    if (!g.zones[slot.zone]) continue;
+    const x0 = v.cw / 2 + (slot.cx - SLOT_W / 2 - v.cx) * v.s;
+    const x1 = x0 + SLOT_W * v.s;
+    const y1 = v.ch / 2 + (slot.floor - v.cy) * v.s;
+    const y0 = y1 - SLOT_H * v.s;
+    if (x0 < r.x + r.w && x1 > r.x && y0 < r.y + r.h && y1 > r.y) return true;
+  }
+  return false;
 }
 
 export const GoalWidget = memo(function GoalWidget() {
@@ -417,10 +177,12 @@ export const GoalWidget = memo(function GoalWidget() {
   const bustle = useGame((s) => !!s.game.revealed.bustle);
   const [lay, setLay] = useState<Layout>({ room: 260, under: 0, cw: 800, ch: 600, wide: true });
   const [open, setOpen] = useState(false);
-  // the full widget can fold to its header and the hint (it sits over the first chamber on desktop)
-  const [folded, setFolded] = useState(readFolded);
+  // the full card shows the hint and the first goal; «+N цели ▾» unfolds the rest (remembered for the session)
+  const [expanded, setExpanded] = useState(readExpanded);
   // a pressed hint hides until the next sample shows what is left to do (no double «Сделать»)
   const [doneHint, setDoneHint] = useState<string | null>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const fadeApi = useRef<{ hold: (by: "hover" | "focus", on: boolean) => void; wake: () => void } | null>(null);
 
   // width available left of the grate (so the widget never covers it)
   useEffect(
@@ -436,12 +198,13 @@ export const GoalWidget = memo(function GoalWidget() {
     [],
   );
 
-  // SH-4: Esc (the global hotkey event) folds the goal popover
+  // SH-4: Esc (the global hotkey event) folds the goal popover; mobile-14: so does the system Back on phones
   useEffect(() => {
     const close = () => setOpen(false);
     window.addEventListener("rr-escape", close);
     return () => window.removeEventListener("rr-escape", close);
   }, []);
+  useBackCloses(open, () => setOpen(false));
 
   useEffect(() => {
     if (doneHint === null) return;
@@ -449,28 +212,86 @@ export const GoalWidget = memo(function GoalWidget() {
     return () => window.clearTimeout(t);
   }, [doneHint]);
 
-  if (!view) return null;
-  const hintKey = view.hint ? `${view.hint.id}|${view.hint.text}` : null;
-  const hint = view.hint && hintKey !== doneHint ? view.hint : null;
-  const goals = view.goals.slice(0, lay.wide ? 4 : 3);
-  if (!hint && goals.length === 0) return null;
+  const compact = lay.room < 180 || !lay.wide;
+  const hintKey = view?.hint ? `${view.hint.id}|${view.hint.text}` : null;
+  const hint = view?.hint && hintKey !== doneHint ? view.hint : null;
+  const shown = !!view && (view.goals.length > 0 || !!hint);
+
+  // visuals-10: the card over a built chamber fades after 6 s without hover / focus (style written directly)
+  useEffect(() => {
+    const el = cardRef.current;
+    if (compact || !shown || !el) return;
+    // hover and keyboard focus hold the card each on its own (a pointer leaving must not drop a focus hold)
+    const st = { hover: false, focus: false, idleFrom: performance.now(), over: false, timer: 0, r: { x: 0, y: 0, w: 0, h: 0 } };
+    const apply = () => {
+      window.clearTimeout(st.timer);
+      let dim = false;
+      if (st.over && !st.hover && !st.focus) {
+        const left = FADE_IDLE_MS - (performance.now() - st.idleFrom);
+        if (left <= 0) dim = true;
+        else st.timer = window.setTimeout(apply, left + 30);
+      }
+      const want = dim ? String(FADE_TO) : "";
+      if (el.style.opacity !== want) el.style.opacity = want;
+    };
+    const check = (v: Readonly<CamView>) => {
+      const over = coversChamber(useGame.getState().game, v, st.r);
+      if (over === st.over) return;
+      st.over = over;
+      apply();
+    };
+    const measure = () => {
+      st.r = { x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight };
+      check(camView());
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    measure();
+    const offCam = onCamera(check);
+    // a chamber built under the card
+    const offFx = onFx((fx) => {
+      if (fx.k === "buy") check(camView());
+    });
+    fadeApi.current = {
+      hold: (by, on) => {
+        const held = st.hover || st.focus;
+        if (by === "hover") st.hover = on;
+        // only a visible focus ring holds: a control clicked with the mouse lets the card fade once the pointer leaves
+        // (re-read on every hover change too: a focused row that unmounts sends no blur)
+        st.focus = by === "focus" && !on ? false : !!el.querySelector(":focus-visible");
+        if (held && !st.hover && !st.focus) st.idleFrom = performance.now();
+        apply();
+      },
+      wake: () => {
+        st.idleFrom = performance.now();
+        apply();
+      },
+    };
+    return () => {
+      fadeApi.current = null;
+      window.clearTimeout(st.timer);
+      ro.disconnect();
+      offCam();
+      offFx();
+      el.style.opacity = "";
+    };
+  }, [compact, shown]);
+
+  // a new first goal (or a new hint) wakes the faded card
+  const lead = view ? `${view.hint?.id ?? ""}|${view.goals[0]?.key ?? ""}` : "";
+  useEffect(() => {
+    fadeApi.current?.wake();
+  }, [lead]);
+
+  if (!view || !shown) return null;
+  const goals = view.goals;
   const { room } = lay;
-  // phones always get the pill: the full card would cover half the colony once the camera leaves the grate
-  const compact = room < 180 || !lay.wide;
 
   const go = (g: Goal) => {
     setOpen(false);
-    if (tabOpen(g.tab)) useGame.getState().focus(g.tab, g.target);
+    runGoal(g);
   };
   const hintRow = hint ? <HintRow h={hint} onDone={() => setDoneHint(hintKey)} /> : null;
-  const list = (
-    <div className="flex flex-col gap-1">
-      {hintRow}
-      {goals.map((g, i) => (
-        <GoalRow key={i} g={g} onGo={go} />
-      ))}
-    </div>
-  );
 
   if (compact) {
     const g = goals[0];
@@ -511,54 +332,79 @@ export const GoalWidget = memo(function GoalWidget() {
             style={{ maxHeight: Math.max(140, lay.ch - top - 56) }}
           >
             <div className="mb-1 px-1 font-display text-xs font-bold tracking-wide text-brass-light">Цели колонии</div>
-            {list}
+            <div className="flex flex-col gap-1">
+              {hintRow}
+              {goals.map((g) => (
+                <GoalRow key={g.key} g={g} onGo={go} />
+              ))}
+            </div>
           </div>
         )}
       </div>
     );
   }
 
+  const rest = goals.length - 1;
+  const list = expanded ? goals : goals.slice(0, 1);
+  const hold = (by: "hover" | "focus", on: boolean) => fadeApi.current?.hold(by, on);
   return (
-    <div className="absolute left-2 top-2 z-20 rounded-lg border border-line/80 bg-soot-2/80 p-1.5 shadow-[0_4px_14px_rgba(0,0,0,.45)]" style={{ width: Math.min(room, hint ? 280 : 260) }} data-nodrag="">
-      <button
-        type="button"
-        data-nodrag=""
-        onClick={() => {
-          setFolded(!folded);
-          writeFolded(!folded);
-        }}
-        aria-expanded={!folded}
-        title={folded ? "Показать цели" : "Свернуть цели (совет останется)"}
-        className="mb-1 flex w-full items-center gap-1 rounded px-1 text-left font-display text-xs font-bold tracking-wide text-brass-light hover:text-parchment"
-      >
-        <span aria-hidden>🎯</span>
-        <span className="flex-1">Цели колонии</span>
-        {folded && goals.length > 0 && <span className="font-mono text-[10px] font-normal text-parchment-dim tabular">{goals.length}</span>}
-        <span aria-hidden className="text-[10px]">
-          {folded ? "▾" : "▴"}
-        </span>
-      </button>
-      {folded ? hintRow : list}
+    <div
+      ref={cardRef}
+      role="region"
+      aria-label="Цели колонии"
+      data-wheel-scroll=""
+      className="absolute left-2 top-2 z-20 overflow-y-auto overscroll-contain rounded-lg border border-line/80 bg-soot-2/80 p-1.5 shadow-[0_4px_14px_rgba(0,0,0,.45)] transition-opacity duration-500"
+      style={{ width: Math.min(room, hint ? 280 : 260), maxHeight: Math.max(120, lay.ch - 16) }}
+      data-nodrag=""
+      onPointerEnter={() => hold("hover", true)}
+      onPointerLeave={() => hold("hover", false)}
+      onFocus={() => hold("focus", true)}
+      onBlur={() => hold("focus", false)}
+    >
+      <div className="flex flex-col gap-1">
+        {hintRow}
+        {list.map((g) => (
+          <GoalRow key={g.key} g={g} onGo={go} />
+        ))}
+      </div>
+      {rest > 0 && (
+        <button
+          type="button"
+          data-nodrag=""
+          onClick={() => {
+            setExpanded(!expanded);
+            writeExpanded(!expanded);
+          }}
+          aria-expanded={expanded}
+          className="mt-1 flex min-h-7 w-full items-center gap-1 rounded px-1 text-left font-display text-xs font-bold tracking-wide text-brass-light hover:text-parchment"
+        >
+          <span aria-hidden>🎯</span>
+          <span className="flex-1">{expanded ? "Свернуть цели" : `+${rest} ${plural(rest, "цель", "цели", "целей")}`}</span>
+          <span aria-hidden className="text-[10px]">
+            {expanded ? "▴" : "▾"}
+          </span>
+        </button>
+      )}
     </div>
   );
 });
 
-/* ------------------------------------------------------------ folded state (a per-viewer convenience) */
+/* ------------------------------------------------------------ expanded state (a per-session convenience) */
 
-const FOLD_KEY = "rr:goals-folded";
+const OPEN_KEY = "rr:goals-open";
 
-function readFolded(): boolean {
+function readExpanded(): boolean {
   try {
-    return window.localStorage.getItem(FOLD_KEY) === "1";
+    return window.sessionStorage.getItem(OPEN_KEY) === "1";
   } catch {
     return false;
   }
 }
 
-function writeFolded(v: boolean): void {
+function writeExpanded(v: boolean): void {
   try {
-    window.localStorage.setItem(FOLD_KEY, v ? "1" : "0");
+    window.sessionStorage.setItem(OPEN_KEY, v ? "1" : "0");
   } catch {
-    /* private mode: the widget just opens unfolded next time */
+    /* private mode: the card just opens compact next time */
   }
 }

@@ -4,6 +4,8 @@
  * "Постройки": buy-mode toggle, foreman switches, cards grouped by open zone (collapsible),
  * and up to two "скоро" silhouettes per zone for buildings whose unlock is not met yet.
  * The layout (and the «выгодно» payback pick) is sampled twice a second (PA-1, PA-3).
+ * On phones the ×1/×10/Макс toggle moves into the sheet's handle row (SheetSlot), so the half sheet shows more
+ * cards; the desktop toolbar keeps it (PAN-3).
  */
 import { memo, useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -19,6 +21,8 @@ import { useSampled } from "@/game/useSampled";
 import { cx } from "@/components/ui/kit";
 import BuildingCard from "./BuildingCard";
 import { Segmented, Switch, Toolbar, condHint, type SegOption } from "./common";
+import { SheetSlot, useSheetSlot } from "./sheetSlot";
+import { BuildingThumb } from "./Thumb";
 
 interface ZoneGroup {
   zone: ZoneId;
@@ -119,16 +123,21 @@ export default function BuildingsTab() {
     { value: 10, label: "×10", title: "Ровно 10 уровней — или ничего" },
     { value: "max", label: maxN > 0 ? `Макс(${maxN})` : "Макс", title: "Сколько хватит денег" },
   ];
+  const setMode = (v: BuyMode) => useGame.getState().setBuyMode(v);
+  // phones: the toggle lives in the sheet's handle row and the toolbar keeps only the foreman (or takes no room)
+  const slot = useSheetSlot();
+  const foreman = useGame((s) => !!s.game.upgrades.foreman);
 
   return (
     <>
-      <Toolbar
-        icon="🏗️"
-        title="Постройки"
-        right={<Segmented label="Сколько строить" dense value={mode} options={modes} onChange={(v) => useGame.getState().setBuyMode(v)} />}
-      >
-        <ForemanBar />
+      <Toolbar icon="🏗️" title="Постройки" right={slot ? undefined : <Segmented label="Сколько строить" dense value={mode} options={modes} onChange={setMode} />}>
+        {foreman ? <ForemanBar /> : null}
       </Toolbar>
+      {slot && (
+        <SheetSlot>
+          <Segmented label="Сколько строить" slot value={mode} options={modes} onChange={setMode} />
+        </SheetSlot>
+      )}
 
       {groups.length === 0 || groups.every((g) => g.ids.length === 0 && g.soon.length === 0) ? (
         <p className="py-8 text-center text-sm italic text-parchment-dim">Подрядчики ещё не прибыли. Наберите крошек на первое гнездо.</p>
@@ -159,7 +168,7 @@ const ZoneSection = memo(function ZoneSection({ group, best, collapsed, onToggle
         type="button"
         onClick={onToggle}
         aria-expanded={!collapsed}
-        className="group mb-1 flex min-h-8 w-full items-center gap-2 rounded-md border-l-4 px-2 py-0.5 text-left transition hover:brightness-110 md:mb-2 md:min-h-10 md:py-1"
+        className="group mb-1 flex min-h-10 w-full items-center gap-2 rounded-md border-l-4 px-2 py-0.5 text-left transition hover:brightness-110 md:mb-2 md:py-1"
         style={{ borderColor: z.palette.accent, background: `linear-gradient(90deg, ${z.palette.bg}, transparent 85%)` }}
       >
         <span className="text-lg leading-none md:text-xl">{z.icon}</span>
@@ -175,7 +184,7 @@ const ZoneSection = memo(function ZoneSection({ group, best, collapsed, onToggle
         </span>
       </button>
       {!collapsed && (
-        <div className="space-y-1.5 md:space-y-2">
+        <div className="space-y-1 md:space-y-2">
           {group.ids.map((id) => (
             <BuildingCard key={id} id={id} best={id === best} />
           ))}
@@ -195,8 +204,8 @@ function sameZone(a: ZoneProps, b: ZoneProps): boolean {
 function Silhouette({ id, hint }: { id: BuildingId; hint: string }) {
   return (
     <div className="flex items-center gap-2.5 rounded-lg border border-dashed border-line/90 bg-black/20 p-1.5 md:p-2">
-      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-black/40 bg-black/40 text-[22px] shadow-[inset_0_2px_6px_rgba(0,0,0,.6)] md:h-12 md:w-12 md:text-[26px]">
-        <span className="rr-silhouette">{BUILDINGS[id].icon}</span>
+      <span className="relative block h-10 w-12 shrink-0 rounded-md border border-black/40 bg-black/40 shadow-[inset_0_2px_6px_rgba(0,0,0,.6)] md:h-12 md:w-14">
+        <BuildingThumb id={id} lvl={1} className="rr-silhouette absolute inset-0.5 h-[calc(100%-4px)] w-[calc(100%-4px)]" />
       </span>
       <div className="min-w-0">
         <p className="font-display text-[15px] font-bold leading-tight tracking-[0.2em] text-parchment-dim">???</p>
@@ -213,8 +222,9 @@ function ForemanBar() {
     useShallow((s) => ({ has: !!s.game.upgrades.foreman, nests: s.game.foreman.nests, storage: s.game.foreman.storage })),
   );
   if (!f.has) return null;
+  // phones: the toggle went to the handle row, so the foreman is the toolbar's first row and needs no rule above it
   return (
-    <div className="-mx-1 mt-0.5 flex flex-wrap items-center gap-x-3 border-t border-line/50 pt-0.5">
+    <div className="-mx-1 mt-0.5 flex flex-wrap items-center gap-x-3 border-t border-line/50 pt-0.5 max-md:mt-0 max-md:border-t-0">
       <span className="text-[10px] font-bold uppercase tracking-wider text-parchment-dim">👷 Прораб:</span>
       <Switch on={f.nests} onToggle={() => useGame.getState().setForeman("nests", !f.nests)} label="гнёзда" />
       <Switch on={f.storage} onToggle={() => useGame.getState().setForeman("storage", !f.storage)} label="склады" />

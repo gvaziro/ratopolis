@@ -2,23 +2,29 @@
 
 /**
  * «Наверху»: the human-scale London street above the colony (88 px on desktop; on phones a slim 32-px street band
- * without the «НАВЕРХУ» plate, folded away entirely while the panel sheet is full).
+ * without the «НАВЕРХУ» plate, folded away entirely while the panel sheet is full; a phone in landscape gets the slim
+ * band too, over the colony column only — GameRoot's short layout).
  * Three parallax layers drift slowly; the scene follows the highest open zone, the time of day
  * follows the human clock, events start here as tiny mini-scenes, and the departures board
  * sits on the right. Art lives in ./sky/*; this file owns sizing, selection and the motion loop.
+ * v3 (SHL-5): the caption is the scene's own 👤 line (rush hour, the mail, the circus…), the train wears its variant's
+ * colours, a carriage passing over the grate after the Metro (s.carriagePass) trots by, and after the first coronation
+ * the street turns royal (sky/Royal: the [data-royal] layer, and once per crowned run the «Город Наверху» flip).
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { EVENT_LINES } from "@/game/data/events";
 import { ZONES, ZONE_ORDER } from "@/game/data/zones";
 import { highestZone } from "@/game/engine/derive";
 import { humanClock } from "@/game/engine/formulas";
 import { useGame } from "@/game/store";
-import type { SceneEventId, ScenePhase } from "@/game/types";
 import { cx } from "@/components/ui/kit";
+import { useShortLayout } from "@/lib/layoutMode";
 import FloatTip from "./FloatTip";
 import HudStyles from "./HudStyles";
 import DepartureBoard from "./sky/DepartureBoard";
 import { Backdrop, Clouds, FarLayer, MidLayer, MidLights, NearGround, NearLights, NearProps, PAN, SkyDefs, StationClock } from "./sky/SkyArt";
+import { Epilogue, RoyalStreet } from "./sky/Royal";
 import { AmbientCat, NearEvents, Rain, type SceneInfo } from "./sky/SkyEvents";
 import { farRoofs, H, layoutFor, midHouses } from "./sky/skyGeo";
 import { skyLook } from "./sky/skyTime";
@@ -49,11 +55,43 @@ export default function SkyStrip() {
   const minute = useGame((s) => Math.floor(humanClock(s.game).totalMin) % 1440);
   const calm = useGame((s) => s.game.settings.reducedMotion);
   const market = useGame((s) => !!s.game.market);
-  const sceneKey = useGame((s) => {
-    const sc = s.game.scene;
-    return sc ? `${sc.id}|${sc.seq}|${sc.phase}|${sc.cars.length}|${sc.perCar}` : "";
+  // the scene as primitives (one shallow-compared object): its own 👤 line and its variant included (trains-12)
+  const sc = useGame(
+    useShallow((s) => {
+      const g = s.game.scene;
+      return g
+        ? {
+            id: g.id,
+            seq: g.seq,
+            phase: g.phase,
+            cars: g.cars.length,
+            perCar: g.perCar,
+            variant: g.variant,
+            line: g.line?.human ?? null,
+            cheese: g.cars.findIndex((c) => c.special === "cheese"),
+          }
+        : null;
+    }),
+  );
+  const scene = useMemo<SceneInfo | null>(
+    () => (sc ? { id: sc.id, seq: sc.seq, phase: sc.phase, cars: sc.cars, perCar: sc.perCar, variant: sc.variant, cheese: sc.cheese } : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the primitives are the identity of the scene
+    [sc?.id, sc?.seq, sc?.phase, sc?.cars, sc?.perCar, sc?.variant, sc?.cheese],
+  );
+  // a carriage passing over the grate (after the Metro, ENG-9): its seq and how long it stays
+  const passSeq = useGame((s) => {
+    const p = s.game.carriagePass;
+    return p && p.until > s.game.time ? p.seq : null;
   });
-  const scene = useMemo(() => parseScene(sceneKey), [sceneKey]);
+  const passUntil = useGame((s) => s.game.carriagePass?.until ?? 0);
+  const pass = useMemo(() => {
+    if (passSeq === null) return null;
+    const left = passUntil - useGame.getState().game.time;
+    return { seq: passSeq, ms: Math.round(Math.max(4000, Math.min(9000, left * 1000))) };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one pass, one duration: measured when it begins
+  }, [passSeq]);
+  const royal = useGame((s) => s.game.meta.achievements.coronation !== undefined);
+  const worldRef = useRef<HTMLDivElement>(null);
   // phones: the full sheet takes the room, so the strip folds away (the departures stay in the panel's «Расписание»)
   const folded = useGame((s) => s.sheet === "full");
 
@@ -62,7 +100,9 @@ export default function SkyStrip() {
   const drawH = slim ? SLIM_SCALE_PX : size.h;
   const unit = H / drawH;
   const W = Math.max(200, Math.round(size.w * unit));
-  const panel = size.w >= 1280 ? 460 : size.w >= 768 ? 400 : 0;
+  // the camera centres on the colony: on desktop the strip also spans the side panel, in the short layout it does not
+  const short = useShortLayout();
+  const panel = short ? 0 : size.w >= 1280 ? 460 : size.w >= 768 ? 400 : 0;
   const C = Math.round(Math.min(Math.max(((size.w - panel) / 2) * unit, 200), W - 220));
 
   const L = useMemo(() => layoutFor(W, C, z), [W, C, z]);
@@ -81,57 +121,68 @@ export default function SkyStrip() {
 
   const zoneId = ZONE_ORDER[Math.max(0, Math.min(4, z - 1))];
   const zone = ZONES[zoneId];
-  const caption = scene ? EVENT_LINES[scene.id].human : market ? EVENT_LINES.market.human : null;
-  const captionIcon = scene ? EVENT_LINES[scene.id].icon : market ? EVENT_LINES.market.icon : "";
+  // the scene's own line (variant and pool lines), as the scene header shows it
+  const caption = sc ? (sc.line ?? EVENT_LINES[sc.id].human) : market ? EVENT_LINES.market.human : pass ? EVENT_LINES.carriage.human : null;
+  const captionIcon = sc ? EVENT_LINES[sc.id].icon : market ? EVENT_LINES.market.icon : pass ? EVENT_LINES.carriage.icon : "";
+  const captionKey = sc ? `${sc.id}${sc.seq}` : market ? "market" : `pass${pass?.seq}`;
 
   return (
     <div
       ref={wrapRef}
-      className={cx("relative z-10 h-8 shrink-0 overflow-hidden border-b border-brass-dark/60 bg-soot md:h-[88px]", folded && "max-md:hidden", calm && "hud-calm")}
+      className={cx(
+        "relative z-10 h-8 shrink-0 overflow-hidden border-b border-brass-dark/60 bg-soot md:h-[88px] short:h-8 md:short:col-start-1",
+        folded && "max-md:hidden",
+        calm && "hud-calm",
+      )}
     >
       <HudStyles />
-      {/* Stacked SVG layers: each pans as a whole (GPU-composited), so the parallax never repaints the art. */}
-      <Layer fit={fit} W={W}>
-        <SkyDefs look={look} z={z} />
-        <Backdrop W={W} look={look} />
-        <Clouds W={W} rainy={rainy} />
-      </Layer>
-      <Layer fit={fit} W={W} pan={PAN.far}>
-        <FarLayer roofs={roofs} L={L} calm={calm} />
-      </Layer>
-      <Layer fit={fit} W={W} pan={PAN.mid}>
-        <MidLayer houses={houses} L={L} />
-        <StationClock L={L} minute={minute} />
-        {scene?.id !== "cat" && <AmbientCat L={L} />}
-      </Layer>
-      <Layer fit={fit} W={W} pan={PAN.near}>
-        <NearGround L={L} />
-        <Walkers L={L} count={walkers} rain={rainy} topHats={z >= 4} />
-        <NearProps L={L} />
-        <NearEvents L={L} scene={scene} market={market} />
-      </Layer>
-      {/* time of day */}
-      <div
-        className="pointer-events-none absolute inset-0"
-        style={{ background: look.tint, opacity: look.tintA, transition: "background-color 3s linear, opacity 3s linear" }}
-      />
-      <Layer fit={fit} W={W} pan={PAN.mid}>
-        <MidLights houses={houses} L={L} look={look} />
-      </Layer>
-      <Layer fit={fit} W={W} pan={PAN.near}>
-        <NearLights L={L} look={look} z={z} />
-      </Layer>
-      {rainy && (
+      {/* the human world: everything the epilogue's flip turns over (the plates, the caption and the board stay) */}
+      <div ref={worldRef} className="absolute inset-0 origin-top">
+        {/* Stacked SVG layers: each pans as a whole (GPU-composited), so the parallax never repaints the art. */}
         <Layer fit={fit} W={W}>
-          <Rain W={W} heavy={downpour} />
+          <SkyDefs look={look} z={z} />
+          <Backdrop W={W} look={look} />
+          <Clouds W={W} rainy={rainy} />
         </Layer>
-      )}
+        <Layer fit={fit} W={W} pan={PAN.far}>
+          <FarLayer roofs={roofs} L={L} calm={calm} />
+        </Layer>
+        <Layer fit={fit} W={W} pan={PAN.mid}>
+          <MidLayer houses={houses} L={L} />
+          <StationClock L={L} minute={minute} />
+          {scene?.id !== "cat" && <AmbientCat L={L} />}
+        </Layer>
+        <Layer fit={fit} W={W} pan={PAN.near}>
+          <NearGround L={L} />
+          <Walkers L={L} count={walkers} rain={rainy} topHats={z >= 4} />
+          <NearProps L={L} />
+          <NearEvents L={L} scene={scene} market={market} pass={pass} />
+          {royal && <RoyalStreet L={L} calm={calm} busy={!!scene} />}
+        </Layer>
+        {/* time of day */}
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{ background: look.tint, opacity: look.tintA, transition: "background-color 3s linear, opacity 3s linear" }}
+        />
+        <Layer fit={fit} W={W} pan={PAN.mid}>
+          <MidLights houses={houses} L={L} look={look} />
+        </Layer>
+        <Layer fit={fit} W={W} pan={PAN.near}>
+          <NearLights L={L} look={look} z={z} />
+        </Layer>
+        {rainy && (
+          <Layer fit={fit} W={W}>
+            <Rain W={W} heavy={downpour} />
+          </Layer>
+        )}
+      </div>
+      <Epilogue world={worldRef} W={W} calm={calm} folded={folded && size.w < 768} />
 
       {/* soften the edges into the HUD */}
       <div className="pointer-events-none absolute inset-0 bg-[#3a2814]/10 shadow-[inset_0_8px_10px_-8px_rgba(0,0,0,.75),inset_0_-8px_10px_-8px_rgba(0,0,0,.75)]" />
 
       <FloatTip
-        className="absolute left-1.5 top-1 z-10 max-md:hidden sm:left-2.5"
+        className="absolute left-1.5 top-1 z-10 max-md:hidden short:hidden sm:left-2.5"
         width={250}
         tip={
           <span className="block">
@@ -150,7 +201,7 @@ export default function SkyStrip() {
 
       {caption && (
         <span
-          key={scene ? `${scene.id}${scene.seq}` : "market"}
+          key={captionKey}
           className="hud-slide-l pointer-events-none absolute bottom-1 left-1.5 z-10 max-w-[58%] truncate rounded-sm bg-soot/75 px-1.5 py-px text-[10px] italic leading-tight text-parchment shadow-[0_1px_3px_rgba(0,0,0,.6)] sm:left-2.5 md:text-[11px]"
         >
           <span className="not-italic">{captionIcon}</span> 👤 «{caption}»
@@ -161,12 +212,6 @@ export default function SkyStrip() {
       <span className="sr-only">Наверху: {zone.sky}</span>
     </div>
   );
-}
-
-function parseScene(key: string): SceneInfo | null {
-  if (!key) return null;
-  const [id, seq, phase, cars, perCar] = key.split("|");
-  return { id: id as SceneEventId, seq: Number(seq), phase: phase as ScenePhase, cars: Number(cars), perCar: Number(perCar) };
 }
 
 /** One full-size SVG layer; `pan` (viewBox units) marks it for the parallax sway. `fit`: how the art meets a slim strip. */

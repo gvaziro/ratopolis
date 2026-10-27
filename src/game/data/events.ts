@@ -93,10 +93,15 @@ export const EVENT_LINES: Record<EventId, EventLines> = {
 };
 
 /** Crew position before a train: auto-collect multiplier, crash risk, hook jackpot multiplier. */
+/**
+ * Crew positions: auto-collect ×, crash odds per pass, hook ×. v3 (ENG-8): a crash now halves the train's auto-collect,
+ * so the position is a gamble that changes with the variant (crashMul) and with progress (the 0.9 cap): wall 0.7 → 0.85,
+ * ties 1.3 → 1.15. With base 0.5 the expected auto (events.expectedAuto) is ties 1.06 / rails 0.975 / wall 0.85 of it.
+ */
 export const CREW_POSITIONS = {
-  wall: { name: "У стены", icon: "🧱", auto: 0.7, crash: 0, hook: 0.5 },
+  wall: { name: "У стены", icon: "🧱", auto: 0.85, crash: 0, hook: 0.5 },
   rails: { name: "У рельсов", icon: "🛤️", auto: 1.0, crash: 0.05, hook: 1.0 },
-  ties: { name: "Между шпал", icon: "⚠️", auto: 1.3, crash: 0.15, hook: 1.5 },
+  ties: { name: "Между шпал", icon: "⚠️", auto: 1.15, crash: 0.15, hook: 1.5 },
 } as const;
 
 export const RATING_TABLE = [
@@ -169,6 +174,30 @@ export const EVENT_TIMING = {
   floodedWindow: 300,
   /** v2 (EN-5): the 'ties' crew stands right under the train: items stay catchable this much longer. */
   tiesItemLifeAdd: 0.4,
+  /* ---- v3 */
+  /**
+   * ENG-5: when any scene ends, a metro train or Royal Express due sooner waits this long (30 s of «К путям!» and
+   * 5 s of colony): no train starts glued to the previous haul card.
+   */
+  trainBreather: 35,
+  /** ENG-9: the first carriage is a catch tutorial: a 'warn' pre-roll, longer item life, items spread wider. */
+  carriageWarn: 2,
+  tutorialItemLife: 3,
+  tutorialWindow: [0.5, 7],
+  /** ENG-9: after the Metro a carriage rains through the grate instead of a close-up: shinies of S = rainS, life rainLife. */
+  rainCount: [6, 10],
+  rainS: 10,
+  rainLife: 6,
+  /** Share of an uncaught carriage shiny the colony sweeps up when it expires (the close-up's auto-collect). */
+  rainAuto: 0.25,
+  /** How long the carriage trots across the sky strip (s.carriagePass). */
+  rainPass: 7,
+  /** ENG-9 «Гороховый суп»: from the Metro on, a fog of fogLength s every fogInterval s (a hash, not the RNG). */
+  fogInterval: [1200, 1800],
+  fogLength: 180,
+  /** ENG-9 «Гул из глубины»: the first quiet tick from this run time with at least rumbleRats rats (once ever per save). */
+  rumbleAt: 390,
+  rumbleRats: 10,
 } as const;
 
 /* ================================================================ v2 */
@@ -251,6 +280,7 @@ export const TRAIN_VARIANTS: Record<TrainVariantId, TrainVariantDef> = {
     dropOverride: { mail: { blueprints: 0.6, wire: 0.25, buttons: 0.15 } },
     physics: "flutter",
     tint: "#8e2a22",
+    crashMul: 0.5,
     lines: [
       { human: "Ночной почтовый на Эдинбург: мешки писем и ни одного пассажира", rat: "Бумажный листопад! Чертежи падают прямо в лапы" },
       { human: "{time}: почта на Эдинбург, сургуч на мешках ещё тёплый", rat: "Письма летят, как осенние листья. В каждом третьем — чертёж!" },
@@ -271,6 +301,7 @@ export const TRAIN_VARIANTS: Record<TrainVariantId, TrainVariantDef> = {
     carWeights: { tender: 50, baggage: 50 },
     physics: "bounce",
     tint: "#4b4b52",
+    crashMul: 2,
     lines: [
       { human: "Товарный состав с углём и ящиками. Пассажиров не берёт", rat: "Тяжёлый Змей! Добычи мало, зато какая — и искры как салют" },
       { human: "Товарняк №{n} гремит цепями: уголь, железо, ящики с гвоздями", rat: "Железный бык тащит тяжесть. Искры летят фейерверком — берегите усы" },
@@ -294,6 +325,51 @@ export const TRAIN_VARIANTS: Record<TrainVariantId, TrainVariantDef> = {
       { human: "После ливня поезд идёт по колено в воде. Машинист ругается", rat: "Дары плывут! Ловите, пока Великие Воды не унесли" },
       { human: "{time}: пути на {dest} залиты, состав ползёт и шипит паром", rat: "Великие Воды подхватили дары. Ловите, пока не уплыли в сток!" },
     ],
+    crashMul: 1.5,
+  },
+  /* ---- v3 (ENG-9) */
+  circus: {
+    id: "circus",
+    name: "Цирк Сэнгера",
+    icon: "🎪",
+    // with the mail (0.12) and the freight (0.10): 0.08 / 0.30 of the weighted variants
+    weight: 0.08,
+    gate: "always",
+    perCarMul: 1.1,
+    itemLifeMul: 1,
+    itemLifeAdd: 0.5,
+    sMul: 1,
+    countMul: 1.15,
+    sparkMul: 0.5,
+    carWeights: { third: 40, baggage: 30, dining: 30 },
+    physics: "bounce",
+    tint: "#b0303c",
+    lines: [
+      { human: "Цирк Сэнгера переезжает в Ислингтон: клоуны спят, слон недоволен", rat: "Прыгучий Змей! Дары скачут, как блохи — ловите в воздухе" },
+      { human: "{time}: из багажного вагона пахнет опилками и жжёным сахаром", rat: "Бог Грома везёт акробатов. Даже пуговицы делают сальто" },
+    ],
+    bounces: 3,
+    restitution: 0.72,
+    launchMul: 1.25,
+  },
+  fog: {
+    id: "fog",
+    name: "Гороховый суп",
+    icon: "🌫️",
+    weight: 1,
+    gate: "fog",
+    perCarMul: 1,
+    itemLifeMul: 1,
+    itemLifeAdd: 0,
+    sMul: 1.2,
+    countMul: 1,
+    sparkMul: 1,
+    physics: "bounce",
+    tint: "#8a8f7a",
+    lines: [
+      { human: "Туман такой, что машинист не видит собственных ботинок", rat: "Великая Мгла! Люди слепы — грабь смело" },
+    ],
+    fog: true,
   },
 };
 
@@ -305,21 +381,62 @@ export const TRAIN_VARIANT_ORDER = Object.keys(TRAIN_VARIANTS) as TrainVariantId
  * v2: EN-6 grows every pool to 6–8 pairs; the first pair always matches EVENT_LINES.
  */
 export const EVENT_LINE_POOLS: Record<SceneEventId, LinePair[]> = {
+  // v3 (ENG-9): the human line decides the loot. `drops` replace the car's table (the engine keeps the mean market
+  // value of an item equal to the plain table's, so a line changes the mix, not the worth); `gift` is one extra item
   carriage: [
     { human: EVENT_LINES.carriage.human, rat: EVENT_LINES.carriage.rat },
-    { human: "Кэбмен уронил кулёк с пирожками и уехал, не оглянувшись", rat: "Колесница щедра сегодня: пирожки — с неба!" },
-    { human: "Омнибус свернул к Холборну, пассажиры трясут зонтами", rat: "Небесный короб сыплет крошки и пуговицы" },
-    { human: "{time}: двуколка доктора спешит к роженице на Флит-стрит", rat: "Колесница торопится. Ловите, пока не умчалась!" },
-    { human: "Пивной фургон подпрыгнул на булыжнике. Бочонок цел, кружки — нет", rat: "Небо гремит бочками и роняет сокровища" },
-    { human: "Леди в ландо уронила перчатку. Лакей сделал вид, что не заметил", rat: "Перчатка великанши! Из неё выйдет отличный спальный мешок" },
+    {
+      human: "Кэбмен уронил кулёк с пирожками и уехал, не оглянувшись",
+      rat: "Колесница щедра сегодня: пирожки — с неба!",
+      drops: { crumbs: 0.85, coins: 0.15 },
+    },
+    {
+      human: "Омнибус свернул к Холборну, пассажиры трясут зонтами",
+      rat: "Небесный короб сыплет крошки и пуговицы",
+      drops: { buttons: 0.5, crumbs: 0.3, coins: 0.2 },
+    },
+    {
+      human: "{time}: двуколка доктора спешит к роженице на Флит-стрит",
+      rat: "Колесница торопится. Ловите, пока не умчалась!",
+      drops: { wire: 0.5, coins: 0.3, crumbs: 0.2 },
+    },
+    {
+      human: "Пивной фургон подпрыгнул на булыжнике. Бочонок цел, кружки — нет",
+      rat: "Небо гремит бочками и роняет сокровища",
+      drops: { coins: 0.5, gears: 0.3, crumbs: 0.2 },
+    },
+    {
+      human: "Леди в ландо уронила перчатку. Лакей сделал вид, что не заметил",
+      rat: "Перчатка великанши! Из неё выйдет отличный спальный мешок",
+      // the glove's pearl buttons, and a ring still inside it (one 💍 piece)
+      drops: { buttons: 0.6, crumbs: 0.25, coins: 0.15 },
+      gift: { res: "trinkets", S: 1 },
+    },
   ],
   capsule: [
     { human: EVENT_LINES.capsule.human, rat: EVENT_LINES.capsule.rat },
-    { human: "{time}: телеграмма в банк — «Курс стабилен»", rat: "Медный червь несёт весточку и роняет медяки" },
+    {
+      human: "{time}: телеграмма в банк — «Курс стабилен»",
+      rat: "Медный червь несёт весточку и роняет медяки",
+      drops: { coins: 0.75, buttons: 0.1, wire: 0.1, gears: 0.05 },
+    },
     { human: "Почтмейстер жалуется: капсулы приходят полупустыми", rat: "Дань пневмопочты собрана, почтмейстер ничего не заметил" },
-    { human: "Капсула №{n}: биржевой маклер ждёт котировки к {time}", rat: "Червь шипит и плюётся монетками. Добрый червь" },
-    { human: "Клерк ругает трубу: опять засорилась у Чипсайда", rat: "Засор — это мы. И мы этим гордимся" },
-    { human: "Срочное письмо из адмиралтейства. Сургуч чуть надкусан", rat: "Сургуч горчит, зато пахнет морем и тайной" },
+    {
+      human: "Капсула №{n}: биржевой маклер ждёт котировки к {time}",
+      rat: "Червь шипит и плюётся монетками. Добрый червь",
+      drops: { coins: 0.75, buttons: 0.1, wire: 0.1, gears: 0.05 },
+    },
+    {
+      human: "Клерк ругает трубу: опять засорилась у Чипсайда",
+      rat: "Засор — это мы. И мы этим гордимся",
+      drops: { gears: 0.4, wire: 0.4, buttons: 0.1, coins: 0.1 },
+    },
+    {
+      human: "Срочное письмо из адмиралтейства. Сургуч чуть надкусан",
+      rat: "Сургуч горчит, зато пахнет морем и тайной",
+      // a sealed chart of the Thames docks: 30 s of 📜 on top of the usual loot
+      gift: { res: "blueprints", S: 30 },
+    },
   ],
   metro_train: [
     { human: EVENT_LINES.metro_train.human, rat: EVENT_LINES.metro_train.rat },
@@ -366,3 +483,18 @@ export const EVENT_LINE_POOLS: Record<SceneEventId, LinePair[]> = {
 
 /** London destinations for the {dest} template (EN-6). */
 export const LINE_DESTS = ["Паддингтон", "Хаммерсмит", "Фаррингдон", "Кингс-Кросс", "Виктория"];
+
+/* ================================================================ v3 (ENG-9) texts */
+
+/** «Гул из глубины»: the one-off foreshadowing of the Metro (toast with icon, then the 👤/🐀 news pair). */
+export const DEEP_RUMBLE = {
+  icon: "🚇",
+  toast: "Земля дрогнула. Старейшина: «Это Бог Грома. Глубже, на 4-м ярусе, он ходит каждые четыре минуты»",
+  news: ["👤 Человек видит: поезд 7:58 на Паддингтон", "🐀 Крысы видят: под норой прошёл Бог Грома"],
+} as const;
+
+/** «Гороховый суп» over London (fogActive). */
+export const FOG_TOAST = { icon: "🌫️", text: "Туман над Лондоном: 3 мин люди ничего не видят" } as const;
+
+/** After the Metro a carriage only passes over the grate: its loot rains into the colony. */
+export const GRATE_RAIN_TOAST = { icon: "🐎", text: "Экипаж над решёткой — лови!" } as const;

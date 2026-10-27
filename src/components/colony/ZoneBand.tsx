@@ -4,11 +4,20 @@
  * One horizontal band of the underground per open zone: rock, floors, and zone-specific ambient life
  * (candles, drips, mushrooms, gas jets, steam, glass arches, the golden clock…), plus giant buried human
  * things in the earth of the flanks (a horseshoe, a clay pipe, a gin bottle, a pocket watch, an umbrella, a ticket).
+ * COL-4: the Rat Express is assembled on the Grand Terminal's platform, and a zone opened while the player watches
+ * comes out of the dark light by light, its signboard dropping in on two chains.
  */
-import { memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import Locomotive from "@/components/panels/Locomotive";
 import { ZONES } from "@/game/data/zones";
+import { expressCost } from "@/game/engine/actions";
+import { entries } from "@/game/engine/formulas";
+import { onFx } from "@/game/fx";
 import { useGame } from "@/game/store";
-import type { ZoneId } from "@/game/types";
+import type { GameState, ZoneId } from "@/game/types";
+import { useSampled } from "@/game/useSampled";
+import { fxBurst, inColony } from "../fx/fxBus";
+import { toScreen } from "./camera";
 import { BAND_H, bandTop, COLS, DECOR_SLOTS, ROW_FLOOR, seeded, shade, SHAFT_X, W } from "./geometry";
 import { Barrel, BarrelEnd, Candle, CheeseWheel, Glow, Lantern, Sign, Steam, Suitcase } from "./parts";
 import { registerCull, registerCullItems } from "./registry";
@@ -253,6 +262,111 @@ function MetroDecor() {
   );
 }
 
+/** A porter's luggage cart with three suitcases and a pigeon riding on top. (x, y) = floor centre. */
+function LuggageCart({ x, y, s = 1 }: { x: number; y: number; s?: number }) {
+  return (
+    <g transform={`translate(${x} ${y}) scale(${s})`}>
+      <rect x="-60" y="-14" width="120" height="8" fill="#3b3f42" />
+      <circle cx="-44" cy="-4" r="5" fill="#2b2622" stroke="#8d949a" />
+      <circle cx="44" cy="-4" r="5" fill="#2b2622" stroke="#8d949a" />
+      <Suitcase x={-54} y={-14} w={50} h={30} color="#5a3a2a" />
+      <Suitcase x={2} y={-14} w={46} h={26} color="#3d5a6a" />
+      <Suitcase x={-44} y={-44} w={40} h={22} color="#7a2a24" />
+      <Pigeon x={30} y={-40} flip />
+    </g>
+  );
+}
+
+/** World size of the platform's locomotive: the panel's 360 × 132 drawing at 0.6. */
+const LOCO_W = 216;
+const LOCO_H = 79.2;
+/** Its sleepers end at y 127 of 132: that row stands on the platform floor. */
+const LOCO_FLOOR_DY = 76;
+
+/**
+ * The express exactly as ExpressPanel feeds its Locomotive (stage, wagons, the stage's progress in 2.5% steps, calm),
+ * or "" before the project exists (no blueprint, nothing kept from an edict).
+ */
+function expressKey(g: GameState): string {
+  const { stage, wagons, progress } = g.express;
+  if (!g.upgrades.express_plan && stage <= 0) return "";
+  const list = entries(expressCost(g));
+  const frac = list.length ? list.reduce((a, [r, v]) => a + Math.min(1, (progress[r] ?? 0) / v), 0) / list.length : 0;
+  return `${stage}|${wagons}|${Math.floor(frac * 40) / 40}|${g.settings.reducedMotion ? 1 : 0}`;
+}
+
+/**
+ * COL-4: the Rat Express assembled on the Grand Terminal's lower middle platform — the panel's own Locomotive (read-only
+ * import) with the same props, so the world copy and the panel always match: built parts in full colour, the stage
+ * under construction as the faint blueprint filling left to right with every contribution. Until the first part is
+ * fitted the luggage cart waits at the far end of the platform, clear of the blueprint. A finished stage (Fx
+ * expressStage; ColonyView flies the camera here) flashes the engine, raises dust and a brass «ЭТАП N/10» plate.
+ */
+function PlatformExpress({ cx, floor }: { cx: number; floor: number }) {
+  const key = useSampled((s) => expressKey(s.game), 4, Object.is);
+  const [stamp, setStamp] = useState<{ seq: number; stage: number } | null>(null);
+  const locoRef = useRef<SVGGElement>(null);
+
+  // The panel's <svg> sizes itself with CSS (w-full h-auto); nested in the colony's svg Chrome lays it out by its
+  // width/height attributes (100% of the colony view without them), so they are set here (colonyCss mirrors them).
+  useLayoutEffect(() => {
+    const svg = locoRef.current?.firstElementChild;
+    if (svg instanceof SVGSVGElement && svg.getAttribute("width") !== String(LOCO_W)) {
+      svg.setAttribute("width", String(LOCO_W));
+      svg.setAttribute("height", String(LOCO_H));
+    }
+  });
+
+  useEffect(() => {
+    let seq = 0;
+    let dust = 0;
+    let clear = 0;
+    const off = onFx((fx) => {
+      if (fx.k !== "expressStage") return;
+      setStamp({ seq: ++seq, stage: fx.stage });
+      window.clearTimeout(dust);
+      window.clearTimeout(clear);
+      // the dust once the camera has glided in (a band is centred in well under 0.7 s)
+      dust = window.setTimeout(() => {
+        const p = toScreen(cx, bandTop("terminal") + floor - 34);
+        if (inColony(p)) fxBurst(p.x, p.y, "dust", 16, 1.6);
+      }, 650);
+      clear = window.setTimeout(() => setStamp(null), 2600);
+    });
+    return () => {
+      off();
+      window.clearTimeout(dust);
+      window.clearTimeout(clear);
+    };
+  }, [cx, floor]);
+
+  if (!key) return <LuggageCart x={cx} y={floor} />;
+  const [stage, wagons, frac, calm] = key.split("|").map(Number);
+  return (
+    <g>
+      {stage < 1 && <LuggageCart x={cx - 68} y={floor} s={0.7} />}
+      <g ref={locoRef} className="cv-loco" transform={`translate(${cx - LOCO_W / 2} ${floor - LOCO_FLOOR_DY})`}>
+        <Locomotive stage={stage} wagons={wagons} frac={frac} calm={calm === 1} />
+      </g>
+      {stamp && (
+        <g key={stamp.seq} pointerEvents="none">
+          <ellipse cx={cx} cy={floor - 36} rx={LOCO_W / 2} ry="42" fill="#fff6dc" className="cv-flash" />
+          <g transform={`translate(${cx} ${floor - 98})`}>
+            <g className="cv-cap">
+              <g className="cv-badge" style={{ animationDelay: ".45s", animationFillMode: "both" }}>
+                <rect x="-38" y="-11" width="76" height="22" rx="4" fill="url(#cv-brass)" stroke="#fff1b8" strokeWidth="1.4" />
+                <text y="4.6" fontSize="12.5" textAnchor="middle" fill="#2a1a0c" className="font-display" fontWeight="700" letterSpacing=".6">
+                  {`ЭТАП ${Math.min(10, stamp.stage)}/10`}
+                </text>
+              </g>
+            </g>
+          </g>
+        </g>
+      )}
+    </g>
+  );
+}
+
 function TerminalDecor() {
   const slots = decorSlots("terminal");
   const arches: ReactNode[] = [];
@@ -274,7 +388,7 @@ function TerminalDecor() {
           <circle r="58" fill="#f6eedc" stroke="url(#cv-brass)" strokeWidth="9" />
           <circle r="50" fill="none" stroke="#d4af37" strokeWidth="1" />
           {Array.from({ length: 12 }, (_, k) => (
-            <text key={k} x={Math.sin((k * Math.PI) / 6) * 40} y={-Math.cos((k * Math.PI) / 6) * 40 + 3.5} fontSize="9" textAnchor="middle" fill="#2a1a0c" className="font-display" fontWeight="700">
+            <text key={k} x={Math.sin((k * Math.PI) / 6) * 40} y={-Math.cos((k * Math.PI) / 6) * 40 + 3.5} fontSize="9" textAnchor="middle" fill="#2a1a0c" className="font-display cv-fine" fontWeight="700">
               {["XII", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI"][k]}
             </text>
           ))}
@@ -299,17 +413,8 @@ function TerminalDecor() {
         </g>
       );
     }
-    return (
-      <g key={i} transform={`translate(${s.cx} ${s.y})`}>
-        <rect x="-60" y="-14" width="120" height="8" fill="#3b3f42" />
-        <circle cx="-44" cy="-4" r="5" fill="#2b2622" stroke="#8d949a" />
-        <circle cx="44" cy="-4" r="5" fill="#2b2622" stroke="#8d949a" />
-        <Suitcase x={-54} y={-14} w={50} h={30} color="#5a3a2a" />
-        <Suitcase x={2} y={-14} w={46} h={26} color="#3d5a6a" />
-        <Suitcase x={-44} y={-44} w={40} h={22} color="#7a2a24" />
-        <Pigeon x={30} y={-40} flip />
-      </g>
-    );
+    // COL-4: the lower middle platform is where the Rat Express is assembled
+    return <PlatformExpress key={i} cx={s.cx} floor={s.y} />;
   });
   return (
     <g>
@@ -372,7 +477,7 @@ function PipeBowl() {
       <path d="M8 62q4 10 14 12" fill="none" stroke="#8a7a5e" strokeWidth="5" strokeLinecap="round" />
       <ellipse cx="1" cy="-64" rx="49" ry="11" fill="#2a1c12" stroke="#8a7a5e" strokeWidth="3" />
       <ellipse cx="-6" cy="-62" rx="30" ry="5" fill="#4a3424" />
-      <text x="-2" y="10" fontSize="12" textAnchor="middle" fill="#8a7a5e" className="font-display" fontWeight="700">
+      <text x="-2" y="10" fontSize="12" textAnchor="middle" fill="#8a7a5e" className="font-display cv-fine" fontWeight="700">
         J.B.
       </text>
     </g>
@@ -387,10 +492,10 @@ function GreenBottle() {
       <path d="M-42 -50Q-42 -96 -14 -104V-150H14V-104Q42 -96 42 -50" fill="#2f6b3e" stroke="#163a22" strokeWidth="3" />
       <rect x="-18" y="-164" width="36" height="16" rx="4" fill="#a8743f" stroke="#5c3a1a" strokeWidth="2" />
       <rect x="-30" y="-20" width="60" height="62" rx="4" fill="#e8d9a8" opacity=".85" />
-      <text x="0" y="8" fontSize="13" textAnchor="middle" fill="#5c3320" className="font-display" fontWeight="700">
+      <text x="0" y="8" fontSize="13" textAnchor="middle" fill="#5c3320" className="font-display cv-fine" fontWeight="700">
         ДЖИНЪ
       </text>
-      <text x="0" y="26" fontSize="8" textAnchor="middle" fill="#5c3320" className="font-display">
+      <text x="0" y="26" fontSize="8" textAnchor="middle" fill="#5c3320" className="font-display cv-fine">
         ЛОНДОНЪ
       </text>
       <path d="M-30 -66V80" stroke="#a8e0b0" strokeWidth="7" strokeLinecap="round" opacity=".35" />
@@ -442,13 +547,13 @@ function TicketStub() {
     <g transform="translate(-142 192) rotate(-13)">
       <path d="M-104 -56H96L84 -42L96 -28L84 -14L96 0L84 14L96 28L84 42L96 56H-104Z" fill="#e8d9a8" stroke="#7a5a2a" strokeWidth="2.5" />
       <rect x="-94" y="-46" width="170" height="92" fill="none" stroke="#a8743f" strokeWidth="1.4" strokeDasharray="5 3" />
-      <text x="-10" y="-22" fontSize="13" textAnchor="middle" fill="#5c3320" className="font-display" fontWeight="700">
+      <text x="-10" y="-22" fontSize="13" textAnchor="middle" fill="#5c3320" className="font-display cv-fine" fontWeight="700">
         ПОДЗЕМНАЯ ЖЕЛ. ДОР.
       </text>
-      <text x="-10" y="6" fontSize="22" textAnchor="middle" fill="#7a2a24" className="font-display" fontWeight="700">
+      <text x="-10" y="6" fontSize="22" textAnchor="middle" fill="#7a2a24" className="font-display cv-fine" fontWeight="700">
         3-й КЛАССЪ
       </text>
-      <text x="-10" y="30" fontSize="11" textAnchor="middle" fill="#5c3320" className="font-mono">
+      <text x="-10" y="30" fontSize="11" textAnchor="middle" fill="#5c3320" className="font-mono cv-fine">
         № 018870 · 1 пенни
       </text>
       {[-40, -20, 0, 20, 40].map((y) => (
@@ -501,29 +606,138 @@ export const ZoneBand = memo(function ZoneBand({ zone }: { zone: ZoneId }) {
         <Relic />
       </g>
       <Floors zone={zone} />
-      <ZoneLabel zone={zone} />
     </g>
   );
 });
 
-function ZoneLabel({ zone }: { zone: ZoneId }) {
+/**
+ * An open zone's signboard, drawn by ColonyView over the chambers: on phones the counter-scaled board reaches into
+ * the top row's niches (and across the shaft). Clicks pass through to the chamber under it.
+ */
+export const ZoneSign = memo(function ZoneSign({ zone }: { zone: ZoneId }) {
+  const open = useGame((s) => !!s.game.zones[zone]);
+  // COL-4: a zone opened while the player watches lowers its signboard on two chains
+  const [wasOpen] = useState(open);
+  if (!open) return null;
+  return (
+    <g transform={`translate(0 ${bandTop(zone)})`} pointerEvents="none">
+      <ZoneLabel zone={zone} drop={!wasOpen} />
+    </g>
+  );
+});
+
+/** The zone's signboard, hung from the band's ceiling on two chains (COL-4: dropped in, with a bounce, on opening). */
+function labelText(zone: ZoneId): string {
+  return `${ZONES[zone].icon} ${ZONES[zone].name}`;
+}
+const labelWidth = (zone: ZoneId) => labelText(zone).length * 6.4 + 16;
+
+function ZoneLabel({ zone, drop }: { zone: ZoneId; drop: boolean }) {
   const z = ZONES[zone];
-  const text = `${z.icon} ${z.name}`;
-  const w = text.length * 6.4 + 16;
+  const text = labelText(zone);
+  const w = labelWidth(zone);
   return (
     <g transform={`translate(${W - 6} 18)`} opacity=".9">
-      <rect x={-w} y="-9" width={w} height="18" rx="3" fill="#1b1613" stroke={z.palette.accent} strokeWidth="1" opacity=".85" />
-      <text x={-w / 2} y="4" fontSize="10" textAnchor="middle" fill="#eadcc0" className="font-display" fontWeight="700">
-        {text}
-      </text>
+      {/* mobile-8: the signboard keeps ≥ 10 css px on phones (counter-scaled from its top-right corner) */}
+      <g className="cv-sign">
+        <g className={drop ? "cv-drop" : undefined}>
+          <path d={`M${-w + 10} -9V-18M-10 -9V-18`} stroke="#8d949a" strokeWidth="1.3" strokeDasharray="2.2 1.1" />
+          <rect x={-w} y="-9" width={w} height="18" rx="3" fill="#1b1613" stroke={z.palette.accent} strokeWidth="1" opacity=".85" />
+          <text x={-w / 2} y="4" fontSize="10" textAnchor="middle" fill="#eadcc0" className="font-display" fontWeight="700">
+            {text}
+          </text>
+        </g>
+      </g>
     </g>
   );
 }
 
-/** Black veil that fades away when a zone opens while the player watches. */
+/**
+ * The zone's own light sources (band-local, left → right): its lamps-to-be, candles, mushrooms, gas jets, furnace
+ * glows, the great clock and the platform. On opening they ignite one after another.
+ */
+const LIGHTS: Record<ZoneId, readonly (readonly [number, number])[]> = {
+  burrow: [
+    [125, 72],
+    [GAPS[0], ROW_FLOOR[0] - 16],
+    [325, 250],
+    [GAPS[1], ROW_FLOOR[1] - 16],
+    [525, 72],
+    [GAPS[2], ROW_FLOOR[0] - 16],
+  ],
+  sewers: [
+    [8, ROW_FLOOR[0] - 8],
+    [125, 250],
+    [GAPS[0], ROW_FLOOR[1] - 8],
+    [GAPS[1], ROW_FLOOR[0] - 8],
+    [525, 72],
+    [GAPS[2] + 6, ROW_FLOOR[1] - 8],
+  ],
+  cellars: [
+    [125, 72],
+    [GAPS[0], 100],
+    [325, 250],
+    [GAPS[1], 280],
+    [525, 86],
+    [GAPS[2], 100],
+  ],
+  metro: [
+    [40, ROW_FLOOR[0] - 30],
+    [125, 250],
+    [GAPS[0], ROW_FLOOR[0] + 30],
+    [325, 72],
+    [525, 250],
+    [SHAFT_X - 50, ROW_FLOOR[1] - 40],
+  ],
+  terminal: [
+    [125, ROW_FLOOR[0] - 76],
+    [125, 250],
+    [325, 72],
+    [325, ROW_FLOOR[1] - 40],
+    [525, 90],
+    [525, 250],
+  ],
+};
+const REVEAL_MS = 3000;
+
+/**
+ * COL-4: the veil over a zone opened while the player watches. A mask punches the zone's light pools through it one
+ * after another, left to right (delay i·0.3 s, all lit within 2.4 s); the ladder column and the signboard stay clear,
+ * so the new shaft segment, the settlers climbing down and the board dropping on its chains show at once; what is
+ * left of the veil fades by 2.9 s and the node is gone after 3 s. Reduced motion: a plain 0.4 s fade.
+ */
 export const ZoneReveal = memo(function ZoneReveal({ zone }: { zone: ZoneId }) {
   const open = useGame((s) => !!s.game.zones[zone]);
+  const rm = useGame((s) => s.game.settings.reducedMotion);
   const [wasOpen] = useState(open);
-  if (!open || wasOpen) return null;
-  return <rect x={X0} y={bandTop(zone) - 4} width={XW} height={BAND_H + 8} fill="#050403" className="cv-reveal" pointerEvents="none" />;
+  const [done, setDone] = useState(false);
+  const live = open && !wasOpen;
+  useEffect(() => {
+    if (!live) return;
+    const t = window.setTimeout(() => setDone(true), REVEAL_MS);
+    return () => window.clearTimeout(t);
+  }, [live]);
+  if (!live || done) return null;
+  const top = bandTop(zone);
+  const box = { x: X0, y: top - 4, width: XW, height: BAND_H + 8 };
+  if (rm) return <rect {...box} fill="#050403" className="cv-veil-rm" pointerEvents="none" />;
+  const id = `cv-reveal-${zone}`;
+  return (
+    <g pointerEvents="none" data-reveal={zone}>
+      <mask id={id} maskUnits="userSpaceOnUse" {...box}>
+        <rect {...box} fill="#fff" />
+        <rect x={SHAFT_X - 30} y={top - 4} width="60" height={BAND_H + 8} fill="#000" />
+        {/* the signboard dropping on its chains stays in sight (scaled like the board itself) */}
+        <g transform={`translate(${W - 6} ${top + 18})`}>
+          <g className="cv-sign">
+            <rect x={-labelWidth(zone) - 4} y="-18" width={labelWidth(zone) + 4} height="31" fill="#000" />
+          </g>
+        </g>
+        {LIGHTS[zone].map(([x, y], i) => (
+          <circle key={i} cx={x} cy={top + y} r="170" fill="url(#cv-pool)" className="cv-bloom" style={{ animationDelay: `${(0.2 + i * 0.3).toFixed(1)}s` }} />
+        ))}
+      </mask>
+      <rect {...box} fill="#050403" mask={`url(#${id})`} className="cv-veil" />
+    </g>
+  );
 });

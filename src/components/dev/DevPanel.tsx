@@ -14,7 +14,7 @@ import { emitFx, emitUiFx } from "@/game/fx";
 import { useGame } from "@/game/store";
 import type { GameState, ResId, SceneEventId, ZoneId } from "@/game/types";
 import { cx } from "@/components/ui/kit";
-import { fmt, fmtTime } from "@/lib/format";
+import { fmt, fmtDuration } from "@/lib/format";
 
 type Trigger = SceneEventId | "purse" | "market";
 const TRIGGERS: Trigger[] = ["carriage", "capsule", "metro_train", "royal_express", "downpour", "cat", "ratcatcher", "purse", "market"];
@@ -46,8 +46,14 @@ export default function DevPanel() {
 const BTN =
   "inline-flex min-h-9 items-center justify-center rounded border border-line bg-panel-2 px-2 text-[11px] font-bold text-parchment transition hover:border-brass-dark hover:bg-panel-3 active:translate-y-px disabled:opacity-40";
 
+/**
+ * The 🛠 tab: half tucked behind the right edge at mid-height (out of the way of the panel's buttons and the scenes'
+ * «Готово» / «Дальше»), sliding out on hover or focus; hidden while a close-up runs unless the panel is open.
+ */
 function Dev() {
   const [open, setOpen] = useState(false);
+  const sceneUp = useGame((s) => !!s.game.scene);
+  if (sceneUp && !open) return null;
   return (
     <>
       <button
@@ -57,8 +63,8 @@ function Dev() {
         aria-label="Инструменты разработчика"
         title="Инструменты разработчика"
         className={cx(
-          "fixed bottom-[38px] right-2 z-50 inline-flex h-10 w-10 items-center justify-center rounded-full border border-brass-dark bg-soot-2/90 text-lg shadow-[0_3px_10px_rgba(0,0,0,.6)] transition hover:bg-panel-3",
-          open && "border-brass bg-panel-3",
+          "fixed right-0 top-1/2 z-50 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-brass-dark bg-soot-2/90 text-lg shadow-[0_3px_10px_rgba(0,0,0,.6)] transition hover:bg-panel-3",
+          open ? "translate-x-0 border-brass bg-panel-3" : "translate-x-1/2 hover:translate-x-0 focus-visible:translate-x-0",
         )}
       >
         🛠
@@ -89,7 +95,7 @@ function Panel({ onClose }: { onClose: () => void }) {
       <dl className="mb-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 rounded border border-line bg-soot/70 p-1.5 font-mono text-[11px] tabular">
         <dt className="text-parchment-dim">time</dt>
         <dd>
-          {time.toFixed(1)} с ({fmtTime(time)})
+          {time.toFixed(1)} с ({fmtDuration(time)})
         </dd>
         <dt className="text-parchment-dim">fps</dt>
         <dd className={fps < 45 ? "text-danger-light" : "text-good"}>{fps}</dd>
@@ -111,7 +117,7 @@ function Panel({ onClose }: { onClose: () => void }) {
         <select
           value={res}
           onChange={(e) => setRes(e.target.value as ResId)}
-          className="min-h-9 rounded border border-line bg-panel px-1.5 text-[11px] text-parchment outline-none focus:border-brass-dark"
+          className="min-h-9 rounded border border-line bg-panel px-1.5 text-[11px] text-parchment focus:border-brass-dark"
           aria-label="Ресурс"
         >
           {RES_ORDER.map((r) => (

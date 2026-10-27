@@ -218,10 +218,22 @@ describe("events", () => {
     expect(s.scene?.id).toBe("cat");
     expect(s.timers.metro_train).toBeGreaterThanOrEqual(s.time + 40 - 1e-9);
 
+    // the carriage close-up (before the Metro: the capsule is the train then) obeys the same rule
     const c = trainAlwaysSoon();
+    delete c.zones.metro;
+    c.timers.capsule = c.time + 30;
     c.timers.carriage = c.time - 61;
     step(c, TICK, { active: false }, quiet());
     expect(c.scene?.id).toBe("carriage");
+    expect(c.timers.capsule).toBeGreaterThanOrEqual(c.time + 40 - 1e-9);
+
+    // v3 (ENG-9): after the Metro a carriage is grate rain — no scene, and the train keeps its time
+    const r = trainAlwaysSoon();
+    r.timers.carriage = r.time - 61;
+    step(r, TICK, { active: false }, quiet());
+    expect(r.scene).toBeNull();
+    expect(r.shinies.some((x) => x.kind === "carriage")).toBe(true);
+    expect(r.timers.metro_train).toBe(3030);
   });
 
   it("a freshly due background event still keeps away from a train under the guard", () => {
@@ -309,15 +321,17 @@ describe("Печать Тишины and the King's commissions", () => {
 describe("suspicion tooltip", () => {
   it("counts down to the district's threshold at the real rate", () => {
     const s = cellarsColony();
-    s.meta.district = 4; // Особняки: the Ratcatcher at 80%
+    // v3 (ENG-11): Доки Ист-Энда — the Ratcatcher at 85%
+    s.meta.visited = ["whitechapel", "docklands"];
+    s.meta.district = 1;
     s.suspicion = 70;
     let i = suspicionInfo(s, derive(s));
-    expect(i.threshold).toBe(80);
-    expect(i.etaSec).toBeCloseTo(600, 9);
+    expect(i.threshold).toBe(85);
+    expect(i.etaSec).toBeCloseTo(900, 9);
     s.commissions = { offered: [], done: 0, active: { id: "pipe_splinters", base: 0 } };
     i = suspicionInfo(s, derive(s));
     expect(i.perMin).toBeCloseTo(3, 9);
-    expect(i.etaSec).toBeCloseTo(200, 9);
+    expect(i.etaSec).toBeCloseTo(300, 9);
     s.timers.ratcatcherAt = s.time + 10; // summoned: he is on his way
     expect(suspicionInfo(s, derive(s)).etaSec).toBe(0);
   });
@@ -349,7 +363,10 @@ describe("the elder's hints", () => {
     s.buildings.nest = 6;
     s.buildings.pantry = 2;
     s.rats = derive(s).housing;
-    s.jobs.forager = s.rats;
+    // no idle free resource and no forager surplus (v3: rules 3 and 3b come before housing)
+    s.jobs.forager = 3;
+    s.jobs.pickpocket = 6;
+    s.jobs.scavenger = s.rats - 9;
     s.gross.crumbs = 50;
     s.res.crumbs = 350;
     const d = derive(s);
@@ -394,7 +411,7 @@ describe("run records and texts", () => {
     expect(contributeExpress(s, null, quiet())).toBe(true);
     expect(s.express.wagons).toBe(1);
     expect(s.meta.lifetime.wagons).toBe(5);
-    expect(ACHIEVEMENTS.tail_horizon.progress).toEqual({ stat: "lifetime.wagons", goal: 15 });
+    expect(ACHIEVEMENTS.tail_horizon.progress).toEqual({ stat: "lifetime.wagons", goal: 10 }); // v3 (ENG-3): 15 → 10
     expect(progressStat(s, "lifetime.wagons")).toBe(5);
   });
 

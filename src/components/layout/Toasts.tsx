@@ -3,16 +3,20 @@
 /**
  * Toast stack and the big one-at-a-time banners: medal coat of arms, «ЭКСТРЕННЫЙ ВЫПУСК» newspaper plate, «АВРАЛ!».
  * Placement: desktop — the colony's bottom-right corner above the ticker, clear of the side panel (≤ 3 toasts);
- * phones — right above the bottom sheet, measured from the panel's top edge (≤ 2; 1 with the sheet full; none
- * while a full-screen close-up runs). Both stand clear of Benedict's docked stall. The stack never takes clicks:
- * only ✕ and the action buttons do, so the grate and the colony stay playable underneath.
- * While a modal dialog covers the layout (offline report, coronation, migration, save issue) the banners and toasts
- * wait for it to close, their fuses paused, instead of playing out unseen underneath.
+ * phones — right above the bottom sheet, measured from the panel's top edge (≤ 2; 1 with the sheet full), the stack
+ * no taller than 38% of the colony (the oldest give way). Both stand clear of Benedict's docked stall. The stack
+ * never takes clicks: only ✕ and the action buttons do, so the grate and the colony stay playable underneath.
+ * Flood control (v3 SHL-1, rules in ./toastRules): while a modal dialog covers the layout (offline report,
+ * coronation, migration, save issue), while a close-up scene runs (haul card included) and while the zone's
+ * «ЭКСТРЕННЫЙ ВЫПУСК» is up, nothing shows: new toasts queue (fuses untouched), shown ones pause their fuses, and the
+ * banners wait; afterwards the queue fills the free slots in order. Unlocks are one short row per item, early medals
+ * that land within 5 s share one banner, and the first ten minutes keep two toasts at most.
  * Fed by the engine fx bus (toast, vagrants, express stages, trains, scouts, records, commissions, medals, zones,
  * frenzy) and the UI bus (batched unlocks with «Открыть», generic toasts).
  */
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { COMMISSIONS } from "@/game/data/commissions";
+import { EVENT_LINES } from "@/game/data/events";
 import { HEADLINES } from "@/game/data/headlines";
 import { ACHIEVEMENTS, EXPRESS_STAGES } from "@/game/data/meta";
 import { RESOURCES } from "@/game/data/resources";
@@ -21,8 +25,23 @@ import { onFx, onUiFx, type UiFx } from "@/game/fx";
 import { useGame, type TabId } from "@/game/store";
 import type { AchievementId, Fx, RecordKey, SceneEventId, ZoneId } from "@/game/types";
 import { cx } from "@/components/ui/kit";
-import { fmt, plural } from "@/lib/format";
+import { fmt } from "@/lib/format";
+import { isPhoneLayout, isShortLayout, matchesQuery, usePhoneLayout } from "@/lib/layoutMode";
+import { applySwUpdate, SW_UPDATE_TARGET } from "@/components/ui/swClient";
 import HudStyles from "./HudStyles";
+import {
+  EARLY_SEC,
+  UNLOCK_ROWS,
+  addToast,
+  commissionDoneText,
+  joinsMedalGroup,
+  medalGroupText,
+  medalGroupTitle,
+  toastCap,
+  unlockRow,
+  unlockTitle,
+  visibleToasts,
+} from "./toastRules";
 
 type Tone = "info" | "good" | "bad" | "gold";
 type UnlockItem = Extract<UiFx, { k: "unlock" }>["items"][number];
@@ -37,6 +56,8 @@ interface ToastItem {
   at: number;
   /** bumps when merged content arrives: restarts the life fuse */
   rev: number;
+  /** arrived while the stack was held and has not been on screen yet (toastRules.addToast) */
+  wait?: boolean;
   train?: { id: SceneEventId; inSec: number; at: number };
   unlock?: UnlockItem[];
   /** «Открыть»: store.focus(tab, target) */
@@ -45,13 +66,13 @@ interface ToastItem {
 }
 
 type Banner =
-  | { id: number; k: "medal"; medal: AchievementId }
+  | { id: number; k: "medal"; medals: AchievementId[]; at: number }
   | { id: number; k: "zone"; zone: ZoneId }
   | { id: number; k: "frenzy" };
 
-/** Visible toasts: phones keep the colony clear, desktop has the corner to itself. */
-const MAX_TOASTS = { phone: 2, desk: 3 } as const;
 const TOAST_MS = 4000;
+/** «Новая версия колонии — обновить» (SHL-6). */
+const UPDATE_MS = 20000;
 const UNLOCK_MS = 7000;
 /** Unlock batches arriving this close together become one toast. */
 const MERGE_MS = 3000;
@@ -59,6 +80,13 @@ const MERGE_MS = 3000;
 const TRAIN_SAME_MS = 2000;
 /** Phones: room left for the market's folded pill (46 px + a gap) under the stack. */
 const STALL_PX = 52;
+/** Phones: the stack takes at most this share of the colony's height (the oldest toasts give way). */
+const PHONE_STACK_SHARE = 0.38;
+const STACK_GAP = 6;
+/** Arriving with the «ЭКСТРЕННЫЙ ВЫПУСК» of a zone: toasts wait about this long (ms) for the newspaper to go. */
+const ZONE_HOLD_MS = 3000;
+/** A purse outcome toast follows its `purse` fx in the same batch. */
+const PURSE_PAIR_MS = 60;
 const BANNER_MS = { medal: 2500, zone: 2600, frenzy: 1500 } as const;
 const OUT_MS = 260;
 
@@ -73,23 +101,33 @@ const RECORD_WHAT: Record<RecordKey, string> = {
 let seq = 0;
 
 /**
- * Fuse time left (ms) of toasts that went off screen (a scene on a phone, a modal, the full sheet's one-toast limit):
- * back on screen they resume from it instead of restarting their whole life. `rev` ties it to the content it counted.
+ * Fuse time left (ms) of toasts that went off screen (a scene, a modal, the zone newspaper, the full sheet's
+ * one-toast limit): back on screen they resume from it instead of restarting their whole life. `rev` ties it to the
+ * content it counted.
  */
 const fuses = new Map<number, { rev: number; left: number }>();
 
-const DESK_MQ = "(min-width: 768px)";
+/** The bottom-sheet geometry (CSS `max-md`): the panel sits under the colony instead of beside it. */
+const NARROW_MQ = "(max-width: 767px)";
 
-/** Phones with the full sheet have only a sliver of colony above it: one toast at a time there. */
-function maxToasts(): number {
-  if (window.matchMedia(DESK_MQ).matches) return MAX_TOASTS.desk;
-  return useGame.getState().sheet === "full" ? 1 : MAX_TOASTS.phone;
-}
-
-function subscribeDesk(cb: () => void): () => void {
-  const mq = window.matchMedia(DESK_MQ);
+function subscribeNarrow(cb: () => void): () => void {
+  const mq = window.matchMedia(NARROW_MQ);
   mq.addEventListener("change", cb);
   return () => mq.removeEventListener("change", cb);
+}
+
+function useNarrow(): boolean {
+  return useSyncExternalStore(
+    subscribeNarrow,
+    () => matchesQuery(NARROW_MQ),
+    () => false,
+  );
+}
+
+/** How many toasts fit right now (event handlers; the render uses the same rule through hooks). */
+function capNow(): number {
+  const st = useGame.getState();
+  return toastCap({ phone: isPhoneLayout(), compact: matchesQuery(NARROW_MQ) && st.sheet === "full", early: st.game.time < EARLY_SEC });
 }
 
 /** Run time as «12:34» or «1:02:03». */
@@ -109,26 +147,43 @@ export default function Toasts() {
   const rootRef = useRef<HTMLDivElement>(null);
   const stackRef = useRef<HTMLDivElement>(null);
   const modal = useModalOpen(rootRef);
+  const phone = usePhoneLayout();
+  const narrow = useNarrow();
   // Benedict's docked stall sits in the colony's bottom-left corner: stand on top of it, not over it
   const stall = useGame((s) => !!s.game.market && !s.game.scene);
   useSheetAnchor(stackRef, stall);
 
   useEffect(() => {
-    const add = (list: ToastItem[], t: ToastItem) => [...list.filter((x) => !x.leaving), t].slice(-maxToasts());
-    const push = (t: Omit<ToastItem, "id" | "at" | "rev">) => {
-      const item: ToastItem = { ...t, id: ++seq, at: performance.now(), rev: 0 };
-      setToasts((list) => add(list, item));
+    /** performance.now() until which a zone's newspaper (just announced) holds new toasts */
+    let zoneUntil = 0;
+    /** the last `purse` fx: its outcome toast follows in the same batch */
+    let purse: { outcome: string; at: number } | null = null;
+    /** charters before the latest publish: a commission paid in it promises a charter only if one still counted */
+    let chartersBefore = useGame.getState().game.charters ?? 0;
+    const offStore = useGame.subscribe((st, prev) => {
+      if (st.game !== prev.game) chartersBefore = prev.game.charters ?? 0;
+    });
+
+    /** A modal, a scene or the zone newspaper: new toasts queue instead of showing. */
+    const held = () => modalIn(rootRef.current?.parentElement) || !!useGame.getState().game.scene || performance.now() < zoneUntil;
+    const add = (t: ToastItem) => {
+      const cap = capNow();
+      const hold = held();
+      setToasts((list) => addToast(list, t, cap, hold));
     };
+    const push = (t: Omit<ToastItem, "id" | "at" | "rev">) => add({ ...t, id: ++seq, at: performance.now(), rev: 0 });
     const banner = (b: Banner) => setBanners((list) => (list.length > 6 ? list : [...list, b]));
 
     const unlock = (items: UnlockItem[]) => {
       if (items.length === 0) return;
       const now = performance.now();
       const fresh: ToastItem = { id: ++seq, icon: "🔓", text: "", tone: "good", ms: UNLOCK_MS, at: now, rev: 0, unlock: items, go: { tab: items[0].tab, target: items[0].key } };
+      const cap = capNow();
+      const hold = held();
       setToasts((list) => {
         let last: ToastItem | undefined;
         for (const x of list) if (x.unlock && !x.leaving) last = x;
-        if (!last?.unlock || now - last.at >= MERGE_MS) return add(list, fresh);
+        if (!last?.unlock || now - last.at >= MERGE_MS) return addToast(list, fresh, cap, hold);
         const known = new Set(last.unlock.map((u) => u.key));
         const merged = [...last.unlock, ...items.filter((it) => !known.has(it.key))];
         const target = last;
@@ -136,10 +191,30 @@ export default function Toasts() {
       });
     };
 
+    /** Phones: a toast whose news is already on screen (Benedict's stall, a purse paid out where it lay) stays unsaid. */
+    const redundant = (fx: Extract<Fx, { k: "toast" }>): boolean => {
+      if (!isPhoneLayout()) return false;
+      const st = useGame.getState();
+      // the stall docks in the colony at once (or right after a scene: its lifetime waits for it)
+      if (fx.icon === EVENT_LINES.market.icon && st.game.market) return true;
+      if (st.game.scene) return false;
+      const p = purse;
+      if (!p || performance.now() - p.at > PURSE_PAIR_MS) return false;
+      purse = null;
+      // coins burst out of the purse and a free chamber bounces: both are seen where the purse lay; the buffs
+      // (feast, lucky paw) have no other explanation and keep their toast
+      const colonyShown = !(matchesQuery(NARROW_MQ) && st.sheet === "full");
+      return colonyShown && (p.outcome === "coins" || p.outcome === "button");
+    };
+
     const handle = (fx: Fx) => {
       switch (fx.k) {
         case "toast":
+          if (redundant(fx)) break;
           push({ icon: fx.icon ?? "📣", text: fx.text, tone: fx.tone ?? "info", ms: TOAST_MS });
+          break;
+        case "purse":
+          purse = { outcome: fx.outcome, at: performance.now() };
           break;
         case "vagrants":
           push({ icon: "🐀", text: "Запах крошек привлёк гостей: +2 крысы", tone: "good", ms: TOAST_MS });
@@ -158,13 +233,17 @@ export default function Toasts() {
           const at = performance.now() + fx.inSec * 1000;
           const icon = fx.id === "capsule" ? "📯" : fx.id === "royal_express" ? "👑" : "🚂";
           const item: ToastItem = { id: ++seq, icon, text: "", tone: "gold", ms: 8000, at: performance.now(), rev: 0, train: { id: fx.id, inSec: fx.inSec, at } };
+          const cap = capNow();
           setToasts((list) => {
             // the same train announced twice: keep the toast already on screen
             if (list.some((x) => !x.leaving && x.train?.id === fx.id && Math.abs(x.train.at - at) < TRAIN_SAME_MS)) return list;
-            // a moved train (the whistle) replaces the old countdown: two clocks would disagree
-            return add(
+            // a moved train (the whistle) replaces the old countdown: two clocks would disagree; a countdown never
+            // queues (it is merely hidden while something holds the stack, and keeps counting)
+            return addToast(
               list.filter((x) => !x.train),
               item,
+              cap,
+              false,
             );
           });
           break;
@@ -189,13 +268,29 @@ export default function Toasts() {
           if (!fx.done) break;
           const c = COMMISSIONS[fx.id];
           if (!c) break;
-          push({ icon: c.icon, text: `Поручение Короля исполнено: «${c.name}». Грамота уже в казне!`, tone: "gold", ms: TOAST_MS + 1500, go: { tab: "map", target: "x_express" } });
+          push({ icon: c.icon, text: commissionDoneText(c.name, chartersBefore), tone: "gold", ms: TOAST_MS + 1500, go: { tab: "map", target: "x_express" } });
           break;
         }
-        case "medal":
-          banner({ id: ++seq, k: "medal", medal: fx.id });
+        case "medal": {
+          const now = performance.now();
+          const gameTime = useGame.getState().game.time;
+          const id = ++seq;
+          setBanners((list) => {
+            // the first ten minutes: medals within 5 s of each other share one banner (shown or still waiting)
+            let last: Extract<Banner, { k: "medal" }> | undefined;
+            for (const b of list) if (b.k === "medal") last = b;
+            if (last && joinsMedalGroup(last, now, gameTime)) {
+              if (last.medals.includes(fx.id)) return list;
+              const target = last;
+              return list.map((b) => (b === target ? { ...target, medals: [...target.medals, fx.id], at: now } : b));
+            }
+            return list.length > 6 ? list : [...list, { id, k: "medal", medals: [fx.id], at: now }];
+          });
           break;
+        }
         case "zoneOpen":
+          // the newspaper is exclusive: what arrives with it waits until it has gone
+          zoneUntil = performance.now() + ZONE_HOLD_MS;
           banner({ id: ++seq, k: "zone", zone: fx.zone });
           break;
         case "frenzy":
@@ -211,9 +306,12 @@ export default function Toasts() {
         case "unlock":
           unlock(fx.items);
           break;
-        case "toast":
-          push({ icon: fx.icon ?? "📣", text: fx.text, tone: "info", ms: fx.tab ? TOAST_MS + 2000 : TOAST_MS, go: fx.tab ? { tab: fx.tab, target: fx.target } : undefined });
+        case "toast": {
+          // a new offline version (SHL-6) stays up longer: its «Обновить» reloads the tab
+          const update = fx.target === SW_UPDATE_TARGET;
+          push({ icon: fx.icon ?? "📣", text: fx.text, tone: update ? "gold" : "info", ms: update ? UPDATE_MS : fx.tab ? TOAST_MS + 2000 : TOAST_MS, go: fx.tab ? { tab: fx.tab, target: fx.target } : undefined });
           break;
+        }
         default:
           break;
       }
@@ -222,15 +320,20 @@ export default function Toasts() {
     const offFx = onFx(handle);
     const offUi = onUiFx(handleUi);
     return () => {
+      offStore();
       offFx();
       offUi();
     };
   }, []);
 
-  const dismiss = (id: number) => {
+  const dismiss = useCallback((id: number) => {
     setToasts((list) => list.map((t) => (t.id === id ? { ...t, leaving: true } : t)));
     window.setTimeout(() => setToasts((list) => list.filter((t) => t.id !== id)), OUT_MS);
-  };
+  }, []);
+  /** A queued toast got a slot on screen: from now on it is an ordinary shown toast. */
+  const shownNow = useCallback((id: number) => {
+    setToasts((list) => (list.some((t) => t.id === id && t.wait) ? list.map((t) => (t.id === id ? { ...t, wait: false } : t)) : list));
+  }, []);
   // a toast gone from the list (dismissed, pushed out by the stack limit, its train arrived) takes its kept fuse along
   useEffect(() => {
     const ids = new Set(toasts.map((t) => t.id));
@@ -239,16 +342,19 @@ export default function Toasts() {
 
   const current = banners[0] ?? null;
   const nextBanner = () => setBanners((list) => list.slice(1));
-  // phones: a close-up takes the whole screen — toasts wait for it to end (their fuses paused) instead of floating
-  // over the falling loot; with the sheet full only the newest one fits, shortened. Everywhere: a modal holds them all.
-  const desk = useSyncExternalStore(
-    subscribeDesk,
-    () => window.matchMedia(DESK_MQ).matches,
-    () => true,
-  );
   const sceneUp = useGame((s) => !!s.game.scene);
-  const compact = !desk && sheet === "full";
-  const shown = modal ? [] : desk ? toasts : sceneUp ? [] : compact ? toasts.slice(-1) : toasts;
+  const early = useGame((s) => s.game.time < EARLY_SEC);
+  // with the phone sheet full only the newest toast fits, shortened
+  const compact = narrow && sheet === "full";
+  const held = modal || sceneUp || current?.k === "zone";
+  const cap = toastCap({ phone, compact, early });
+  const shown = visibleToasts(toasts, cap, held);
+  const shownKey = shown.map((t) => `${t.id}.${t.rev}`).join(" ");
+  // phones: the stack keeps to 38% of the colony; older toasts that do not fit step aside until there is room
+  useLayoutEffect(() => {
+    const el = stackRef.current;
+    if (el) fitStack(el);
+  }, [shownKey, compact, phone]);
 
   return (
     <div ref={rootRef} className={cx(calm && "hud-calm")}>
@@ -256,7 +362,7 @@ export default function Toasts() {
       <div
         ref={stackRef}
         className={cx(
-          "pointer-events-none fixed inset-x-2 z-40 flex flex-col items-center gap-1.5 md:inset-x-auto md:bottom-14 md:right-[408px] md:items-end xl:right-[468px]",
+          "pointer-events-none fixed inset-x-2 z-40 flex flex-col items-center gap-1.5 md:inset-x-auto md:bottom-[calc(56px_+_env(safe-area-inset-bottom))] md:right-[calc(408px_+_env(safe-area-inset-right))] md:items-end xl:right-[calc(468px_+_env(safe-area-inset-right))] md:short:bottom-[calc(12px_+_env(safe-area-inset-bottom))]",
           // fallback until the panel edge is measured (useSheetAnchor writes the exact bottom on phones)
           sheet === "full" ? "bottom-[calc(74dvh+8px)]" : "bottom-[calc(45dvh+8px)]",
         )}
@@ -264,34 +370,60 @@ export default function Toasts() {
         role="status"
       >
         {shown.map((t) => (
-          <Toast key={t.id} t={t} compact={compact} onDismiss={() => dismiss(t.id)} />
+          <Toast key={t.id} t={t} compact={compact} phone={phone} onDismiss={dismiss} onShown={shownNow} />
         ))}
       </div>
-      {/* mounted (and its timer started) only once nothing covers it */}
-      {current && !modal && <BannerView key={current.id} b={current} onDone={nextBanner} />}
+      {/* mounted (and its timer started) only once nothing covers it; a medal joining it replays its entrance */}
+      {current && !modal && !sceneUp && (
+        <BannerView key={current.k === "medal" ? `${current.id}.${current.medals.length}` : current.id} b={current} onDone={nextBanner} />
+      )}
     </div>
   );
 }
 
+/** Phones: hide the oldest toasts that overflow the stack's max-height (the newest always shows). */
+function fitStack(el: HTMLElement) {
+  const kids = Array.from(el.children) as HTMLElement[];
+  for (const k of kids) k.style.display = "";
+  const max = parseFloat(el.style.maxHeight);
+  if (!Number.isFinite(max) || max <= 0) return;
+  let used = 0;
+  for (let i = kids.length - 1; i >= 0; i--) {
+    const h = kids[i].offsetHeight + (used > 0 ? STACK_GAP : 0);
+    if (used > 0 && used + h > max) {
+      for (let j = i; j >= 0; j--) kids[j].style.display = "none";
+      return;
+    }
+    used += h;
+  }
+}
+
 const STALL_SELECTOR = 'main > section [role="region"][aria-label="Лавка Барыги Бенедикта"]';
-/** md+: the stack's width (md:w-[340px]) and its bottom-14 resting line. */
+/**
+ * md+: the stack's width (md:w-[340px]) and its 56-px resting line (12 px on short screens: no ticker there); the
+ * classes add the safe-area insets (viewport-fit=cover, SHL-3) to it and to the panel's edge.
+ */
 const DESK_W = 340;
 const DESK_BOTTOM = 56;
+const SHORT_BOTTOM = 12;
 
 /**
- * Writes the stack's `bottom` directly (no re-render), re-measured by ResizeObservers on the panel and the stall:
- * - phones: 8 px above the panel sheet's top edge, following the half/full transition, plus room for the market's
- *   folded pill (an expanded stall is the player's choice: the toasts then overlap its top instead of the grate);
- *   with the sheet full the stack is also capped to the colony sliver, so it never climbs over the resource bar and
- *   the header (their buttons stay tappable);
- * - md+: the bottom-14 line, or just above Benedict's docked stall when the colony is too narrow for both side by side.
+ * Writes the stack's `bottom` and `max-height` directly (no re-render), re-measured by ResizeObservers on the panel
+ * and the stall:
+ * - bottom sheet (< 768 px): 8 px above the panel sheet's top edge, following the half/full transition, plus room for
+ *   the market's folded pill (an expanded stall is the player's choice: the toasts then overlap its top instead of
+ *   the grate); with the sheet full the stack is also capped to the colony sliver, so it never climbs over the
+ *   resource bar and the header (their buttons stay tappable);
+ * - md+: the bottom-14 line, or just above Benedict's docked stall when the colony is too narrow for both side by side;
+ * - every phone layout (narrow or short): at most 38% of the colony's height, the oldest toasts stepping aside.
  */
 function useSheetAnchor(ref: RefObject<HTMLDivElement | null>, stall: boolean) {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const mq = window.matchMedia(DESK_MQ);
+    const mq = window.matchMedia(NARROW_MQ);
     const aside = document.querySelector("main > aside");
+    const colony = document.querySelector("main > section");
     let stallEl: HTMLElement | null = null;
     const place = () => {
       const vh = window.innerHeight;
@@ -302,28 +434,33 @@ function useSheetAnchor(ref: RefObject<HTMLDivElement | null>, stall: boolean) {
       }
       const sr = stallEl?.isConnected ? stallEl.getBoundingClientRect() : null;
       const hasStall = !!sr && sr.height > 0;
-      if (!mq.matches) {
+      const share = isPhoneLayout() && colony ? Math.round(colony.getBoundingClientRect().height * PHONE_STACK_SHARE) : null;
+      const setMax = (room: number | null) => {
+        const v = room === null ? share : share === null ? room : Math.min(room, share);
+        el.style.maxHeight = v === null ? "" : `${v}px`;
+        el.style.overflow = v === null ? "" : "hidden";
+        fitStack(el);
+      };
+      if (mq.matches) {
         const top = aside?.getBoundingClientRect().top ?? 0;
         const bottom = top > 0 ? Math.round(vh - top + 8 + (hasStall ? STALL_PX : 0)) : null;
         el.style.bottom = bottom === null ? "" : `${bottom}px`;
-        const roof = useGame.getState().sheet === "full" ? document.querySelector("main > section")?.getBoundingClientRect().top : undefined;
-        const room = roof === undefined || bottom === null ? null : Math.max(0, Math.round(vh - bottom - roof - 8));
-        el.style.maxHeight = room === null ? "" : `${room}px`;
-        el.style.overflow = room === null ? "" : "hidden";
+        const roof = useGame.getState().sheet === "full" ? colony?.getBoundingClientRect().top : undefined;
+        setMax(roof === undefined || bottom === null ? null : Math.max(0, Math.round(vh - bottom - roof - 8)));
         return;
       }
-      el.style.maxHeight = "";
-      el.style.overflow = "";
+      setMax(null);
       if (!sr || !hasStall) {
         el.style.bottom = "";
         return;
       }
       const right = (aside?.getBoundingClientRect().left ?? window.innerWidth) - 8;
       const sideBySide = sr.right + 8 <= right - DESK_W;
-      el.style.bottom = sideBySide ? "" : `${Math.round(Math.max(DESK_BOTTOM, vh - sr.top + 8))}px`;
+      el.style.bottom = sideBySide ? "" : `${Math.round(Math.max(isShortLayout() ? SHORT_BOTTOM : DESK_BOTTOM, vh - sr.top + 8))}px`;
     };
     const ro = new ResizeObserver(place);
     if (aside) ro.observe(aside);
+    if (colony) ro.observe(colony);
     place();
     window.addEventListener("resize", place);
     mq.addEventListener("change", place);
@@ -376,11 +513,27 @@ const TONE: Record<Tone, string> = {
   gold: "border-gaslight/80 bg-gradient-to-b from-[#4a3818] to-panel text-parchment shadow-[0_0_14px_rgba(242,184,75,.35)]",
 };
 
-function Toast({ t, compact, onDismiss }: { t: ToastItem; compact: boolean; onDismiss: () => void }) {
+function Toast({
+  t,
+  compact,
+  phone,
+  onDismiss,
+  onShown,
+}: {
+  t: ToastItem;
+  compact: boolean;
+  phone: boolean;
+  onDismiss: (id: number) => void;
+  onShown: (id: number) => void;
+}) {
   const dismissRef = useRef(onDismiss);
   useEffect(() => {
     dismissRef.current = onDismiss;
   });
+  // a queued toast that got its slot becomes an ordinary one (later arrivals then queue behind it, not over it)
+  useEffect(() => {
+    if (t.wait) onShown(t.id);
+  }, [t.wait, t.id, onShown]);
 
   // a toast back on screen resumes its fuse; a merge (rev) restarts it
   const kept = fuses.get(t.id);
@@ -389,7 +542,7 @@ function Toast({ t, compact, onDismiss }: { t: ToastItem; compact: boolean; onDi
     const start = performance.now();
     // «К путям!» also goes once its train is due: one the scene gap holds back does not sit at «0 с»
     const life = t.train ? Math.min(left, t.train.at - start + 1500) : left;
-    const timer = window.setTimeout(() => dismissRef.current(), Math.max(0, life));
+    const timer = window.setTimeout(() => dismissRef.current(t.id), Math.max(0, life));
     return () => {
       window.clearTimeout(timer);
       fuses.set(t.id, { rev: t.rev, left: Math.max(0, left - (performance.now() - start)) });
@@ -397,21 +550,32 @@ function Toast({ t, compact, onDismiss }: { t: ToastItem; compact: boolean; onDi
   }, [t.id, t.rev, t.train, left]);
 
   const go = t.go;
+  // phones: «К путям!» is one 44-px row (countdown and «К перрону»)
+  const row = phone && !!t.train;
   // the action sits in its own column beside ✕, so a toast stays one text block tall (keeps the colony clear on phones)
   const action = t.train ? (
     <ActionButton
       onClick={() => {
         focusColony();
-        onDismiss();
+        onDismiss(t.id);
       }}
     >
       К перрону
+    </ActionButton>
+  ) : go?.target === SW_UPDATE_TARGET ? (
+    <ActionButton
+      onClick={() => {
+        onDismiss(t.id);
+        applySwUpdate(() => useGame.getState().save());
+      }}
+    >
+      Обновить
     </ActionButton>
   ) : go ? (
     <ActionButton
       onClick={() => {
         useGame.getState().focus(go.tab, go.target);
-        onDismiss();
+        onDismiss(t.id);
       }}
     >
       Открыть
@@ -421,23 +585,34 @@ function Toast({ t, compact, onDismiss }: { t: ToastItem; compact: boolean; onDi
   return (
     <div
       className={cx(
-        "pointer-events-none relative flex w-full max-w-[360px] items-start gap-2 overflow-hidden rounded-md border py-1.5 pl-2.5 pr-1 text-[13px] leading-snug shadow-[0_6px_18px_rgba(0,0,0,.55)] md:w-[340px]",
+        // .ui-zoom: «Размер текста» reaches the toasts; the width is divided back so the footprint stays the same
+        "ui-zoom pointer-events-none relative flex w-full max-w-[calc(360px/var(--ui-zoom,1))] shrink-0 gap-2 overflow-hidden rounded-md border pl-2.5 pr-1 text-[13px] leading-snug shadow-[0_6px_18px_rgba(0,0,0,.55)] md:w-[calc(340px/var(--ui-zoom,1))]",
+        row ? "items-center py-0.5" : "items-start py-1.5",
         TONE[t.tone],
         t.leaving ? "hud-toast-out" : "hud-toast-in",
       )}
     >
-      <span className="mt-2 shrink-0 text-lg leading-none" aria-hidden>
+      <span className={cx("shrink-0 text-lg leading-none", !row && "mt-2")} aria-hidden>
         {t.icon}
       </span>
-      <div className="flex min-h-10 min-w-0 flex-1 flex-col justify-center py-0.5">
-        {t.train ? <TrainToastBody train={t.train} /> : t.unlock ? <UnlockBody items={t.unlock} compact={compact} /> : <span>{t.text}</span>}
+      <div className={cx("flex min-h-10 min-w-0 flex-1 flex-col justify-center", !phone && "py-0.5")}>
+        {t.train ? (
+          <TrainToastBody train={t.train} row={row} />
+        ) : t.unlock ? (
+          <UnlockBody items={t.unlock} compact={compact} phone={phone} />
+        ) : (
+          <span className={cx(phone && "line-clamp-2")}>{t.text}</span>
+        )}
       </div>
-      {action && <div className="shrink-0 self-start pt-0.5">{action}</div>}
+      {action && <div className={cx("shrink-0", row ? "self-center" : "self-start pt-0.5")}>{action}</div>}
       <button
         type="button"
-        onClick={onDismiss}
+        onClick={() => onDismiss(t.id)}
         aria-label="Закрыть"
-        className="pointer-events-auto -my-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded text-parchment-dim hover:bg-black/20 hover:text-parchment"
+        className={cx(
+          "pointer-events-auto inline-flex h-10 w-10 shrink-0 items-center justify-center rounded text-parchment-dim hover:bg-black/20 hover:text-parchment",
+          !row && "-my-0.5",
+        )}
       >
         ✕
       </button>
@@ -456,7 +631,7 @@ function ActionButton({ onClick, children }: { onClick: () => void; children: Re
     <button
       type="button"
       onClick={onClick}
-      className="pointer-events-auto inline-flex min-h-10 items-center rounded border border-brass-dark bg-gradient-to-b from-brass-light via-brass to-brass-dark px-2.5 text-xs font-bold text-soot shadow-[inset_0_1px_0_rgba(255,255,255,.45),0_2px_0_#4a3a1a] active:translate-y-px md:min-h-8"
+      className="pointer-events-auto inline-flex min-h-10 items-center whitespace-nowrap rounded border border-brass-dark bg-gradient-to-b from-brass-light via-brass to-brass-dark px-2.5 text-xs font-bold text-soot shadow-[inset_0_1px_0_rgba(255,255,255,.45),0_2px_0_#4a3a1a] active:translate-y-px md:min-h-8 md:short:min-h-10"
     >
       {children}
     </button>
@@ -464,30 +639,36 @@ function ActionButton({ onClick, children }: { onClick: () => void; children: Re
 }
 
 /**
- * «Открыто!» for one item, «Открыто: 3 новинки» with the list for a batch; «Открыть» goes to the first.
- * Compact (a phone with the sheet full: one sliver of colony) lists the first item only.
+ * «Открыто!» for one item (with its «что даёт» line), «Открыто: 3 новинки» for a batch: one short row per item
+ * (icon and name), at most three («…и ещё N» closes the last row); phones two rows, compact (the sheet full) one.
+ * «Открыть» goes to the first item.
  */
-function UnlockBody({ items, compact }: { items: UnlockItem[]; compact: boolean }) {
+function UnlockBody({ items, compact, phone }: { items: UnlockItem[]; compact: boolean; phone: boolean }) {
   const n = items.length;
-  const shown = items.slice(0, compact ? 1 : 4);
+  const rows = items.slice(0, compact ? 1 : phone ? UNLOCK_ROWS.phone : UNLOCK_ROWS.desk).map(unlockRow);
+  const more = n - rows.length;
+  const single = n === 1 ? rows[0] : null;
   return (
-    <div>
-      <b className="font-display text-[15px] leading-tight tracking-wide text-verdigris-light">
-        {n > 1 ? `Открыто: ${n} ${plural(n, "новинка", "новинки", "новинок")}` : "Открыто!"}
-      </b>
-      <ul className="mt-0.5 space-y-0.5">
-        {shown.map((it) => (
-          <li key={it.key} className="leading-snug">
-            {it.text}
+    <div className="min-w-0">
+      <b className={cx("block truncate font-display tracking-wide text-verdigris-light", phone ? "text-[14px] leading-4" : "text-[15px] leading-tight")}>{unlockTitle(n)}</b>
+      <ul className={cx("min-w-0", phone ? "text-[12px] leading-[15px]" : "mt-0.5 leading-tight")}>
+        {rows.map((r, i) => (
+          <li key={items[i].key} className="flex min-w-0 items-baseline gap-1">
+            <span className="min-w-0 truncate">
+              {r.icon && <span aria-hidden>{r.icon} </span>}
+              {r.name}
+            </span>
+            {/* the rest stays a count on the last row (the title has the total) */}
+            {more > 0 && i === rows.length - 1 && <span className="ml-auto shrink-0 whitespace-nowrap text-[11px] italic text-parchment-dim">…и&nbsp;ещё&nbsp;{more}</span>}
           </li>
         ))}
-        {n > shown.length && <li className="italic text-parchment-dim">…и ещё {n - shown.length}</li>}
       </ul>
+      {single?.desc && <p className={cx("text-[12px] text-parchment-dim", phone ? "truncate leading-[15px]" : "mt-0.5 line-clamp-2 leading-tight")}>{single.desc}</p>}
     </div>
   );
 }
 
-function TrainToastBody({ train }: { train: NonNullable<ToastItem["train"]> }) {
+function TrainToastBody({ train, row }: { train: NonNullable<ToastItem["train"]>; row: boolean }) {
   // the seconds are written straight into the <b> (4×/s), the toast itself never re-renders for them
   const secRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -501,6 +682,22 @@ function TrainToastBody({ train }: { train: NonNullable<ToastItem["train"]> }) {
     return () => window.clearInterval(iv);
   }, [train.at]);
   const what = train.id === "capsule" ? "капсула" : train.id === "royal_express" ? "Королевский экспресс" : "поезд";
+  if (row) {
+    // one line: the name of the train gives way first, the countdown never does
+    return (
+      <span className="flex min-w-0 items-baseline gap-1 whitespace-nowrap">
+        <b className="shrink-0 font-display text-[15px] tracking-wide text-gaslight">К путям!</b>
+        <span className="min-w-0 truncate">{what}</span>
+        <span className="shrink-0">
+          через{" "}
+          <b ref={secRef} className="font-mono tabular">
+            {train.inSec}
+          </b>
+          &nbsp;с
+        </span>
+      </span>
+    );
+  }
   return (
     <span>
       <b className="font-display text-[15px] tracking-wide text-gaslight">К путям!</b> {what} через{" "}
@@ -539,27 +736,44 @@ function BannerView({ b, onDone }: { b: Banner; onDone: () => void }) {
   const enter = b.k === "medal" ? "hud-banner-drop" : b.k === "zone" ? "hud-banner-spin" : "hud-banner-slam";
   return (
     <div
-      className={cx("pointer-events-none fixed left-1/2 top-[54px] z-40 w-max max-w-[calc(100vw-24px)] md:top-[60px]", leaving ? "hud-banner-out" : enter)}
+      className={cx("pointer-events-none fixed left-1/2 top-[calc(54px_+_env(safe-area-inset-top))] z-40 w-max max-w-[calc(100vw-24px)] md:top-[calc(60px_+_env(safe-area-inset-top))]", leaving ? "hud-banner-out" : enter)}
       style={{ transform: "translate(-50%,0)" }}
       role="status"
       aria-live="assertive"
     >
-      {b.k === "medal" ? <MedalBanner id={b.medal} /> : b.k === "zone" ? <ZoneBanner zone={b.zone} /> : <FrenzyBanner />}
+      {b.k === "medal" ? <MedalBanner ids={b.medals} /> : b.k === "zone" ? <ZoneBanner zone={b.zone} /> : <FrenzyBanner />}
     </div>
   );
 }
 
-function MedalBanner({ id }: { id: AchievementId }) {
-  const def = ACHIEVEMENTS[id];
+/** One medal, or «🏅 +2 медали: …» for medals that landed together in the first ten minutes. */
+function MedalBanner({ ids }: { ids: AchievementId[] }) {
+  const defs = ids.map((id) => ACHIEVEMENTS[id]).filter(Boolean);
+  if (defs.length === 0) return null;
+  const many = defs.length > 1;
+  const def = defs[0];
   return (
     <div className="relative flex items-center gap-3 rounded-lg border-2 border-brass bg-gradient-to-b from-[#3a2c18] via-panel-2 to-panel px-3 py-2 pr-5 shadow-[0_0_0_1px_#4a3a1a,0_10px_30px_rgba(0,0,0,.65),0_0_30px_rgba(242,184,75,.3)]">
-      <CoatOfArms icon={def.icon} />
+      <CoatOfArms icon={many ? "🏅" : def.icon} />
       <div className="min-w-0">
-        <div className="font-display text-[11px] font-bold uppercase tracking-[0.3em] text-brass">Медаль Ратрополиса</div>
-        <div className="hud-brass-text truncate font-display text-xl font-bold leading-tight sm:text-2xl">{def.name}</div>
-        <div className="text-xs text-parchment-dim">
-          {def.desc} · <span className="font-bold text-good">+1% ко всему</span>
-        </div>
+        <div className="font-display text-[11px] font-bold uppercase tracking-[0.3em] text-brass">{many ? "Медали Ратрополиса" : "Медаль Ратрополиса"}</div>
+        {many ? (
+          <>
+            <div className="hud-brass-text font-display text-xl font-bold leading-tight sm:text-2xl" aria-label={medalGroupText(defs.map((d) => d.name))}>
+              {medalGroupTitle(defs.length)}
+            </div>
+            <div className="line-clamp-2 text-xs text-parchment">
+              {defs.map((d) => `${d.icon} ${d.name}`).join(" · ")} · <span className="font-bold text-good">+{defs.length}% ко всему</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="hud-brass-text truncate font-display text-xl font-bold leading-tight sm:text-2xl">{def.name}</div>
+            <div className="text-xs text-parchment-dim">
+              {def.desc} · <span className="font-bold text-good">+1% ко всему</span>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -606,7 +820,7 @@ function ZoneBanner({ zone }: { zone: ZoneId }) {
   return (
     <div className="hud-paper w-[min(92vw,520px)] rounded-sm border-2 border-[#2a1f14] px-4 py-2.5 text-center shadow-[0_14px_36px_rgba(0,0,0,.7)]">
       <div className="flex items-center justify-between border-b-2 border-[#2a1f14] pb-0.5 font-display text-[10px] font-bold uppercase tracking-[0.2em]">
-        <span>№ {ZONES[zone].order}</span>
+        <span>№&nbsp;{ZONES[zone].order}</span>
         <span>Крысиные Ведомости</span>
         <span>{ZONES[zone].icon}</span>
       </div>

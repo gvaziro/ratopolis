@@ -5,19 +5,25 @@
  * <section>, position: relative): bottom-left, never over the grate centre and never over the side panel.
  * Three trades with a +30% markup in the player's favour, a 60 s countdown, done deals stamped «ПРОДАНО».
  * Collapsible; starts collapsed on phones so it does not cover the bottom sheet. Expanded it takes
- * min(320 px, 62%) of the colony's width.
+ * min(320 px, 62%) of the colony's width — below md the whole colony width (v3 SCN-5: a smaller Benedict, a one-line
+ * quote, one line per deal, so «Барыга Бенедикт» and all three deals fit a 375 px phone without an inner scroll), and
+ * it never reaches up over the grate. On phones the system «Назад» folds it (useBackCloses).
  * While a close-up runs (the engine pauses the stall's clock meanwhile) it folds into `MarketChip` at the top right
- * of the scene header and opens on demand from the top-right corner.
+ * of the scene header and opens on demand inside the scene dialog, under the header (SceneFrame's peek host), so it
+ * stays part of the modal scene on phones.
  * Mounted outside the colony section (an older shell) it falls back to the v1 fixed placement.
  * Subscribes to primitives only (deal keys, affordability bits, whole seconds) — not to the 10 Hz game object.
  */
-import { memo, useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from "react";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { Badge, BrassButton, cx, ResIcon, Ring, Rivets, Stamp } from "@/components/ui/kit";
 import { RESOURCES } from "@/game/data/resources";
 import { EVENT_TIMING } from "@/game/data/events";
 import { useGame, type GameStore } from "@/game/store";
 import type { MarketDeal, ResId } from "@/game/types";
 import { fmt, fmtTime, plural } from "@/lib/format";
+import { isPhoneLayout } from "@/lib/layoutMode";
+import { useBackCloses } from "@/lib/useBackCloses";
 import { HazardStyles } from "./HazardKit";
 
 export default function MarketPopup() {
@@ -46,6 +52,39 @@ function usePeekSeq(): number {
     () => peekSeq,
     () => 0,
   );
+}
+
+/* Where a peeked stall opens during a scene: SceneFrame's body overlay (registered through its ref). */
+let peekHost: HTMLElement | null = null;
+function setHost(el: HTMLElement | null): void {
+  if (peekHost === el) return;
+  peekHost = el;
+  for (const f of peekSubs) f();
+}
+/** Ref callback for the scene body's overlay layer (React 19 ref cleanup: only the host that is going away clears it). */
+export function setPeekHost(el: HTMLDivElement | null): (() => void) | undefined {
+  if (!el) return undefined;
+  setHost(el);
+  return () => {
+    if (peekHost === el) setHost(null);
+  };
+}
+function usePeekHost(): HTMLElement | null {
+  return useSyncExternalStore(
+    subscribePeek,
+    () => peekHost,
+    () => null,
+  );
+}
+
+/** Grate bottom (px below the colony section's top), so the docked stall never reaches up over it; null — no grate. */
+function grateBottom(section: Element): number | null {
+  const g = section.querySelector('[aria-label^="Решётка водостока"]');
+  const hit = g?.querySelector("rect") ?? g;
+  if (!hit) return null;
+  const r = hit.getBoundingClientRect();
+  if (r.height <= 0) return null;
+  return r.bottom - section.getBoundingClientRect().top;
 }
 
 const leftOf = (s: GameStore) => Math.max(0, Math.ceil((s.game.market?.until ?? 0) - s.game.time));
@@ -109,13 +148,15 @@ function Stall() {
   const affordKey = useGame((s) => (s.game.market?.deals ?? []).map((d) => (s.game.res[d.give] + 1e-9 >= d.giveAmt ? "1" : "0")).join(""));
   const reduced = useGame((s) => s.game.settings.reducedMotion);
   const deals = useMemo(() => parseDeals(dealsKey), [dealsKey]);
-  const [open, setOpen] = useState(() => typeof window === "undefined" || window.matchMedia("(min-width: 768px)").matches);
+  // folded on the phone layout (a landscape phone too: its colony window is short)
+  const [open, setOpen] = useState(() => typeof window === "undefined" || !isPhoneLayout());
   // a running close-up owns the colony window (the whole screen on phones): the stall folds into MarketChip in the
   // scene header, and a peek opens it over the scene — above the full-screen scene on phones, at the colony's
   // right edge (clear of the side panel) on md+
   const sceneSeq = useGame((s) => s.game.scene?.seq ?? 0);
   const sceneOn = sceneSeq !== 0;
   const peek = usePeekSeq();
+  const host = usePeekHost();
   const expanded = sceneOn ? peek === sceneSeq : open;
   const setExpanded = (v: boolean) => (sceneOn ? setPeekSeq(v ? sceneSeq : 0) : setOpen(v));
   // SH-4: Esc folds the stall into its chip
@@ -127,6 +168,11 @@ function Stall() {
     window.addEventListener("rr-escape", fold);
     return () => window.removeEventListener("rr-escape", fold);
   }, []);
+  // SCN-5: on phones the system «Назад» folds the open stall instead of leaving the game
+  useBackCloses(expanded, () => {
+    setOpen(false);
+    setPeekSeq(0);
+  });
 
   const life = EVENT_TIMING.marketLife;
   const open3 = deals.filter((d) => !d.done).length;
@@ -134,29 +180,58 @@ function Stall() {
   const urgent = left <= 10 && !sceneOn; // the clock stands still during a scene
   // docked = mounted inside the colony <section>; otherwise (older shell) keep the v1 fixed placement
   const [docked, setDocked] = useState(true);
+  const boxRef = useRef<HTMLDivElement | null>(null);
   const dockRef = useCallback((el: HTMLDivElement | null) => {
+    boxRef.current = el;
     if (el) setDocked(!!el.parentElement?.closest("section"));
   }, []);
+  // SCN-5: the docked stall grows up from the bottom-left corner and stops under the grate
+  const [roomPx, setRoomPx] = useState<number | null>(null);
+  const portal = sceneOn && !!host;
+  useLayoutEffect(() => {
+    const section = boxRef.current?.parentElement?.closest("section");
+    if (!docked || sceneOn || !expanded || !section) return;
+    const measure = () => {
+      const g = grateBottom(section);
+      const h = section.clientHeight;
+      setRoomPx(g === null || h <= 0 ? null : Math.max(140, Math.round(h - 8 - (g + 6))));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(section);
+    return () => ro.disconnect();
+  }, [docked, expanded, sceneOn]);
 
   if (sceneOn && !expanded) return null;
-  return (
+  // the stall's width: the whole colony below md (a 232 px stall cut «Барыга Бенедикт» short), min(320 px, 62%) above
+  const width = expanded && "max-md:w-[calc(100%_-_16px)] md:w-[min(320px,62%)]";
+  const box = (
     <div
-      ref={dockRef}
+      ref={portal ? undefined : dockRef}
       role="region"
       className={cx(
-        docked
-          ? cx(
-              "absolute flex flex-col",
-              sceneOn ? "right-2 top-11 z-50 max-h-[calc(100%_-_52px)] md:top-12 md:z-30 md:max-h-[calc(100%_-_56px)]" : "bottom-2 left-2 z-30 max-h-[calc(100%_-_16px)]",
-              expanded && "w-[min(320px,62%)]",
-            )
-          : cx(
-              "fixed bottom-[calc(env(safe-area-inset-bottom)_+_3rem)] md:bottom-14",
-              sceneOn ? "right-2 z-50 md:right-[412px] md:z-30 xl:right-[472px]" : "left-2 z-30 md:left-4",
-              expanded && "w-[min(320px,calc(100vw_-_16px))]",
-            ),
+        portal
+          ? // inside the scene dialog (SceneFrame's peek host): top right of the close-up, under the header chip
+            cx("pointer-events-auto absolute right-2 top-2 flex max-h-[calc(100%_-_16px)] flex-col", width)
+          : docked
+            ? cx(
+                "absolute flex flex-col",
+                sceneOn ? "right-2 top-11 z-50 max-h-[calc(100%_-_52px)] md:top-12 md:z-30 md:max-h-[calc(100%_-_56px)]" : "bottom-2 left-2 z-30 max-h-[calc(100%_-_16px)]",
+                width,
+              )
+            : cx(
+                "fixed bottom-[calc(env(safe-area-inset-bottom)_+_3rem)] md:bottom-[calc(3.5rem_+_env(safe-area-inset-bottom))]",
+                // clear of the side panel and, in landscape, of the notch (like the toasts, SHL-5)
+                sceneOn
+                  ? "right-2 z-50 md:right-[calc(412px_+_env(safe-area-inset-right))] md:z-30 xl:right-[calc(472px_+_env(safe-area-inset-right))]"
+                  : "left-2 z-30 md:left-[calc(1rem_+_env(safe-area-inset-left))]",
+                expanded && "w-[min(320px,calc(100vw_-_16px))]",
+              ),
       )}
-      style={reduced ? undefined : { animation: "rh-slide-in .35s ease-out both" }}
+      style={{
+        ...(reduced ? undefined : { animation: "rh-slide-in .35s ease-out both" }),
+        ...(docked && !sceneOn && expanded && roomPx !== null ? { maxHeight: roomPx } : undefined),
+      }}
       aria-label="Лавка Барыги Бенедикта"
     >
       <HazardStyles />
@@ -165,10 +240,12 @@ function Stall() {
           <Awning />
           <Rivets />
           <header className="flex items-center gap-2 px-2.5 pb-1 pt-1.5">
-            <Benedict className="h-12 w-12 shrink-0" />
+            <Benedict className="h-10 w-10 shrink-0 md:h-12 md:w-12" />
             <div className="min-w-0 flex-1">
               <h3 className="truncate font-display text-base font-bold leading-tight text-brass-light">Барыга Бенедикт</h3>
-              <p className="text-[11px] italic leading-tight text-parchment-dim">«Знаю, чего вам не хватает. Наценка — в вашу пользу!»</p>
+              <p className="text-[11px] italic leading-tight text-parchment-dim max-md:line-clamp-1" title="«Знаю, чего вам не хватает. Наценка — в вашу пользу!»">
+                «Знаю, чего вам не хватает. Наценка — в вашу пользу!»
+              </p>
             </div>
             <span className={cx("shrink-0", urgent && !reduced && "animate-pulse")} title="Лавка закроется через…">
               <Ring value={left / life} size={40} stroke={3} color={urgent ? "var(--danger-light)" : "var(--brass)"}>
@@ -220,29 +297,37 @@ function Stall() {
       )}
     </div>
   );
+  // during a scene the stall opens inside the dialog (part of the modal scene on phones, no inert background over it)
+  return portal && host ? createPortal(box, host) : box;
 }
 
 function DealRow({ i, deal, afford, reduced }: { i: number; deal: MarketDeal; afford: boolean; reduced: boolean }) {
   const short = !deal.done && !afford;
   return (
     <li className={cx("relative flex items-center gap-1.5 rounded-md border px-2 py-1", deal.done ? "border-line/40 bg-black/30" : "border-line/80 bg-black/20")}>
-      <div className={cx("flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-0.5", deal.done && "opacity-45")}>
-        <span className={cx("inline-flex items-center gap-0.5 font-mono text-sm font-bold tabular", short ? "text-danger-light" : "text-parchment")} title={`Отдаёте: ${RESOURCES[deal.give].name}`}>
+      {/* phones: one line per deal (give → get), the +30% badge only from sm up */}
+      <div className={cx("flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-0.5 max-md:flex-nowrap", deal.done && "opacity-45")}>
+        <span
+          className={cx("inline-flex items-center gap-0.5 whitespace-nowrap font-mono text-sm font-bold tabular", short ? "text-danger-light" : "text-parchment")}
+          title={`Отдаёте: ${RESOURCES[deal.give].name}`}
+        >
           <ResIcon res={deal.give} />
           {fmt(deal.giveAmt)}
         </span>
         <span className="text-brass" aria-hidden>
           →
         </span>
-        <span className="inline-flex items-center gap-0.5 font-mono text-sm font-bold text-good tabular" title={`Получаете: ${RESOURCES[deal.get].name}`}>
+        <span className="inline-flex items-center gap-0.5 whitespace-nowrap font-mono text-sm font-bold text-good tabular" title={`Получаете: ${RESOURCES[deal.get].name}`}>
           <ResIcon res={deal.get} />
           {fmt(deal.getAmt)}
         </span>
-        <Badge tone="good">+30%</Badge>
+        <Badge tone="good" className="max-sm:hidden">
+          +30%
+        </Badge>
       </div>
       <BrassButton
         size="sm"
-        className="min-h-10 min-w-[76px] shrink-0"
+        className="min-h-10 min-w-[72px] shrink-0 md:min-w-[76px]"
         disabled={deal.done || !afford}
         onClick={() => useGame.getState().marketDeal(i)}
         title={deal.done ? "Уже продано" : afford ? `Отдать ${fmt(deal.giveAmt)} ${RESOURCES[deal.give].icon} за ${fmt(deal.getAmt)} ${RESOURCES[deal.get].icon}` : `Не хватает ${RESOURCES[deal.give].icon}`}

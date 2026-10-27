@@ -2,8 +2,11 @@ import { BUILDINGS, MILESTONES, MILESTONE_JOB_BOOST } from "../data/buildings";
 import { JOBS } from "../data/jobs";
 import { RESOURCES } from "../data/resources";
 import { TINKERS_MULT } from "../data/upgrades";
-import { ZONES, ZONE_ORDER, districtTrait } from "../data/zones";
-import { RANKED, byRank, sealOn } from "./ranks";
+import { districtInfo } from "../data/districts";
+import { curioMult, curioPerks } from "../data/curios";
+import { ZONES, ZONE_ORDER } from "../data/zones";
+import { crownsMult, expressMult } from "./metaMath";
+import { RANKED, byRank, offlineHours, sealOn } from "./ranks";
 import { ACHIEVEMENT_IDS, BUILDING_IDS, JOB_IDS, RES_IDS, type Amounts, type BuildingId, type GameState, type JobId, type ResId, type ResMap, type ZoneId, type CommissionId } from "../types";
 
 /**
@@ -21,6 +24,12 @@ export interface Derived {
   tierMult: number; // T1 production multiplier
   global: number; // GM (without hunger)
   globalParts: { label: string; mult: number }[];
+  /**
+   * v3 (ENG-8): the Great Seal factor on 📜 and 💍, which ignore the global multiplier (excludeGlobal, not 💨):
+   * Печать Династии 1 + 0.1 × migrations, Печать Тишины ×1.3. Applied by resMult; its parts for tooltips.
+   */
+  excludedMult: number;
+  excludedParts: { label: string; mult: number }[];
   temp: number; // EM: feast, frenzy
   medals: number;
   railMult: number; // Rsw * Rst
@@ -39,6 +48,13 @@ export interface Derived {
   rumbleMetro: number;
   intervals: { capsule: number; metro: number; express: number };
   steamNeed: number; // steam/s wanted by press + clocktower
+  /**
+   * v3 (ENG-4): boiler levels that count (BUILDINGS.boiler.maxLevel 12 + the district's boilerMaxDelta); a v2 save
+   * with more keeps its level, but its stoker slots and buffer stop here. buildingMaxLevel() blocks buying past it.
+   */
+  boilerMax: number;
+  /** v3 (ENG-8): suspicion above which human vigilance eats train and capsule loot (50; Биг-Бен 40). */
+  vigilanceFrom: number;
   /** Production multipliers of the district trait per resource (EN-9), applied by resMult. */
   districtRes: Partial<Record<ResId, number>>;
   /** Purse frequency multiplier (golden_whiskers ranks × district) and purse effect multiplier. */
@@ -54,6 +70,10 @@ export interface Derived {
   marketInterval: readonly [number, number];
   /** Печать Тишины: no suspicion, no cat, no ratcatcher. */
   silence: boolean;
+  /** v3 (ENG-10): sparks per train car ×this (Полковник Хэтчетт's full set: 0.8). */
+  sparkMult: number;
+  /** v3 (ENG-10): extra items in the Royal Express's royal car (Лорд Эшби's full set: +2). */
+  royalExtraItems: number;
   /** The accepted royal commission (EN-12): its event comes more often while it runs. */
   commission: CommissionId | null;
   suspicionMult: number;
@@ -110,9 +130,13 @@ export function derive(s: GameState): Derived {
   const u = s.upgrades;
   const e = s.meta.edicts;
   const t = s.time;
-  const dm = districtTrait(s.meta.district).mods;
+  const dm = districtInfo(s.meta).trait.mods;
   const railway = sealOn(s, "railway");
   const silence = sealOn(s, "silence");
+  const dynasty = sealOn(s, "dynasty");
+  const boilerMax = boilerMaxLevel(dm.boilerMaxDelta);
+  // v3 (ENG-10): the full sets of «Кунсткамера Короля»
+  const perks = curioPerks(s.meta);
 
   const railMult = (u.rail_switches ? 1.5 : 1) * (u.steel_rails ? 1.25 : 1);
 
@@ -142,7 +166,8 @@ export function derive(s: GameState): Derived {
   const buildingOut = {} as Record<BuildingId, Amounts>;
 
   for (const id of BUILDING_IDS) {
-    const L = b[id];
+    // v3 (ENG-4): a boiler above its cap (a v2 save) keeps the level, its effects stop at the cap
+    const L = id === "boiler" ? Math.min(b[id], boilerMax) : b[id];
     const def = BUILDINGS[id];
     const out: Amounts = {};
     buildingOut[id] = out;
@@ -263,7 +288,6 @@ export function derive(s: GameState): Derived {
   const tierMult = (1 + tierPct / 100) * (u.tinkers_guild ? TINKERS_MULT : 1) * (soggy ? 0.8 : 1);
 
   const medals = medalCount(s);
-  const crownC = e.kings_favor ? 0.03 : 0.02;
   const satietyActive = !!(s.satiety && u.cheese_diet && s.res.cheese > 0);
   const steamEff = steamNeed > 0 ? s.steamEff : 0;
   const parts: { label: string; mult: number }[] = [];
@@ -273,12 +297,19 @@ export function derive(s: GameState): Derived {
   push("Узкоколейка", 1 + globalPct / 100);
   push("Паровой пресс", 1 + (pressPct / 100) * steamEff);
   push("Вокзальные часы", Math.pow(clockMult, clockLevels * steamEff));
-  push("Крысиный экспресс", 1 + 0.2 * s.express.stage + 0.1 * s.express.wagons);
-  push("Венцы", 1 + crownC * s.meta.crownsEver);
+  push("Крысиный экспресс", expressMult(s));
+  push("Венцы", crownsMult(s.meta));
   push("Медали", 1 + 0.01 * medals);
-  push("Сытость", satietyActive ? 1.25 : 1);
-  push("Печать Династии", sealOn(s, "dynasty") ? 1 + 0.1 * s.meta.migrations : 1);
+  push("Кунсткамера", curioMult(s.meta));
+  // v3 (ENG-11): Боро-маркет feeds the «Сытость» better (×1.5)
+  push("Сытость", satietyActive ? (dm.satietyMult ?? SATIETY_MULT) : 1);
+  push("Печать Династии", dynasty ? 1 + 0.1 * s.meta.migrations : 1);
   const global = parts.reduce((a, p) => a * p.mult, 1);
+  // v3 (ENG-8): the seals that reach 📜 and 💍 (which the parts above never touch)
+  const excludedParts: { label: string; mult: number }[] = [];
+  if (dynasty && s.meta.migrations > 0) excludedParts.push({ label: "Печать Династии", mult: 1 + 0.1 * s.meta.migrations });
+  if (silence) excludedParts.push({ label: "Печать Тишины", mult: SILENCE_EXCLUDED_MULT });
+  const excludedMult = excludedParts.reduce((a, p) => a * p.mult, 1);
 
   const frenzy = s.buffs.frenzyUntil > t;
   const feast = s.buffs.feastUntil > t;
@@ -289,7 +320,8 @@ export function derive(s: GameState): Derived {
   const birthRate = (0.08 + 0.005 * s.rats) * (1 + birthPct / 100) * (u.courtship_squeak ? 1.5 : 1);
 
   // ---- click
-  const click = (1 + (u.sharp_teeth ? 1 : 0)) * (u.greedy_paws ? 2 : 1) * byRank(s, "ancestral_paws", RANKED.ancestral_paws, 1) * (silence ? 2 : 1) * (frenzy ? 3 : 1) * (luckyPaw ? 15 : 1);
+  // v3 (ENG-8): Печать Тишины no longer doubles the click (it raises 📜/💍 instead)
+  const click = (1 + (u.sharp_teeth ? 1 : 0)) * (u.greedy_paws ? 2 : 1) * byRank(s, "ancestral_paws", RANKED.ancestral_paws, 1) * (frenzy ? 3 : 1) * (luckyPaw ? 15 : 1);
   const autoclick = u.clockwork_legion ? { cps: 5, power: 0.5 } : u.windup_rat ? { cps: 1, power: 0.5 } : { cps: 0, power: 0.5 };
 
   // ---- events
@@ -309,13 +341,15 @@ export function derive(s: GameState): Derived {
     tierMult,
     global,
     globalParts: parts,
+    excludedMult,
+    excludedParts,
     temp,
     medals,
     railMult,
     birthRate,
     click,
     clickHuntPct: u.hunting_on_the_go ? 0.03 : 0,
-    dropMult: u.long_whiskers ? 1.5 : 1,
+    dropMult: (u.long_whiskers ? 1.5 : 1) * perks.findMult,
     autoclick,
     trainAutoBase,
     capsuleAuto: capsuleAutoTotal,
@@ -324,26 +358,31 @@ export function derive(s: GameState): Derived {
     trainValueMult: (1 + trainValuePct / 100) * lucky,
     capsuleValueMult: (u.pneumatic_timetable ? 1.5 : 1) * lucky,
     netSlots: u.wire_nets ? 1 + (post >= 3 ? 1 : 0) + (post >= 5 ? 1 : 0) : 0,
-    rumbleMetro: 8 + (u.stolen_timetable ? 4 : 0) + (e.timetable_in_head ? 5 : 0),
+    rumbleMetro: 8 + (u.stolen_timetable ? 4 : 0) + (e.timetable_in_head ? 5 : 0) + perks.rumbleAdd,
     intervals: {
       capsule: (dm.capsuleInterval ?? 150) * (u.pneumatic_timetable ? 0.8 : 1),
-      metro: 240,
+      metro: dm.metroInterval ?? METRO_INTERVAL,
       express: 720 * Math.pow(0.85, Math.max(0, depot - 1)) * (u.royal_informant ? 0.75 : 1) * (railway ? 0.5 : 1) * (dm.expressIntervalMult ?? 1) * (s.commissions?.active?.id === "royal_mail" ? 0.5 : 1),
     },
     steamNeed,
+    boilerMax,
+    vigilanceFrom: dm.vigilanceFrom ?? VIGILANCE_FROM,
     districtRes: dm.res ?? {},
     purseFreq: byRank(s, "golden_whiskers", RANKED.golden_whiskers.freq, 1) * (dm.purseFreqMult ?? 1),
-    purseEffect: byRank(s, "golden_whiskers", RANKED.golden_whiskers.effect, 1),
+    purseEffect: byRank(s, "golden_whiskers", RANKED.golden_whiskers.effect, 1) * perks.purseEffect,
     lucky,
     ratcatcherAt: dm.ratcatcherThreshold ?? 100,
     catMult: dm.catCheckMult ?? 1,
     marketInterval: dm.marketInterval ?? [480, 600],
     silence,
+    sparkMult: perks.sparkMult,
+    royalExtraItems: perks.royalItems,
     commission: s.commissions?.active?.id ?? null,
     suspicionMult: silence ? 0 : (u.quiet_paws ? 0.7 : 1) * byRank(s, "felt_soles", RANKED.felt_soles, 1) * (dm.suspicionMult ?? 1),
+    // v3 (ENG-8): the efficiency never passes 100% (offline must not beat playing); the ranks add hours instead
     offline: {
-      eta: 0.5 + (u.night_shift ? 0.25 : 0) + byRank(s, "eternal_night_shift", RANKED.eternal_night_shift, 0),
-      capSec: 3600 * (2 + (u.night_shift ? 2 : 0) + (e.eternal_night_shift ? 4 : 0)),
+      eta: Math.min(1, 0.5 + (u.night_shift ? 0.25 : 0) + byRank(s, "eternal_night_shift", RANKED.eternal_night_shift, 0)),
+      capSec: 3600 * offlineHours(s),
     },
     frenzy,
     feast,
@@ -356,7 +395,21 @@ export function derive(s: GameState): Derived {
   };
 }
 
-/** Production multiplier applied to resource r (tier, global, temp, hunger). */
+/** «Сытость» (cheese diet): everything ×1.25 (a district may change it: Боро-маркет ×1.5, v3 ENG-11). */
+export const SATIETY_MULT = 1.25;
+/** Seconds between metro trains (a district may change it: Гончарни 300, v3 ENG-11). */
+export const METRO_INTERVAL = 240;
+/** Печать Тишины: 📜 and 💍 production ×1.3 (v3 ENG-8). */
+export const SILENCE_EXCLUDED_MULT = 1.3;
+/** Human vigilance starts eating train loot above this suspicion (v3 ENG-8; a district may lower it). */
+export const VIGILANCE_FROM = 50;
+
+/** Boiler levels that count: BUILDINGS.boiler.maxLevel (12) plus a district's boilerMaxDelta (v3 ENG-4). */
+export function boilerMaxLevel(delta = 0): number {
+  return (BUILDINGS.boiler.maxLevel ?? Infinity) + delta;
+}
+
+/** Production multiplier applied to resource r (tier, global, temp, hunger; for 📜💍 the seals, v3 ENG-8). */
 export function resMult(s: GameState, d: Derived, r: ResId, withTemp = true): number {
   const def = RESOURCES[r];
   let m = 1;
@@ -366,7 +419,7 @@ export function resMult(s: GameState, d: Derived, r: ResId, withTemp = true): nu
   if (!def.excludeGlobal) {
     m *= d.global;
     if (withTemp) m *= d.temp;
-  }
+  } else if (r !== "steam") m *= d.excludedMult;
   if (s.hungry && r !== "crumbs") m *= 0.5;
   return m;
 }

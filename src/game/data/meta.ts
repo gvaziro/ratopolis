@@ -18,7 +18,7 @@ export const EDICTS: Record<EdictId, EdictDef> = {
     name: "Королевский выводок",
     icon: "🐀",
     cost: 3,
-    effect: "Старт забега с 10 крысами и 5 гнёздами",
+    effect: "Старт забега с 10 крысами, 5 гнёздами и 50 🍞",
     decree: "Повелеваем плодиться усердно и не жаловаться на тесноту. Подписано хвостом.",
     ranks: [
       { cost: 9, effect: "Старт с 25 крысами, 10 гнёздами и 500 🍞" },
@@ -32,9 +32,10 @@ export const EDICTS: Record<EdictId, EdictDef> = {
     cost: 3,
     effect: "Клик ×3 навсегда",
     decree: "Да передастся хватка дедов внукам — вместе с мозолями.",
+    // v3 (ENG-8): ranks II/III also reach the 📜 bottleneck — each click of the paw brings a share of the 📜/s
     ranks: [
-      { cost: 9, effect: "Клик ×6 навсегда" },
-      { cost: 30, effect: "Клик ×12 навсегда" },
+      { cost: 9, effect: "Клик ×6 навсегда; каждый клик лапой приносит ещё 0.5% выработки 📜/с" },
+      { cost: 30, effect: "Клик ×12 навсегда; каждый клик лапой приносит ещё 1% выработки 📜/с" },
     ],
   },
   golden_whiskers: {
@@ -44,9 +45,10 @@ export const EDICTS: Record<EdictId, EdictDef> = {
     cost: 8,
     effect: "Кошельки вдвое чаще, их эффекты длятся ×1.5",
     decree: "Всякая дама, уронившая кошелёк, объявляется благодетельницей колонии.",
+    // v3 (ENG-8): ranks II/III also reach the 💍 bottleneck — a purse may hold pocket watches
     ranks: [
-      { cost: 24, effect: "Кошельки втрое чаще, эффекты ×2" },
-      { cost: 80, effect: "Кошельки вчетверо чаще, эффекты ×2.5" },
+      { cost: 24, effect: "Кошельки втрое чаще, эффекты ×2; кошелёк с шансом 20% несёт ещё 3 💍" },
+      { cost: 80, effect: "Кошельки вчетверо чаще, эффекты ×2.5; кошелёк с шансом 30% несёт ещё 6 💍" },
     ],
   },
   rat_memory: {
@@ -68,9 +70,10 @@ export const EDICTS: Record<EdictId, EdictDef> = {
     cost: 6,
     effect: "Офлайн: эффективность +25%, лимит времени +4 ч",
     decree: "Ночь объявляется рабочим временем. Сон — по воскресеньям, и то не всем.",
+    // v3 (ENG-8): efficiency stops at 100% (night_shift + rank I); ranks II/III lengthen the absence instead
     ranks: [
-      { cost: 18, effect: "Офлайн: эффективность +35%, лимит времени +4 ч" },
-      { cost: 60, effect: "Офлайн: эффективность +45%, лимит времени +4 ч" },
+      { cost: 18, effect: "Офлайн: эффективность +25%, лимит времени +6 ч" },
+      { cost: 60, effect: "Офлайн: эффективность +25%, лимит времени +8 ч" },
     ],
   },
   old_tunnels: {
@@ -175,13 +178,14 @@ export const ACHIEVEMENTS: Record<AchievementId, AchievementDef> = {
   before_noon: { id: "before_noon", name: "Ещё до обеда", icon: "🕛", desc: "Коронация до 10:00 по часам забега", secret: true, reward: "Позолоченная рамка портрета", group: "secret" },
   // ---- v2 (EN-11): meta medals. Award logic lands with EN-11; ids, names and progress goals are final.
   nomads: { id: "nomads", name: "Кочевники", icon: "🎒", desc: "3 переселения", group: "meta", progress: { stat: "migrations", goal: 3 } },
-  all_london: { id: "all_london", name: "Весь Лондон наш", icon: "🗺️", desc: "Дойти до Вестминстера", group: "meta", progress: { stat: "district", goal: 5 } },
+  all_london: { id: "all_london", name: "Весь Лондон наш", icon: "🗺️", desc: "Обжить шесть районов Лондона", group: "meta", progress: { stat: "district", goal: 5 } },
   treasury: { id: "treasury", name: "Казна", icon: "💰", desc: "100 👑 за всё время", group: "meta", progress: { stat: "crownsEver", goal: 100 } },
   thousand_crowns: { id: "thousand_crowns", name: "Банк Англии", icon: "🏦", desc: "1 000 👑 за всё время", group: "meta", progress: { stat: "crownsEver", goal: 1000 } },
   seal_and_tail: { id: "seal_and_tail", name: "Печать и хвост", icon: "🖋️", desc: "Подписать 6 указов", group: "meta", progress: { stat: "edicts", goal: 6 } },
   full_code: { id: "full_code", name: "Полный свод законов", icon: "⚖️", desc: "Подписать все 12 указов", group: "meta", progress: { stat: "edicts", goal: 12 } },
   long_train: { id: "long_train", name: "Длинный состав", icon: "🚋", desc: "5 вагонов Крысиного экспресса", group: "meta", progress: { stat: "wagons", goal: 5 } },
-  tail_horizon: { id: "tail_horizon", name: "Хвост за горизонтом", icon: "🚄", desc: "15 вагонов Крысиного экспресса за все забеги", group: "meta", progress: { stat: "lifetime.wagons", goal: 15 } },
+  // v3 (ENG-3): 10 lifetime (was 15) now that wagons cost ×2 per wagon (📜💍 +50%) instead of ×3
+  tail_horizon: { id: "tail_horizon", name: "Хвост за горизонтом", icon: "🚄", desc: "10 вагонов Крысиного экспресса за все забеги", group: "meta", progress: { stat: "lifetime.wagons", goal: 10 } },
   again_throne: { id: "again_throne", name: "Снова на троне", icon: "🤴", desc: "Вторая коронация", group: "meta", progress: { stat: "coronations", goal: 2 } },
   naturalist: { id: "naturalist", name: "Натуралист", icon: "🔍", desc: "Повстречать всех обитателей бестиария", group: "meta", progress: { stat: "seenEvents", goal: 10 } },
   purser: { id: "purser", name: "Кошелёчник", icon: "👛", desc: "50 кошельков за всё время", group: "meta", progress: { stat: "lifetime.purses", goal: 50 } },
@@ -189,8 +193,9 @@ export const ACHIEVEMENTS: Record<AchievementId, AchievementDef> = {
   genealogy: { id: "genealogy", name: "Родословная", icon: "🌳", desc: "10 000 рождений за всё время", group: "meta", progress: { stat: "lifetime.births", goal: 10000 } },
   // ---- v2 (EN-11): secret
   hungry_king: { id: "hungry_king", name: "Голодный король", icon: "😵", desc: "Коронация посреди голода", secret: true, group: "secret" },
-  miser: { id: "miser", name: "Скряга", icon: "🪙", desc: "Переселиться, не потратив 200 👑", secret: true, group: "secret" },
-  forever_tuesday: { id: "forever_tuesday", name: "Вечный вторник", icon: "📅", desc: "Коронация без единого переселения", secret: true, group: "secret" },
+  miser: { id: "miser", name: "Скряга", icon: "🪙", desc: "Переселиться, храня в казне 200 👑", secret: true, group: "secret" },
+  // v3 (ENG-3): the express plan needs a Great Migration, so the crown comes in the second run at the earliest
+  forever_tuesday: { id: "forever_tuesday", name: "Короткая неделя", icon: "📅", desc: "Коронация во втором забеге", secret: true, group: "secret" },
   // ---- v2 (EN-11): event feats
   clean_car_10: { id: "clean_car_10", name: "Чистая работа", icon: "🧹", desc: "Поймать все предметы вагона («Вагон чист!») — 10 вагонов за забег", group: "events", progress: { stat: "stats.cleanCars", goal: 10 } },
   no_spark: { id: "no_spark", name: "Без единой искры", icon: "⚡", desc: "Золото или выше, не задев ни одной искры", group: "events" },
@@ -200,13 +205,30 @@ export const ACHIEVEMENTS: Record<AchievementId, AchievementDef> = {
   cat_nightmare: { id: "cat_nightmare", name: "Кошмар котов", icon: "🐈", desc: "Отогнать Кота 5 раз", group: "events", progress: { stat: "lifetime.catsBeaten", goal: 5 } },
   royal_retinue: { id: "royal_retinue", name: "Королевская свита", icon: "🚆", desc: "3 королевских экспресса за забег", group: "events", progress: { stat: "stats.royalExpresses", goal: 3 } },
   full_consist: { id: "full_consist", name: "Полный состав", icon: "🚃", desc: "Поезд подземки из 11 вагонов", group: "events" },
+  // ---- v3 (ENG-10): «Кунсткамера Короля». v3: awarded by ENG-10 (catching curios); ids, names and goals are final.
+  first_curio: { id: "first_curio", name: "Первый экспонат", icon: "🏺", desc: "Поймать первую диковину для Кунсткамеры Короля", group: "meta" },
+  curio_full: { id: "curio_full", name: "Кунсткамера полна", icon: "🗝️", desc: "Собрать все 24 диковины Кунсткамеры", group: "meta", progress: { stat: "curios", goal: 24 } },
 };
 
 export const ACHIEVEMENT_ORDER = Object.keys(ACHIEVEMENTS) as AchievementId[];
 
-/** Rat Express: 10 stages, base cost × 1.55^(n−1) (v2 EN-3/EN-13: 5× the v1 base, gentler growth than v1 — no 40-second sprint through stages 1–4; 1.55 keeps run 3 ≥ ~30 min). */
-export const EXPRESS_BASE = { rails: 250, gears: 50000, brass: 5000, trinkets: 30, blueprints: 150 };
-export const EXPRESS_GROWTH = 1.55;
+/**
+ * Rat Express: 10 stages, stage n costs base[r] × growth[r]^(n−1) (× 0.75 with «Чертежи экспресса»).
+ * v3 (ENG-3, K3): growth per resource. 💍 and 📜 ignore the global multiplier (excludeGlobal), so their income grows
+ * about linearly while stage n asked 1.55^n of them: late stages waited minutes on 💍/📜 alone. They now grow ×1.45,
+ * the global-scaled 🛤️⚙️🔔 ×1.6 from a doubled base (v2: every resource 1.55, base 🛤️250 ⚙️50K 🔔5K 💍30 📜150).
+ */
+export const EXPRESS_BASE = { rails: 500, gears: 100000, brass: 10000, trinkets: 50, blueprints: 250 };
+export type ExpressRes = keyof typeof EXPRESS_BASE;
+export const EXPRESS_GROWTH: Record<ExpressRes, number> = { rails: 1.6, gears: 1.6, brass: 1.6, trinkets: 1.45, blueprints: 1.45 };
+/**
+ * Post-coronation wagon k (1, 2, …) costs the stage-10 price × WAGON_GROWTH^k for 🛤️⚙️🔔 and × (1 + WAGON_LINEAR·k)
+ * for 💍📜, whose income does not grow with the global multiplier (v3 ENG-3; v2: × 3^k for everything).
+ */
+export const WAGON_GROWTH = 2;
+export const WAGON_LINEAR = 0.5;
+/** The express resources that ignore the global multiplier: their wagon price grows linearly. */
+export const WAGON_LINEAR_RES: readonly ExpressRes[] = ["trinkets", "blueprints"];
 export const EXPRESS_STAGES = [
   "Рама из вязальных спиц",
   "Колёсные пары из карманных часов",
@@ -220,18 +242,93 @@ export const EXPRESS_STAGES = [
   "Отправление!",
 ];
 
-/** 👤/🐀 story lines per Rat Express stage, parallel to EXPRESS_STAGES (EN-3). */
-export const EXPRESS_STAGE_LINES: LinePair[] = [
-  { human: "Миссис Пибоди опять не может найти спицы", rat: "Рама крепка, как бабушкин шарф" },
-  { human: "Часовщик Грант продал вчера восемь часов. Найти не может ни одних", rat: "Колёса тикают. Экспресс будет ходить строго по расписанию" },
-  { human: "В доме №12 пропал чайник. Чай в пять отменён", rat: "Котёл кипит! Старейшины греют лапы" },
-  { human: "Швея уверена, что напёрстки сбежали", rat: "Поршни ходят туда-сюда. Механики ходят за ними" },
-  { human: "Полковник Хэтчетт вынужденно перешёл на сигары", rat: "Свисток пахнет табаком и победой" },
-  { human: "Лорд Эшби обыскал все жилетные карманы: табакерки нет", rat: "Вагоны с гербами. Внутри до сих пор пахнет нюхательным табаком" },
-  { human: "Спичечная фабрика недосчиталась трёх ящиков. Мастер винит сквозняк", rat: "Тендер полон. Кочегары поклялись не курить" },
-  { human: "Часы на башне отстают на две секунды. Никто не знает почему", rat: "Регулятор хода тикает в такт сердцу колонии" },
-  { human: "У багетчика пропало сусальное золото", rat: "Герб сияет. Каждая крыса видит в нём своё отражение" },
-  { human: "Под мостовой коротко свистнуло. Прохожие пожали плечами", rat: "ОТПРАВЛЕНИЕ! Король машет хвостом из окна экспресса" },
+/**
+ * 👤/🐀 story lines per Rat Express stage (v3 ENG-11): three pairs per stage — the first express, the second, and every
+ * later one (stages 6–10 and the coronation replay every run, so a crowned colony reads them again and again).
+ * Pick with expressStageLine(); the row index is parallel to EXPRESS_STAGES.
+ */
+export const EXPRESS_STAGE_LINE_SETS: LinePair[][] = [
+  [
+    { human: "Миссис Пибоди опять не может найти спицы", rat: "Рама крепка, как бабушкин шарф" },
+    { human: "Миссис Пибоди купила новые спицы и прячет их под подушкой", rat: "Рама собрана. Под подушками крысы тоже бывают" },
+    { human: "Миссис Пибоди перешла на крючок. Крючки пока на месте", rat: "Спиц в Лондоне всё меньше, а рам у экспресса всё больше" },
+  ],
+  [
+    { human: "Часовщик Грант продал вчера восемь часов. Найти не может ни одних", rat: "Колёса тикают. Экспресс будет ходить строго по расписанию" },
+    { human: "Часовщик Грант запер витрину на два замка", rat: "Замок — тоже часовой механизм. Колёса снова тикают" },
+    { human: "Часовщик Грант завёл сторожевого кота. Кот спит", rat: "Колёсные пары на месте. Кота будить не стали" },
+  ],
+  [
+    { human: "Леди Пемберли (дом №12) лишилась медного чайника. Чай в пять отменён", rat: "Котёл кипит! Старейшины греют лапы" },
+    { human: "Леди Пемберли (дом №12) снова без чайника", rat: "Котёл кипит. Старейшины уже не удивляются" },
+    { human: "Леди Пемберли (дом №12) купила новый чайник. Третий за месяц", rat: "Котёл кипит по расписанию. Чай в пять теперь у нас" },
+  ],
+  [
+    { human: "Швея уверена, что напёрстки сбежали", rat: "Поршни ходят туда-сюда. Механики ходят за ними" },
+    { human: "Швея пришила напёрстки к фартуку. Фартук пропал", rat: "Поршни в фартуке — новая мода механиков" },
+    { human: "Швея шьёт без напёрстка и колет пальцы. Колония шлёт ей сочувствие", rat: "Поршни притёрты, как старые друзья" },
+  ],
+  [
+    { human: "Полковник Хэтчетт вынужденно перешёл на сигары", rat: "Свисток пахнет табаком и победой" },
+    { human: "Полковник Хэтчетт снова без трубки и снова пишет в «Таймс»", rat: "Свисток свистит голосом полковника" },
+    { human: "Полковник Хэтчетт бросил курить. Говорит — по своей воле", rat: "Свисток бодрый, как утреннее построение" },
+  ],
+  [
+    { human: "Лорд Эшби обыскал все жилетные карманы: табакерки нет", rat: "Вагоны с гербами. Внутри до сих пор пахнет нюхательным табаком" },
+    { human: "Лорд Эшби носит табакерку на цепочке. Цепочку уже ищут", rat: "Вагоны с гербами — по одному на каждый жилет Лорда" },
+    { human: "Лорд Эшби перешёл на табак в бумажных кульках", rat: "Вагоны чихают на стыках. Это к счастью" },
+  ],
+  [
+    { human: "Спичечная фабрика недосчиталась трёх ящиков. Мастер винит сквозняк", rat: "Тендер полон. Кочегары поклялись не курить" },
+    { human: "Фабрика «Брайант и Мэй» снова пересчитывает ящики спичек", rat: "Тендер полон. Клятву кочегары помнят — почти" },
+    { human: "Фабрика повесила на склад замок. Ящики ушли через замочную скважину", rat: "Тендер собирают с закрытыми глазами. Так и собрали" },
+  ],
+  [
+    { human: "Часы на башне отстают на две секунды. Никто не знает почему", rat: "Регулятор хода тикает в такт сердцу колонии" },
+    { human: "Часы на башне снова отстают. Часовщик Грант подозревает голубей", rat: "Голуби ни при чём. Регулятор тикает" },
+    { human: "Часы на башне идут как вздумается. Лондон привык опаздывать", rat: "Регулятор — сердце экспресса. И колонии тоже" },
+  ],
+  [
+    { human: "У багетчика пропало сусальное золото", rat: "Герб сияет. Каждая крыса видит в нём своё отражение" },
+    { human: "Багетчик держит золото в сейфе. Сейф заметно полегчал", rat: "Позолота свежая, герб прежний: хвост и корона" },
+    { human: "Багетчик перешёл на бронзовую краску. Публика не заметила", rat: "Позолоты хватит на два герба. Второй — про запас" },
+  ],
+  [
+    { human: "Под мостовой коротко свистнуло. Прохожие пожали плечами", rat: "ОТПРАВЛЕНИЕ! Король машет хвостом из окна экспресса" },
+    { human: "Под мостовой снова свистнуло. Извозчик перекрестился", rat: "ОТПРАВЛЕНИЕ! Король машет хвостом — уже со знанием дела" },
+    { human: "Под мостовой свистит каждую неделю. Город привык", rat: "ОТПРАВЛЕНИЕ! Экспресс уходит точно, как часы мистера Гранта" },
+  ],
+];
+
+/** The first-express lines (EN-3; parallel to EXPRESS_STAGES): the v2 panels read this; new code — expressStageLine(). */
+export const EXPRESS_STAGE_LINES: LinePair[] = EXPRESS_STAGE_LINE_SETS.map((set) => set[0]);
+
+/**
+ * The 👤/🐀 pair of express stage `stage` (1..10) for a colony crowned `coronations` times before (meta.coronations
+ * while the express is being built): the first express, the second, every later one (v3 ENG-11).
+ */
+export function expressStageLine(stage: number, coronations: number): LinePair {
+  const set = EXPRESS_STAGE_LINE_SETS[Math.max(0, Math.min(EXPRESS_STAGE_LINE_SETS.length - 1, Math.floor(stage) - 1))];
+  return set[Math.max(0, Math.min(set.length - 1, Math.floor(coronations)))];
+}
+
+/**
+ * The coronation's 👤/🐀 line by coronation number (v3 ENG-11; narrative.coronationLine fills it in): {weekday} —
+ * today's human weekday, {one} — «один/одна/одно» for it, {nth}/{Nth} — «третья»/«Третья», {weeks} — «за неделю»
+ * while the colony's whole story fits into one human week (migrations < 7), else «за 2 недели», «за 5 недель».
+ * Past the tenth, lines 2–10 come round again.
+ */
+export const CORONATION_LINES: LinePair[] = [
+  { human: "Для людей это {one} {weekday}.", rat: "Для крыс — целая история." },
+  { human: "Для людей — ещё {one} {weekday}.", rat: "Для крыс — {nth} коронация {weeks}." },
+  { human: "Наверху {weekday}, люди ничего не заметили.", rat: "Король привыкает к короне. Корона — к Королю." },
+  { human: "Газеты наверху пишут о погоде. Как всегда.", rat: "{Nth} коронация {weeks}! Летописцы точат перья." },
+  { human: "Наверху {weekday}: молочник, дождь, омнибус.", rat: "Корона снова в деле. Двор уже знает, когда кричать «Ура!»." },
+  { human: "Констебль зевает: {weekday}, ничего не случается.", rat: "{Nth} коронация. Старейшины сбились со счёта и начали заново." },
+  { human: "Лондон пьёт чай. На календаре {weekday}.", rat: "Коронация — уже традиция: оркестр из ложек играет без репетиций." },
+  { human: "Наверху {weekday} — {one} из многих.", rat: "{Nth} коронация {weeks}. Король шутит, что корона приросла." },
+  { human: "Пастор читает проповедь о смирении. Внизу её не слышно.", rat: "{Nth} коронация. Корона прошла по кругу хвостов — и все целы." },
+  { human: "Наверху {weekday}. Люди так ничего и не узнали.", rat: "{Nth} коронация — и ни строчки в людских газетах. Идеальное царствование." },
 ];
 
 /** Great Seals (EN-9): bought once for 120 👑 each, one active at a time; swapped for free in the first minute of a run. */
@@ -248,14 +345,16 @@ export const SEALS: Record<SealId, SealDef> = {
     name: "Печать Тишины",
     icon: "🤐",
     cost: 120,
-    effect: "Подозрение не растёт, Кот и Крысолов не приходят; клик ×2",
+    // v3 (ENG-8): aimed at the late 📜/💍 bottleneck instead of the click (derive.excludedMult)
+    effect: "Подозрение не растёт, Кот и Крысолов не приходят; 📜 и 💍 ×1.3",
   },
   dynasty: {
     id: "dynasty",
     name: "Печать Династии",
     icon: "🏰",
     cost: 120,
-    effect: "+10% ко всему производству за каждое переселение",
+    // v3 (ENG-8): the factor reaches 📜 and 💍 too (derive.excludedMult), not only the globally scaled resources
+    effect: "+10% ко всему за каждое переселение — включая 📜 и 💍",
   },
 };
 

@@ -4,10 +4,10 @@
  * The next, still-closed zone: dark rock with a faint "?".
  * While an expedition digs (game.digging), cracks spread, clumps of earth fall, the screen shakes and sfx.dig() thuds.
  */
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { sfx } from "@/audio/sfx";
 import { ZONES } from "@/game/data/zones";
-import type { ZoneId } from "@/game/types";
+import type { GameState, ZoneId } from "@/game/types";
 import { fmtInt } from "@/lib/format";
 import { currentExpedition, expeditionFraction } from "@/game/engine/actions";
 import { emitUiFx, onFx } from "@/game/fx";
@@ -74,6 +74,27 @@ const HINTS: Partial<Record<ZoneId, { x: number; y: number; r: number; kind: Glo
  * a click opens the Map tab at the zone (CO-8). Before the scouts find the way it counts towards that instead
  * («🗺️ Разведка: Канализация · 🐀 3/12», as the goal row does) and is not a button while the Map tab is still hidden.
  */
+/** The plaque's numbers (shared with ColonyView's «↓ Разведка» chip, COL-2). */
+export interface PlaqueInfo {
+  scouting: boolean;
+  pct: number;
+  rats: number;
+  need: number;
+}
+
+export function plaqueInfo(g: GameState, zone: ZoneId): PlaqueInfo {
+  const scouting = currentExpedition(g) !== zone;
+  const need = (scouting ? ZONES[zone].mapRevealRats : ZONES[zone].expedition?.rats) ?? 0;
+  return { scouting, pct: scouting ? 0 : Math.floor(expeditionFraction(g, zone) * 100), rats: Math.floor(g.rats), need };
+}
+
+/** «Разведка: Канализация · 9/12», «Экспедиция: Канализация — 62% · 9/12» or «Копаем! Копаем!» (no icons). */
+export function plaqueLine(zone: ZoneId, p: PlaqueInfo, digging: boolean, ratIcon = ""): string {
+  const count = `${ratIcon}${fmtInt(Math.min(p.rats, p.need))}/${fmtInt(p.need)}`;
+  if (digging) return "Копаем! Копаем!";
+  return p.scouting ? `Разведка: ${ZONES[zone].name} · ${count}` : `Экспедиция: ${ZONES[zone].name} — ${p.pct}% · ${count}`;
+}
+
 function ExpeditionPlaque({ zone, digging }: { zone: ZoneId; digging: boolean }) {
   const scouting = useGame((s) => currentExpedition(s.game) !== zone);
   const pct = useGame((s) => Math.floor(expeditionFraction(s.game, zone) * 100));
@@ -81,8 +102,7 @@ function ExpeditionPlaque({ zone, digging }: { zone: ZoneId; digging: boolean })
   const mapOpen = useGame((s) => !!s.game.revealed.tab_map);
   const need = (scouting ? ZONES[zone].mapRevealRats : ZONES[zone].expedition?.rats) ?? 0;
   const frac = scouting ? (need > 0 ? Math.min(1, rats / need) : 1) : pct / 100;
-  const count = `🐀 ${fmtInt(Math.min(rats, need))}/${fmtInt(need)}`;
-  const text = digging ? "⛏️ Копаем! Копаем!" : scouting ? `🗺️ Разведка: ${ZONES[zone].name} · ${count}` : `🗺️ Экспедиция: ${ZONES[zone].name} — ${pct}% · ${count}`;
+  const text = `${digging ? "⛏️" : "🗺️"} ${plaqueLine(zone, { scouting, pct, rats, need }, digging, "🐀 ")}`;
   const w = Math.max(220, text.length * 7.2 + 28);
   const x = W / 2 - w / 2;
   const y = BAND_H / 2 - 22;
@@ -90,6 +110,8 @@ function ExpeditionPlaque({ zone, digging }: { zone: ZoneId; digging: boolean })
   return (
     <g
       data-nodrag=""
+      // mobile-8: counter-scaled on phones (≤ ×2) so the line stays readable
+      className="cv-plaque"
       pointerEvents={mapOpen ? "auto" : undefined}
       role={mapOpen ? "button" : "img"}
       tabIndex={mapOpen ? 0 : undefined}
@@ -107,6 +129,10 @@ function ExpeditionPlaque({ zone, digging }: { zone: ZoneId; digging: boolean })
           : undefined
       }
     >
+      {/* mobile-4: the keyboard focus ring, as on the grate */}
+      {mapOpen && (
+        <rect className="cv-grate-ring" x={x - 9} y={y - 9} width={w + 18} height={62} rx="11" fill="none" stroke="#f2b84b" strokeWidth="3" strokeDasharray="9 6" pointerEvents="none" />
+      )}
       <rect x={x} y={y} width={w} height={44} rx="6" fill="#2a2016" stroke="url(#cv-brass)" strokeWidth="3" />
       {[x + 8, x + w - 8].map((cx) => (
         <circle key={cx} cx={cx} cy={y + 8} r="2.2" fill="#c9a25a" />
@@ -123,6 +149,60 @@ function ExpeditionPlaque({ zone, digging }: { zone: ZoneId; digging: boolean })
   );
 }
 
+/** «Гул из глубины» lasts this long on screen (ms). */
+const RUMBLE_MS = 3000;
+
+/**
+ * COL-1: the Thunder God passes deep under the colony (Fx deepRumble): the 4th tier — the Metro, still unknown — shows
+ * through the rock as a red-lit silhouette for 3 s (RumbleLight spills the red light up over the band above).
+ */
+function DeepRumble() {
+  const Metro = DECOR.metro;
+  return (
+    <g className="cv-rumble" pointerEvents="none" aria-hidden>
+      <g opacity=".55" filter="url(#cv-silhouette)" transform={`translate(${W * 0.15} ${BAND_H * 0.42}) scale(.7)`}>
+        <Metro />
+      </g>
+      <Glow x={W * 0.4} y={BAND_H * 0.72} r={220} kind="red" opacity={0.9} />
+    </g>
+  );
+}
+
+/** Seconds-long «on» flag for Fx deepRumble (one per listener; a new rumble restarts it). */
+function useDeepRumble(): number {
+  const [rumble, setRumble] = useState(0);
+  useEffect(() => {
+    let timer = 0;
+    let seq = 0;
+    const off = onFx((fx) => {
+      if (fx.k !== "deepRumble") return;
+      setRumble(++seq);
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => setRumble(0), RUMBLE_MS + 100);
+    });
+    return () => {
+      off();
+      window.clearTimeout(timer);
+    };
+  }, []);
+  return rumble;
+}
+
+/**
+ * The red light of the deep rumble, drawn over the chambers and rats (ColonyView puts it above them): it rises from
+ * the top of the still-closed band into the colony for 3 s.
+ */
+export const RumbleLight = memo(function RumbleLight() {
+  const zone = useGame((s) => nextLocked(s.game));
+  const rumble = useDeepRumble();
+  if (!zone || rumble <= 0) return null;
+  return (
+    <g key={rumble} className="cv-rumble" pointerEvents="none" aria-hidden>
+      <Glow x={W * 0.45} y={bandTop(zone) - 6} r={300} kind="red" opacity={0.6} />
+    </g>
+  );
+});
+
 export const LockedBand = memo(function LockedBand() {
   const zone = useGame((s) => nextLocked(s.game));
   const digging = useGame((s) => !!s.game.digging && s.game.digging.zone === nextLocked(s.game));
@@ -132,6 +212,8 @@ export const LockedBand = memo(function LockedBand() {
     const z = nextLocked(s.game);
     return z ? Math.max(0, Math.floor(s.game.scouted[z] ?? 0)) : 0;
   });
+  // the deep rumble lights the Metro below (COL-1)
+  const rumble = useDeepRumble();
 
   // a scouting payout flashes the newly revealed part with a short glint
   useEffect(
@@ -180,6 +262,7 @@ export const LockedBand = memo(function LockedBand() {
       {HINTS[zone]?.map((h, i) => <Glow key={i} x={h.x} y={h.y} r={h.r} kind={h.kind} className="cv-glow" opacity={0.18 + 0.08 * Math.min(3, scouted)} />)}
       <rect x={-2000} y="0" width={W + 4000} height="44" fill="url(#cv-feather)" />
       <rect x={-2000} y="0" width={W + 4000} height="14" fill={ZONES[zone].palette.bg} opacity=".25" />
+      {rumble > 0 && <DeepRumble key={rumble} />}
       <ExpeditionPlaque zone={zone} digging={digging} />
       {digging && (
         <g>

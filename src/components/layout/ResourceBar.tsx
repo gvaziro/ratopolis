@@ -5,20 +5,57 @@
  * Full storage stamps «ПОЛНО» (bar blinks every 2 s); event loot above the cap glows gold with «ПЕРЕГРУЗ».
  * Phones (< 640 px) drop the «/cap» text and swap the stamps for a corner badge, so four pills fit across 375 px.
  * Always one row: scrolls sideways (touch swipe or mouse wheel) when the colony is rich in kinds of loot.
+ * v3 (SHL-4): each pill is a Tab stop named for screen readers («Крошки: 10,1 тыс. из 11,8 тыс., +155 в секунду,
+ * перегруз»); its tooltip opens on keyboard focus. Below 640 px the pills the current goal needs come first, then the
+ * draining, full and overloaded ones (pillRules), re-sorted once a second. Icons are the drawn ResGlyphs (SHL-5).
  */
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { RESOURCES, RES_ORDER } from "@/game/data/resources";
 import { derivedOf, useGame } from "@/game/store";
-import type { ResId } from "@/game/types";
+import type { GameState, ResId } from "@/game/types";
+import { useSampled } from "@/game/useSampled";
 import { cx, Odometer, Stamp } from "@/components/ui/kit";
+import { ResGlyph } from "@/components/ui/ResGlyph";
 import { fmt, fmtRate } from "@/lib/format";
+import { matchesQuery } from "@/lib/layoutMode";
 import FloatTip from "./FloatTip";
 import HudStyles from "./HudStyles";
+import { goalResources, isUrgent, orderPills, pillLabel } from "./pillRules";
+
+/** The row where only about four pills fit (the «/cap» text and the stamps are gone too: `sm:`). */
+const NARROW_ROW_MQ = "(max-width: 639px)";
+
+function subscribeNarrowRow(cb: () => void): () => void {
+  const mq = window.matchMedia(NARROW_ROW_MQ);
+  mq.addEventListener("change", cb);
+  return () => mq.removeEventListener("change", cb);
+}
+
+function useNarrowRow(): boolean {
+  return useSyncExternalStore(
+    subscribeNarrowRow,
+    () => matchesQuery(NARROW_ROW_MQ),
+    () => false,
+  );
+}
+
+/** The phone order of the shown pills as a key («coins,wire,crumbs,…»), so a sampled selector compares strings. */
+function phoneOrder(g: GameState): string {
+  const shown = RES_ORDER.filter((r) => g.revealed[`res_${r}`]);
+  const d = derivedOf(g);
+  const urgent = new Set(shown.filter((r) => isUrgent(g.res[r], d.caps[r], g.rates[r])));
+  return orderPills(shown, goalResources(g, d), urgent).join(",");
+}
 
 export default function ResourceBar() {
   const shown = useGame(useShallow((s) => RES_ORDER.filter((r) => s.game.revealed[`res_${r}`])));
   const calm = useGame((s) => s.game.settings.reducedMotion);
+  // phones: the goal's pills first (sampled once a second; the hint and the bottleneck are not free)
+  const narrow = useNarrowRow();
+  const orderKey = useSampled((s) => (narrow ? phoneOrder(s.game) : ""), 1, Object.is);
+  // a pill revealed since the last sample still shows (at the end) until the next one
+  const list = narrow && orderKey ? orderPills(shown, orderKey.split(",") as ResId[], new Set()) : shown;
   // pills already revealed on load appear without the pop
   const [initial] = useState(() => new Set(shown));
   const { ref, fade } = useScrollRow(shown.length);
@@ -31,12 +68,12 @@ export default function ResourceBar() {
       <HudStyles />
       <div
         ref={ref}
-        className="hud-noscroll flex items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain px-2 py-1.5 sm:gap-1.5 sm:px-3"
+        className="hud-noscroll flex items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain px-2 py-1.5 short:py-0 sm:gap-1.5 sm:px-3"
         style={{ touchAction: "pan-x", maskImage: mask, WebkitMaskImage: mask }}
         role="list"
         aria-label="Запасы колонии"
       >
-        {shown.map((r) => (
+        {list.map((r) => (
           <Pill key={r} r={r} pop={!initial.has(r)} />
         ))}
       </div>
@@ -94,7 +131,7 @@ const Pill = memo(function Pill({ r, pop }: { r: ResId; pop: boolean }) {
   const tip = (
     <span className="block">
       <span className="flex items-center gap-1.5 font-display text-sm font-bold text-brass-light">
-        <span>{def.icon}</span>
+        <ResGlyph id={r} className="text-base" />
         {def.name}
       </span>
       <span className="mt-0.5 block text-parchment-dim">{def.desc}</span>
@@ -108,77 +145,83 @@ const Pill = memo(function Pill({ r, pop }: { r: ResId; pop: boolean }) {
         <span className="text-parchment-dim">Итог</span>
         <span className={rate < -0.005 ? "text-danger-light" : "text-parchment"}>{fmtRate(rate)}</span>
       </span>
-      {over && <span className="mt-1 block text-gaslight">ПЕРЕГРУЗ: добыча событий не сгорает, но пассивный доход стоит, пока запас выше лимита.</span>}
+      {over && (
+        <span className="mt-1 block text-gaslight">
+          <b>ПЕРЕГРУЗ.</b> Находка сверх лимита: потратьте, пока не ушло — пока запас выше лимита, своя добыча стоит.
+        </span>
+      )}
       {full && !over && <span className="mt-1 block text-danger-light">ПОЛНО: пассивная добыча упёрлась в лимит — нужен склад.</span>}
       {hungry && <span className="mt-1 block text-danger-light">😟 Голод! Всё, кроме крошек, ×0.5, рождение стоит. Нужны собиратели.</span>}
     </span>
   );
+  const label = pillLabel({ res: r, amount, cap, rate, full, over, hungry });
 
   return (
-    <div role="listitem" className={cx("shrink-0", pop && "hud-pop")}>
-      <FloatTip tip={tip} width={260}>
-        <span
-          className={cx(
-            "relative flex min-h-10 cursor-default items-center gap-1 rounded-md border py-0.5 pl-1 pr-1.5 shadow-[inset_0_1px_0_rgba(232,201,131,.07)] transition-colors sm:gap-1.5 sm:pl-1.5 sm:pr-2",
-            hungry
-              ? "border-danger/70 bg-danger/20"
-              : over
-                ? "hud-over border-gaslight/80 bg-gradient-to-b from-[#4a3818] to-panel"
-                : full
-                  ? "border-danger/50 bg-panel"
-                  : "border-line bg-gradient-to-b from-panel-2/90 to-panel/90",
-          )}
-        >
-          <span className="relative text-base leading-none sm:text-lg" aria-hidden>
-            {isSteam && finite ? <SteamGaugeIcon frac={amount / cap} /> : def.icon}
-            {hungry && <span className="hud-throb absolute -right-1.5 -top-1.5 text-[11px]">😟</span>}
+    <FloatTip tip={tip} width={260} role="listitem" label={label} className={cx("shrink-0 rounded-md focus-visible:-outline-offset-2", pop && "hud-pop")}>
+      {/* the label names the pill; its look is for the eyes */}
+      <span
+        aria-hidden
+        data-res={r}
+        className={cx(
+          "relative flex min-h-10 cursor-default items-center gap-1 rounded-md border py-0.5 pl-1 pr-1.5 shadow-[inset_0_1px_0_rgba(232,201,131,.07)] transition-colors sm:gap-1.5 sm:pl-1.5 sm:pr-2",
+          hungry
+            ? "border-danger/70 bg-danger/20"
+            : over
+              ? "hud-over border-gaslight/80 bg-gradient-to-b from-[#4a3818] to-panel"
+              : full
+                ? "border-danger/50 bg-panel"
+                : "border-line bg-gradient-to-b from-panel-2/90 to-panel/90",
+        )}
+      >
+        <span className="relative flex text-base leading-none sm:text-lg">
+          {isSteam && finite ? <SteamGaugeIcon frac={amount / cap} /> : <ResGlyph id={r} size="1.15em" />}
+          {hungry && <span className="hud-throb absolute -right-1.5 -top-1.5 text-[11px]">😟</span>}
+        </span>
+        <span className="flex min-w-[2.6rem] flex-col justify-center leading-none sm:min-w-[3.3rem]">
+          <span className="flex items-baseline gap-0.5 whitespace-nowrap">
+            <Odometer
+              value={amount}
+              className={cx("font-mono text-[13px] font-bold", hungry ? "text-danger-light" : over ? "text-gaslight" : "text-parchment")}
+            />
+            {/* phones: the bar under the number already shows how full the store is */}
+            {finite && <span className="hidden font-mono text-[10px] tabular text-parchment-dim sm:inline">/{fmt(cap)}</span>}
           </span>
-          <span className="flex min-w-[2.6rem] flex-col justify-center leading-none sm:min-w-[3.3rem]">
-            <span className="flex items-baseline gap-0.5 whitespace-nowrap">
-              <Odometer
-                value={amount}
-                className={cx("font-mono text-[13px] font-bold", hungry ? "text-danger-light" : over ? "text-gaslight" : "text-parchment")}
+          {finite && !isSteam && (
+            <span className={cx("mt-[3px] block h-[3px] overflow-hidden rounded-full bg-black/50", full && !over && "hud-blink2")}>
+              <span
+                className="block h-full rounded-full transition-[width] duration-200"
+                style={{
+                  width: `${Math.min(1, amount / cap) * 100}%`,
+                  background: over ? "linear-gradient(90deg,#f2b84b,#fff1c9,#f2b84b)" : full ? "var(--danger-light)" : def.color,
+                }}
               />
-              {/* phones: the bar under the number already shows how full the store is */}
-              {finite && <span className="hidden font-mono text-[10px] tabular text-parchment-dim sm:inline">/{fmt(cap)}</span>}
             </span>
-            {finite && !isSteam && (
-              <span className={cx("mt-[3px] block h-[3px] overflow-hidden rounded-full bg-black/50", full && !over && "hud-blink2")}>
-                <span
-                  className="block h-full rounded-full transition-[width] duration-200"
-                  style={{
-                    width: `${Math.min(1, amount / cap) * 100}%`,
-                    background: over ? "linear-gradient(90deg,#f2b84b,#fff1c9,#f2b84b)" : full ? "var(--danger-light)" : def.color,
-                  }}
-                />
-              </span>
-            )}
-            {showRate && (
-              <span className={cx("mt-[2px] whitespace-nowrap font-mono text-[10px] tabular", rate < 0 ? "text-danger-light" : "text-good/90")}>
-                {fmtRate(rate)}
-              </span>
-            )}
-          </span>
-          {/* the stamp sits beside the numbers (never on top of them); phones get a 14-px corner badge instead */}
-          {over ? (
-            <>
-              <Stamp color="var(--gaslight)" className="hud-pop shrink-0 bg-soot/50 px-0.5 text-[8px] shadow-[0_0_6px_rgba(242,184,75,.5)] max-sm:hidden">
-                Перегруз
-              </Stamp>
-              <CornerBadge over />
-              <Sparkles />
-            </>
-          ) : (
-            full && (
-              <>
-                <Stamp className="hud-pop shrink-0 bg-soot/50 px-0.5 text-[8px] max-sm:hidden">Полно</Stamp>
-                <CornerBadge over={false} />
-              </>
-            )
+          )}
+          {showRate && (
+            <span className={cx("mt-[2px] whitespace-nowrap font-mono text-[10px] tabular", rate < 0 ? "text-danger-light" : "text-good/90")}>
+              {fmtRate(rate)}
+            </span>
           )}
         </span>
-      </FloatTip>
-    </div>
+        {/* the stamp sits beside the numbers (never on top of them); phones get a 14-px corner badge instead */}
+        {over ? (
+          <>
+            <Stamp color="var(--gaslight)" className="hud-pop shrink-0 bg-soot/50 px-0.5 text-[8px] shadow-[0_0_6px_rgba(242,184,75,.5)] max-sm:hidden">
+              Перегруз
+            </Stamp>
+            <CornerBadge over />
+            <Sparkles />
+          </>
+        ) : (
+          full && (
+            <>
+              <Stamp className="hud-pop shrink-0 bg-soot/50 px-0.5 text-[8px] max-sm:hidden">Полно</Stamp>
+              <CornerBadge over={false} />
+            </>
+          )
+        )}
+      </span>
+    </FloatTip>
   );
 });
 

@@ -30,7 +30,7 @@ function IssueDialog({ issue }: { issue: NonNullable<SaveIssue> }) {
       style={{ animation: "hud-fade-in .25s ease-out both" }}
     >
       <HudStyles />
-      <SootFrame className="my-auto max-w-[480px]" labelledBy={titleId}>
+      <SootFrame className="ui-zoom my-auto max-w-[480px]" labelledBy={titleId}>
         {issue.kind === "corrupt" ? (
           <Corrupt titleId={titleId} quarantineKey={issue.quarantineKey} />
         ) : issue.kind === "newer" ? (

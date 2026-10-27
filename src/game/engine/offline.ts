@@ -2,7 +2,7 @@ import type { Amounts, EngineCtx, GameState } from "../types";
 import { RES_IDS } from "../types";
 import { gainAll } from "./core";
 import { derive } from "./derive";
-import { offlineTrains, rescheduleAfterAbsence, sceneAction } from "./events";
+import { offlineTrains, rescheduleAfterAbsence, sceneAction, sweepShiny } from "./events";
 import { step } from "./step";
 
 export interface OfflineReport {
@@ -35,7 +35,13 @@ export function simulateOffline(s: GameState, elapsedSec: number, ctx: EngineCtx
   if (!(elapsedSec > 5)) return null;
   abortScene(s, ctx);
   s.purse = null;
+  // grate rain still on the floor is swept up as it would have expired (ENG-9: 25% of each carriage shiny)
+  if (s.shinies.length) {
+    const d = derive(s);
+    for (const sh of s.shinies) sweepShiny(s, d, sh);
+  }
   s.shinies = [];
+  s.carriagePass = null;
   s.market = null;
   const d0 = derive(s);
   const t = Math.min(elapsedSec, d0.offline.capSec);

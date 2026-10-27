@@ -19,7 +19,8 @@ export function progressStat(s: GameState, stat: string): number {
     case "migrations":
       return s.meta.migrations;
     case "district":
-      return s.meta.district;
+      // v3 (ENG-11): districts moved through on the map («Весь Лондон наш»: 5)
+      return Math.max(0, (s.meta.visited?.length ?? s.meta.district + 1) - 1);
     case "crownsEver":
       return s.meta.crownsEver;
     case "coronations":
@@ -30,6 +31,8 @@ export function progressStat(s: GameState, stat: string): number {
       return EDICT_IDS.filter((e) => s.meta.edicts[e]).length;
     case "seenEvents":
       return s.meta.seenEvents.length;
+    case "curios":
+      return s.meta.curios.length;
     default:
       return 0;
   }

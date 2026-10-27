@@ -1,4 +1,5 @@
 import type { EngineCtx, GameState, TickInput } from "../types";
+import { districtById, districtInfo } from "../data/districts";
 import { HEADLINES } from "../data/headlines";
 import { ACHIEVEMENT_ORDER, ACHIEVEMENTS } from "../data/meta";
 import { applyReveals, autoContribute, click, foremanTick, openZone, smartAssign } from "./actions";
@@ -91,9 +92,27 @@ function progressReached(s: GameState, id: (typeof PROGRESS_MEDALS)[number]): bo
 /** The no-repeat ring of filler headlines (EN-10). */
 const FILLER_RING = 8;
 
+/** «Late» filler headlines (v3 ENG-11) join the pool from this many migrations on. */
+export const LATE_FILLER_MIGRATIONS = 4;
+
+/**
+ * Every filler headline this run may print (EN-10; v3 ENG-11): the general ones, the highest open zone's, the current
+ * district's own four (DISTRICTS[id].fillers — no other district's), the crowned ones after a coronation ever and the
+ * late ones from LATE_FILLER_MIGRATIONS migrations on.
+ */
+export function fillerPool(s: GameState): string[] {
+  return [
+    ...(HEADLINES.filler ?? []),
+    ...(HEADLINES[`filler_${highestZoneId(s)}`] ?? []),
+    ...districtById(districtInfo(s.meta).id).fillers,
+    ...(s.flags.coronation || s.meta.coronations > 0 ? (HEADLINES.filler_crowned ?? []) : []),
+    ...(s.meta.migrations >= LATE_FILLER_MIGRATIONS ? (HEADLINES.filler_late ?? []) : []),
+  ];
+}
+
 /**
  * Filler headlines (EN-10): first at 150 s, then every 70–120 s, only when the paper has been quiet for 45 s.
- * Pool: the general filler, the highest open zone's, the district's and the crowned ones; never one of the last 8.
+ * Pool: fillerPool(s); never one of the last 8.
  */
 function fillerNews(s: GameState, ctx: EngineCtx): void {
   if (s.time < s.timers.filler) return;
@@ -103,12 +122,7 @@ function fillerNews(s: GameState, ctx: EngineCtx): void {
     return;
   }
   s.timers.filler = s.time + 70 + 50 * rand(s);
-  const pool = [
-    ...(HEADLINES.filler ?? []),
-    ...(HEADLINES[`filler_${highestZoneId(s)}`] ?? []),
-    ...(HEADLINES[`filler_d${s.meta.district % 6}`] ?? []),
-    ...(s.flags.coronation || s.meta.coronations > 0 ? (HEADLINES.filler_crowned ?? []) : []),
-  ].filter((x) => !s.newsRecent.includes(x));
+  const pool = fillerPool(s).filter((x) => !s.newsRecent.includes(x));
   if (!pool.length) return;
   const text = pool[Math.floor(rand(s) * pool.length)];
   s.newsRecent.push(text);
@@ -119,6 +133,8 @@ function fillerNews(s: GameState, ctx: EngineCtx): void {
 function housekeeping(s: GameState, d: Derived, input: TickInput, ctx: EngineCtx): void {
   // achievements that are plain thresholds; every counter medal (ACHIEVEMENTS[id].progress) is awarded at its goal
   if (s.resEver.crumbs >= 1) award(s, "first_crumb", ctx);
+  // v3 (ENG-10): a v2 colony brings its trophies as the first exhibits — they count for «Первый экспонат» too
+  if (s.meta.curios.length > 0) award(s, "first_curio", ctx);
   for (const id of PROGRESS_MEDALS) if (s.meta.achievements[id] === undefined && progressReached(s, id)) award(s, id, ctx);
   if (s.resEver.rails >= 1 && s.meta.achievements.first_rail === undefined) {
     award(s, "first_rail", ctx);

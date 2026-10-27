@@ -1,4 +1,6 @@
-import { EDICT_IDS, RES_IDS, SEAL_IDS, ZONE_IDS, COMMISSION_IDS, type GameState } from "../types";
+import { TROPHY_CURIO } from "../data/curios";
+import { legacyVisited } from "../data/districts";
+import { CURIO_IDS, DISTRICT_IDS, EDICT_IDS, RES_IDS, SEAL_IDS, TRAIN_VARIANT_IDS, ZONE_IDS, COMMISSION_IDS, type DistrictId, type GameState } from "../types";
 import { abortScene } from "./offline";
 import { createInitialState, SCHEMA_VERSION } from "./state";
 
@@ -47,12 +49,58 @@ export function savedVersion(str: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
-/** Fill fields missing from older saves with fresh defaults; run version migrations; drop malformed array elements. */
-export function migrate(raw: Record<string, unknown>): GameState {
+/**
+ * Versioned reshapes of a raw save (v3 ENG-7): MIGRATIONS[v] turns a schema-v save into a v+1 one, run in order from
+ * raw.schemaVersion up to SCHEMA_VERSION before mergeDefaults (which then fills every field still missing, so a step
+ * only has to move, rename or reinterpret data — a plain new field needs no step).
+ * Release rule: a schema change ⇒ bump SCHEMA_VERSION, add the step here, add a save fixture
+ * (scripts/capture-fixtures.ts; the old version's fixtures stay and must keep loading: save.fixtures.test.ts).
+ */
+export type SaveMigration = (raw: Record<string, unknown>) => void;
+
+export const MIGRATIONS: Record<number, SaveMigration> = {
+  // v1 → v2: every new field gets its default from mergeDefaults; edicts[id]=true reads as rank 1 (edictRank)
+  1: () => {},
+  // v2 → v3
+  2: (raw) => {
+    // ENG-1: a v2 player who picked a newborn focus other than the foragers keeps it (the auto focus stays off)
+    const flags = isPlain(raw.flags) ? raw.flags : (raw.flags = {});
+    if (typeof raw.focus === "string" && raw.focus !== "forager") flags.focus_manual = true;
+    // ENG-11: the numeric district of the old sequence becomes the list of districts visited
+    const meta = raw.meta;
+    if (isPlain(meta)) {
+      const d = fin(meta.district) ? Math.max(0, Math.floor(meta.district)) : 0;
+      const visited = legacyVisited(d);
+      meta.district = d;
+      meta.visited = visited;
+      meta.districtId = visited[visited.length - 1];
+      // history entries keep their index; their districtId is the same sequence
+      if (Array.isArray(meta.history))
+        for (const h of meta.history) if (isPlain(h) && fin(h.district) && h.districtId === undefined) h.districtId = legacyVisited(h.district).pop();
+      // ENG-10: the two v2 trophies are the first exhibits of «Кунсткамера Короля»
+      if (Array.isArray(meta.trophies) && !Array.isArray(meta.curios))
+        meta.curios = meta.trophies.map((t) => (typeof t === "string" ? TROPHY_CURIO[t] : undefined)).filter((id) => id !== undefined);
+    }
+    // ENG-3 retires «replenish» from the offer pool but keeps its id and definition, so a v2 save with it offered or
+    // active loads as is (no reshape; save.fixtures.test.ts: v3-run1-150min carries an active one)
+  },
+};
+
+/** Run the registry from the save's version up to `to` (SCHEMA_VERSION; tests pass a later one), mutating raw. */
+export function runMigrations(raw: Record<string, unknown>, registry: Record<number, SaveMigration> = MIGRATIONS, to = SCHEMA_VERSION): void {
+  const from = fin(raw.schemaVersion) ? Math.max(1, Math.floor(raw.schemaVersion)) : 1;
+  for (let v = from; v < to; v++) registry[v]?.(raw);
+}
+
+/**
+ * Fill fields missing from older saves with fresh defaults; run version migrations; drop malformed array elements.
+ * `to`: the schema the registry migrates up to (SCHEMA_VERSION; tests try a step of a future version).
+ */
+export function migrate(raw: Record<string, unknown>, registry: Record<number, SaveMigration> = MIGRATIONS, to = SCHEMA_VERSION): GameState {
   const def = createInitialState(1, Date.now());
+  runMigrations(raw, registry, to);
   const merged = mergeDefaults(def, raw) as GameState;
-  // v1 → v2: every new field already has its default from mergeDefaults; edicts[id]=true reads as rank 1 (edictRank)
-  merged.schemaVersion = SCHEMA_VERSION;
+  merged.schemaVersion = to;
   sanitize(merged);
   // a save made mid-scene (autosave, tab closed during a train): credit the auto-collect share, then drop it
   if (merged.scene) {
@@ -98,6 +146,9 @@ const EVENTS = new Set(["carriage", "capsule", "metro_train", "royal_express", "
 const SEALS = new Set<string>(SEAL_IDS);
 const COMMISSIONS = new Set<string>(COMMISSION_IDS);
 const EDICTS = new Set<string>(EDICT_IDS);
+const DISTRICTS = new Set<string>(DISTRICT_IDS);
+const CURIOS = new Set<string>(CURIO_IDS);
+const VARIANTS = new Set<string>(TRAIN_VARIANT_IDS);
 
 const num = (v: unknown): v is number => typeof v === "number" && !Number.isNaN(v);
 const fin = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
@@ -108,7 +159,14 @@ const str = (v: unknown): v is string => typeof v === "string";
  * and clamp settings to their allowed values. Mutates `s`.
  */
 function sanitize(s: GameState): void {
-  s.shinies = s.shinies.filter((x) => isPlain(x) && fin(x.id) && fin(x.x) && fin(x.y) && RES.has(x.res as string) && num(x.until));
+  s.shinies = s.shinies
+    .filter((x) => isPlain(x) && fin(x.id) && fin(x.x) && fin(x.y) && RES.has(x.res as string) && num(x.until))
+    .map((x) => {
+      const out = { ...x };
+      if (out.kind !== undefined && out.kind !== "carriage") delete out.kind;
+      if (out.amt !== undefined && !(fin(out.amt) && out.amt >= 0)) delete out.amt;
+      return out;
+    });
   s.news = s.news.filter((n) => isPlain(n) && str(n.text)).map((n) => ({ t: fin(n.t) ? n.t : 0, text: n.text }));
   s.stunned = s.stunned.filter((g) => isPlain(g) && fin(g.count) && g.count >= 0 && num(g.until) && STUN_REASONS.has(g.reason as string));
   s.haulLog = s.haulLog
@@ -181,10 +239,25 @@ function sanitize(s: GameState): void {
   // saves from before lifetime.wagons: at least this run's wagons
   m.lifetime.wagons = Math.max(fin(m.lifetime.wagons) ? m.lifetime.wagons : 0, s.express.wagons);
 
+  // v3: districts, curios
+  m.visited = m.visited.filter((id) => DISTRICTS.has(id));
+  if (m.visited.length !== m.district + 1) m.visited = legacyVisited(m.district);
+  m.districtId = m.visited[m.visited.length - 1] as DistrictId;
+  m.curios = m.curios.filter((id, i, a) => CURIOS.has(id) && a.indexOf(id) === i);
+  if (s.steamPriority !== "works" && s.steamPriority !== "power") s.steamPriority = "works";
+  if (s.carriagePass !== null && !(isPlain(s.carriagePass) && fin(s.carriagePass.seq) && num(s.carriagePass.until))) s.carriagePass = null;
+  if (s.forceVariant !== undefined && !VARIANTS.has(s.forceVariant)) delete s.forceVariant;
+
   const st = s.settings;
   if (st.textScale !== 1 && st.textScale !== 1.15 && st.textScale !== 1.3) st.textScale = 1;
-  st.volume = Math.max(0, Math.min(1, st.volume));
-  st.ambience = Math.max(0, Math.min(1, st.ambience));
+  st.volume = clamp01(st.volume);
+  st.ambience = clamp01(st.ambience);
+  st.sfxVolume = clamp01(st.sfxVolume);
+  st.music = clamp01(st.music);
+}
+
+function clamp01(v: number): number {
+  return Math.max(0, Math.min(1, v));
 }
 
 /* ------------------------------------------------------------ export / import */

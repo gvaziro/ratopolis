@@ -39,3 +39,16 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# lint cache (npm run lint uses --cache)
+.eslintcache
+
+# e2e (Playwright): reports and run artefacts; curated shots live in docs/screenshots
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/e2e/__shots__/
+
+# local agent state
+.claude/scheduled_tasks.lock

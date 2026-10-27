@@ -40,6 +40,18 @@ export type SfxCue =
   | "chime";
 
 /**
+ * v3 sounds (ENG-12), a separate union so the exhaustive SfxCue map in src/audio/cues.ts keeps compiling:
+ * giantVoice — a human's muffled voice from above (the conductor, a lady; pitch < 1 = deeper);
+ * ratChatter — the crew's squeaky murmur (the tarp, the rumble);
+ * coachman — the carriage driver's «Но-о!» before a carriage;
+ * hoof — one hoof on the cobbles (send several: SCN-4 / the sky pass);
+ * curio — a curio caught for «Кунсткамера Короля»;
+ * counter — a countered cat lunge (SCN-4);
+ * growl — the cat's growl before the lunge.
+ */
+export type SfxCue3 = "giantVoice" | "ratChatter" | "coachman" | "hoof" | "curio" | "counter" | "growl";
+
+/**
  * UI-only events (not from the engine): pointer positions for floating numbers, screen shake requests,
  * and the v2 glue between panels, colony, shell and audio.
  * `target` strings follow the data-target convention: b_<BuildingId>, j_<JobId>, u_<UpgradeId>, e_<EdictId>,
@@ -51,10 +63,15 @@ export type UiFx =
   | { k: "float"; text: string; x: number; y: number; color: string; big?: boolean }
   /* v2 */
   | { k: "sfx"; cue: SfxCue; intensity?: number; pitch?: number }
+  /** v3: the same for the v3 cues (AUD-2 implements every SfxCue3 member). */
+  | { k: "sfx3"; cue: SfxCue3; intensity?: number; pitch?: number }
   /** Emitted by store.focus() one animation frame after the tab switch: scroll [data-target] into view and glow it. */
   | { k: "focus"; tab: TabId; target?: string }
-  /** Batched «Открыто!» notifications (PA-5 emits, the shell's Toasts render). */
-  | { k: "unlock"; items: { key: string; tab: TabId; text: string }[] }
+  /**
+   * Batched «Открыто!» notifications (PA-5 emits, the shell's Toasts render). v3 (SHL-1): structured items — the
+   * thing's icon, its name and one short line of what it does; `text` stays the full v2 line for older readers.
+   */
+  | { k: "unlock"; items: { key: string; tab: TabId; text: string; icon?: string; name?: string; desc?: string }[] }
   /** An icon flying from a screen point (client px) to a target element (e.g. a bought building's chamber). */
   | { k: "fly"; from: { x: number; y: number }; target: string; icon: string }
   /** A generic toast from UI or store code (e.g. «Отчёт об отлучке потерян»). */
@@ -77,4 +94,9 @@ export function emitUiFx(fx: UiFx): void {
 /** Play a named sound cue (AudioDirector listens). Safe to call anywhere, any time. */
 export function sfxCue(cue: SfxCue, o?: { intensity?: number; pitch?: number }): void {
   emitUiFx({ k: "sfx", cue, intensity: o?.intensity, pitch: o?.pitch });
+}
+
+/** Play a v3 sound cue (UiFx "sfx3"; AudioDirector / AUD-2 listens). Safe to call anywhere, any time. */
+export function sfxCue3(cue: SfxCue3, o?: { intensity?: number; pitch?: number }): void {
+  emitUiFx({ k: "sfx3", cue, intensity: o?.intensity, pitch: o?.pitch });
 }

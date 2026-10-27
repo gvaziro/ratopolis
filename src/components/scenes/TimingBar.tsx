@@ -2,13 +2,16 @@
 
 /**
  * The `timing` primitive (grappling hook): a needle swings sinusoidally (period 1.2 s) over a brass scale
- * with a green zone (18% of the width) and a perfect core (central 5%). One attempt: button or a fresh Space press
- * (a Space still held for the keyboard paw auto-repeats into the window, and that is no throw).
+ * with a green zone (18% of the width) and a perfect core (central 5%). One attempt: button or a fresh Space, Enter or
+ * ↑ press (a Space still held for the keyboard paw auto-repeats into the window, and that is no throw).
+ * v3 SCN-1: the needle swings on the scene clock and no throw is taken while the game is held.
  */
 import { useEffect, useRef, useState } from "react";
 import { BrassButton, cx } from "@/components/ui/kit";
 import { HOOK_JACKPOT } from "@/game/data/events";
 import { fmt } from "@/lib/format";
+import { isThrowKey, isTypingTarget } from "./sceneInput";
+import { sceneHeld, sceneNow, useKeyboardUsed } from "./sceneUtils";
 
 export type TimingResult = "perfect" | "hit" | "miss";
 
@@ -51,13 +54,14 @@ export default function TimingBar({
   const onThrowRef = useRef(onThrow);
   const fireRef = useRef<() => void>(() => {});
   const [result, setResult] = useState<TimingResult | null>(null);
+  const kbd = useKeyboardUsed();
 
   useEffect(() => {
     onThrowRef.current = onThrow;
   }, [onThrow]);
 
   useEffect(() => {
-    const t0 = performance.now();
+    const t0 = sceneNow();
     const phase = Math.random() * Math.PI * 2;
     const at = (now: number) => 0.5 + 0.5 * Math.sin(((now - t0) / 1000 / PERIOD) * Math.PI * 2 + phase);
     const paint = (pos: number) => {
@@ -65,17 +69,17 @@ export default function TimingBar({
     };
     let thrown = false;
     let raf = 0;
-    const loop = (now: number) => {
+    const loop = () => {
       raf = requestAnimationFrame(loop);
-      if (!thrown) paint(at(now));
+      if (!thrown && !sceneHeld()) paint(at(sceneNow()));
     };
     paint(at(t0));
     raf = requestAnimationFrame(loop);
     const fire = () => {
-      if (thrown) return;
+      if (thrown || sceneHeld()) return;
       thrown = true;
       // judge the needle where it is now, not where the last painted frame left it
-      const pos = at(performance.now());
+      const pos = at(sceneNow());
       paint(pos);
       const r = judge(pos);
       setResult(r);
@@ -83,11 +87,14 @@ export default function TimingBar({
     };
     fireRef.current = fire;
     const onKey = (e: KeyboardEvent) => {
-      if (e.code === "Space" || e.key === " ") {
-        e.preventDefault();
-        // only a fresh press throws: a Space held for the keyboard paw keeps auto-repeating into the window
-        if (!e.repeat) fire();
-      }
+      // held: the key is left alone (Space / Enter on a save-issue button over the scene still clicks it)
+      if (e.ctrlKey || e.metaKey || e.altKey || isTypingTarget(e.target as Element | null) || sceneHeld()) return;
+      const key = e.code === "Space" ? " " : e.key;
+      if (!isThrowKey(key)) return;
+      // Enter would also click a focused button: the throw takes it
+      e.preventDefault();
+      // only a fresh press throws: a Space held for the keyboard paw keeps auto-repeating into the window
+      if (isThrowKey(key, e.repeat)) fire();
     };
     window.addEventListener("keydown", onKey);
     return () => {
@@ -100,7 +107,7 @@ export default function TimingBar({
     <div className={cx("pointer-events-auto flex w-[min(94%,460px)] flex-col gap-1.5 rounded-lg border border-brass-dark bg-soot/85 p-2 shadow-[0_6px_24px_rgba(0,0,0,.7)] backdrop-blur-sm", className)}>
       <div className="flex items-center justify-between gap-2 text-xs">
         <span className="font-display text-sm font-bold tracking-wide text-brass-light">🪝 {title}</span>
-        <span className="text-parchment-dim">стрелку — в зелёное · пробел</span>
+        <span className="text-parchment-dim">{kbd ? "⌨ пробел, Enter или ↑" : "стрелку — в зелёное · пробел"}</span>
       </div>
       <div className="flex items-center gap-2">
         <div className="relative h-9 min-w-0 flex-1 overflow-hidden rounded border border-brass-dark bg-[linear-gradient(180deg,#3a2e22,#1b1511)] shadow-[inset_0_2px_6px_rgba(0,0,0,.7)]">

@@ -89,9 +89,9 @@ export function clickVoice(step?: number, gain = 1): void {
   play("click", { max: 6, gapMs: 28 }, { send: 0.08, pan: rnd(-0.12, 0.12), gain }, (v) => clickTok(v, v.t, f, level));
 }
 
-/** Bright metallic tink (random pentatonic pitch so a stream of coins sparkles). */
-export function coinVoice(): void {
-  play("coin", { max: 6, gapMs: 45 }, { send: 0.12, pan: rnd(-0.25, 0.25) }, (v) => coinTink(v, v.t, 1568 * semi(pick(COIN_STEPS)) * rnd(0.996, 1.004), 1));
+/** Bright metallic tink (random pentatonic pitch so a stream of coins sparkles); `fg`: a catch coin, the train dips. */
+export function coinVoice(fg = false): void {
+  play("coin", { max: 6, gapMs: 45 }, { send: 0.12, pan: rnd(-0.25, 0.25), fg }, (v) => coinTink(v, v.t, 1568 * semi(pick(COIN_STEPS)) * rnd(0.996, 1.004), 1));
 }
 
 /**

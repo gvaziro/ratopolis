@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BUILDINGS } from "../data/buildings";
-import { EXPRESS_BASE, EXPRESS_GROWTH } from "../data/meta";
+import { EXPRESS_BASE, EXPRESS_GROWTH, WAGON_GROWTH, WAGON_LINEAR, WAGON_LINEAR_RES, type ExpressRes } from "../data/meta";
 import { BUILDING_IDS, type Amounts, type EngineCtx } from "../types";
 import { buyBuilding } from "./actions";
 import { derive } from "./derive";
@@ -76,16 +76,36 @@ describe("maxAffordable", () => {
 });
 
 describe("projects and prestige", () => {
-  it("express stage n costs base × growth^(n−1), wagons × 3^k", () => {
+  it("express stage n costs base[r] × growth[r]^(n−1) per resource (ENG-3 K3: 🛤️⚙️🔔 ×1.6, 💍📜 ×1.45)", () => {
     const s = createInitialState(1, 0);
-    for (const n of [1, 2, 5, 10]) {
+    expect(EXPRESS_GROWTH).toEqual({ rails: 1.6, gears: 1.6, brass: 1.6, trinkets: 1.45, blueprints: 1.45 });
+    expect(EXPRESS_BASE).toEqual({ rails: 500, gears: 100000, brass: 10000, trinkets: 50, blueprints: 250 });
+    for (const n of [1, 2, 5, 8, 10]) {
       const c = expressStageCost(s, n);
-      for (const [r, v] of Object.entries(EXPRESS_BASE)) expect(c[r as keyof typeof c]).toBe(Math.ceil(v * Math.pow(EXPRESS_GROWTH, n - 1)));
+      for (const [r, v] of Object.entries(EXPRESS_BASE) as [ExpressRes, number][]) expect(c[r]).toBe(Math.ceil(v * Math.pow(EXPRESS_GROWTH[r], n - 1)));
     }
-    const w1 = expressStageCost(s, 11);
-    for (const [r, v] of Object.entries(EXPRESS_BASE)) expect(w1[r as keyof typeof w1]).toBe(Math.ceil(v * Math.pow(EXPRESS_GROWTH, 9) * 3));
+    // 💍/📜 grow slower than the global-scaled resources: stage 10 asks 28× their base, 🛤️ 69×
+    const c10 = expressStageCost(s, 10);
+    expect(c10.trinkets! / EXPRESS_BASE.trinkets).toBeLessThan(30);
+    expect(c10.rails! / EXPRESS_BASE.rails).toBeGreaterThan(68);
     s.meta.edicts.express_blueprints = true;
     expect(expressStageCost(s, 1).rails).toBe(Math.ceil(EXPRESS_BASE.rails * 0.75));
+    expect(expressStageCost(s, 7).blueprints).toBe(Math.ceil(EXPRESS_BASE.blueprints * Math.pow(1.45, 6) * 0.75));
+  });
+
+  it("wagon k costs the stage-10 price × 2^k for 🛤️⚙️🔔 and × (1 + 0.5k) for 💍📜 (ENG-3 D)", () => {
+    const s = createInitialState(1, 0);
+    expect(WAGON_GROWTH).toBeGreaterThanOrEqual(1.8);
+    expect(WAGON_GROWTH).toBeLessThanOrEqual(2.5);
+    for (const k of [1, 2, 5]) {
+      const w = expressStageCost(s, 10 + k);
+      for (const [r, v] of Object.entries(EXPRESS_BASE) as [ExpressRes, number][]) {
+        const f = WAGON_LINEAR_RES.includes(r) ? 1 + WAGON_LINEAR * k : Math.pow(WAGON_GROWTH, k);
+        expect(w[r]).toBe(Math.ceil(v * Math.pow(EXPRESS_GROWTH[r], 9) * f));
+      }
+    }
+    // wagon 5 asks 3.5× the stage-10 💍, not 3^5 = 243× as in v2
+    expect(expressStageCost(s, 15).trinkets! / expressStageCost(s, 10).trinkets!).toBeCloseTo(3.5, 2);
   });
 
   it("crowns: 10·√(E/1e6) up to 1e8, then the soft cap 100·(E/1e8)^0.1; ×1.25 after the coronation", () => {

@@ -2,7 +2,8 @@
 
 /**
  * The Rat Express project (GDD 5.2): ten stages that assemble a locomotive from junk,
- * then endless "wagons" (+10% each) after the coronation. The panel samples a small header model;
+ * then endless "wagons" after the coronation. Every percent on the plate is the engine's own
+ * (metaMath expressBonusPct via metaText, PAN-2). The panel samples a small header model;
  * every resource row of the current stage subscribes to its own (PA-1).
  */
 import { memo, useMemo, useState } from "react";
@@ -20,10 +21,14 @@ import { Badge, BrassButton, Plate, cx } from "@/components/ui/kit";
 import { ContribRow, contribKey } from "./common";
 import KingPortrait from "./KingPortrait";
 import Locomotive from "./Locomotive";
+import { charterText, expressBonus } from "./metaText";
 
 interface ExpressModel {
   stage: number;
   wagons: number;
+  /** «+X% ко всему» now, and what the next stage (or wagon after the coronation) adds. */
+  bonus: string;
+  next: string;
   /** Stage progress in 2.5% steps (the locomotive's assembly animation). */
   frac: number;
   res: ResId[];
@@ -38,9 +43,12 @@ function expressModel(s: GameState): ExpressModel {
   const cost = expressCost(s);
   const list = entries(cost);
   const frac = list.length ? list.reduce((a, [r, v]) => a + Math.min(1, (progress[r] ?? 0) / v), 0) / list.length : 0;
+  const bonus = expressBonus(s);
   return {
     stage,
     wagons,
+    bonus: bonus.total,
+    next: bonus.next,
     frac: Math.floor(frac * 40) / 40,
     res: list.map(([r]) => r),
     anyStock: list.some(([r, v]) => (progress[r] ?? 0) < v && s.res[r] > 0),
@@ -56,11 +64,10 @@ export default function ExpressPanel() {
   const [showStages, setShowStages] = useState(false);
   const { stage, wagons, frac } = m;
   const crowned = stage >= 10;
-  const bonus = 20 * stage + 10 * wagons;
 
   return (
     <div data-target="x_express" className="mb-4 rounded-lg">
-      <Plate title="Крысиный экспресс" icon="🚂" right={<Badge tone="good">+{bonus}% ко всему</Badge>}>
+      <Plate title="Крысиный экспресс" icon="🚂" right={<Badge tone="good">+{m.bonus}% ко всему</Badge>}>
         <div className="-mx-1 mb-2 overflow-hidden rounded-md border border-line bg-[radial-gradient(ellipse_at_50%_30%,#3b3022,#14110f_75%)] px-1 pt-2 shadow-[inset_0_2px_10px_rgba(0,0,0,.7)]">
           <Locomotive stage={stage} wagons={wagons} frac={frac} calm={m.calm} />
         </div>
@@ -73,8 +80,8 @@ export default function ExpressPanel() {
         </div>
         <p className="mb-2 text-[11px] leading-snug text-parchment-dim">
           {crowned
-            ? "Король коронован, но Лондон велик: каждый новый вагон даёт ещё +10% ко всему производству."
-            : `Каждый этап — +20% ко всему производству (кроме 📜 и 💍).${stage === 9 ? " Последний рывок — и коронация!" : ""}`}
+            ? `Король коронован, но Лондон велик: следующий вагон добавит ещё +${m.next}% ко всему производству.`
+            : `Этот этап добавит ещё +${m.next}% ко всему производству (кроме 📜 и 💍).${stage === 9 ? " Последний рывок — и коронация!" : ""}`}
           {m.kept ? ` Указ «Чертежи экспресса»: первые ${KEPT_STAGES_MAX} этапов переживут переселение.` : ""}
         </p>
 
@@ -168,16 +175,17 @@ function Commissions() {
   const [abandonAsk, setAbandonAsk] = useState<CommissionId | null>(null);
   if (!json) return null;
   const m = JSON.parse(json) as CommissionModel;
-  const mult = Math.min(1.5, Math.pow(1.05, m.charters));
+  const ch = charterText({ charters: m.charters });
   return (
     <div className="mt-3">
-      <Plate title="Поручения Короля" icon="📜" right={<Badge tone="good">Грамоты: ×{mult.toFixed(2)}</Badge>}>
+      <Plate title="Поручения Короля" icon="📜" right={<Badge tone="good">Грамоты: ×{ch.mult}</Badge>}>
         <div className="mb-2 flex items-center gap-2.5">
           <div className="w-12 shrink-0">
             <KingPortrait tails={m.tails} gilded={false} crowned />
           </div>
           <p className="text-[11px] leading-snug text-parchment-dim">
-            Его Величество милостив, но скучает. Каждое исполненное поручение — королевская грамота: венцы за забег ×1.05 (до ×1.5). Исполнено: {m.done}.
+            Его Величество милостив, но скучает. Каждое исполненное поручение — королевская грамота: венцы за забег ×{ch.per} (до ×{ch.cap}). Исполнено: {m.done}.
+            {ch.atCap && <span className="text-gaslight"> Грамот уже столько, что новые венцов не прибавят — поручения теперь ради чести.</span>}
           </p>
         </div>
         {m.active ? (

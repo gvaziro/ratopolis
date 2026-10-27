@@ -6,16 +6,24 @@
  * the player hides or fights ({a:"choice"}); silence = the engine hides.
  * Taps: a striped paw creeps toward the huddled rats; every «БАЦ!» squashes it and knocks it back.
  * HP gone → {a:"taps", cleared:1} at once; time out → {a:"taps", cleared:0}.
+ * v3 SCN-1: the eye, the paw and the knock-back run on the scene clock — under a ceremony (or in a hidden tab) the paw
+ * hangs where it is and no bonk lands; SCN-5: «Спрятаться» takes a keyboard player's focus.
+ * SCN-4: the paw lunges on the cat's beat (engine catLungeAt): the claws glint and a tick rises for 0.3 s, then it
+ * strikes (+0.12 reach). A hit on the peak (±CAT_COUNTER_WINDOW; Space anywhere in the glint) is «Контрудар!» — 3 hits,
+ * twice the knock-back, «ХРЯСЬ!»; three of them send the cat off with its tail down (the engine pays ×1.5). The rules
+ * are pure in catFight.ts; {taps, cleared, perfect} goes to the store.
  */
 import { memo, useEffect, useId, useRef, useState, type RefObject } from "react";
 import { sfx } from "@/audio/sfx";
 import { Bar, cx } from "@/components/ui/kit";
 import { fxBurst } from "@/components/fx/fxBus";
+import { sfxCue, sfxCue3 } from "@/game/fx";
 import { useGame } from "@/game/store";
 import type { Scene } from "@/game/types";
 import { fmt, fmtInt, plural } from "@/lib/format";
+import { counterOf, creep, knockBack, LUNGE_WINDUP, lungeAt, REACH_LOSE, REACH_MIN, REACH_START, tapEffect } from "./catFight";
 import { catStakes, ChoiceButton, Countdown, flourish, HazardStyles, makeTapLimiter, useReduced, useTimeUp, type CatStakes } from "./HazardKit";
-import { act, clamp, hash01, makeClock, shake } from "./sceneUtils";
+import { act, buzz, clamp, hash01, makeClock, sceneHeld, sceneNow, shake } from "./sceneUtils";
 
 export default function CatScene({ scene }: { scene: Scene }) {
   return (
@@ -48,7 +56,7 @@ function CatWarn({ scene }: { scene: Scene }) {
   }, []);
 
   const choose = (option: "hide" | "fight") => {
-    if (chosen.current) return;
+    if (chosen.current || sceneHeld()) return;
     chosen.current = true;
     act({ a: "choice", option });
   };
@@ -79,7 +87,7 @@ function CatWarn({ scene }: { scene: Scene }) {
       </div>
       <div className="relative z-10 shrink-0 border-t border-line bg-gradient-to-b from-panel-2 to-soot p-2 shadow-[0_-8px_24px_rgba(0,0,0,.6)] md:p-3">
         <div className="grid gap-2 sm:grid-cols-2">
-          <ChoiceButton icon="🙈" title="Спрятаться" tone="ghost" hotkey="1" sub={<b>Без потерь и без награды</b>} sub2="🙈 → 👁 −10" onClick={() => choose("hide")} />
+          <ChoiceButton icon="🙈" title="Спрятаться" tone="ghost" hotkey="1" focusFirst sub={<b>Без потерь и без награды</b>} sub2="🙈 → 👁 −10" onClick={() => choose("hide")} />
           <ChoiceButton
             icon="🥊"
             title="Отбиться"
@@ -158,15 +166,17 @@ const CatEye = memo(function CatEye({ reduced }: { reduced: boolean }) {
       if (lastPX >= 0) excite = Math.min(1.3, excite + Math.hypot(e.clientX - lastPX, e.clientY - lastPY) / 240);
       lastPX = e.clientX;
       lastPY = e.clientY;
-      lastMove = performance.now();
+      lastMove = sceneNow();
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerdown", onMove);
-    const t0 = performance.now();
+    const t0 = sceneNow();
     let last = t0;
     let raf = 0;
-    const loop = (now: number) => {
+    const loop = () => {
       raf = requestAnimationFrame(loop);
+      if (sceneHeld()) return;
+      const now = sceneNow();
       const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
       last = now;
       const t = (now - t0) / 1000;
@@ -265,33 +275,52 @@ const CatEye = memo(function CatEye({ reduced }: { reduced: boolean }) {
 
 /* ================================================================ taps: the paw */
 
-const BAC_WORDS = ["БАЦ!", "БАЦ!", "БАЦ!", "БУМ!", "ХРЯСЬ!", "ПО ЛАПЕ!"];
+const BAC_WORDS = ["БАЦ!", "БАЦ!", "БАЦ!", "БУМ!", "ПО ЛАПЕ!"];
+
+/** Wind-up ticks before a peak (s before it) and their rising pitch. */
+const WINDUP_TICKS: readonly [number, number][] = [
+  [LUNGE_WINDUP, 1],
+  [LUNGE_WINDUP * 0.62, 1.15],
+  [LUNGE_WINDUP * 0.28, 1.32],
+];
 
 function CatFight({ scene }: { scene: Scene }) {
   const reduced = useReduced();
   const hp = Math.max(1, scene.taps?.hp ?? 15);
   const total = Math.max(0.1, scene.taps?.duration ?? scene.phaseEnds - scene.phaseStart);
+  const seq = scene.seq;
   const [stakes] = useState<CatStakes>(() => catStakes(useGame.getState().game));
   const [hits, setHits] = useState(0);
+  const [counters, setCounters] = useState(0);
   const [hint, setHint] = useState(true);
   const timeUp = useTimeUp(scene.phaseEnds);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const pawRef = useRef<HTMLDivElement>(null);
+  const glintRef = useRef<HTMLDivElement>(null);
   const fxRef = useRef<HTMLDivElement>(null);
   const panicRef = useRef<HTMLDivElement>(null);
-  // SC-6: reach 0 → 0.9 (the huddle); it creeps 0.85/fight per second, each hit knocks it back 1.4/hp
-  const physRef = useRef({ reach: 0.2, squash: 0, tipX: 0, tipY: 0 });
+  // SC-6: reach 0 → 0.9 (the huddle); it creeps 0.85/fight per second, each hit knocks it back 1.4/hp (catFight.ts)
+  const physRef = useRef({ reach: REACH_START, squash: 0, tipX: 0, tipY: 0 });
   const hitsRef = useRef(0);
   const sentRef = useRef(false);
   const limiterRef = useRef<(() => boolean) | null>(null);
+  // SCN-4: one fight clock for the lunges and the judging of the hits; the lunges countered so far
+  const clockRef = useRef<(() => number) | null>(null);
+  const counteredRef = useRef(new Set<number>());
 
   useEffect(() => {
-    const t = window.setTimeout(() => setHint(false), 1800);
+    const t = window.setTimeout(() => setHint(false), 2600);
     return () => window.clearTimeout(t);
   }, []);
 
-  // the paw creeps in along a diagonal; knock-back and squash decay every frame
+  /** The fight is over: tell the store how it went (the countered lunges ride along). */
+  const finish = (cleared: 0 | 1) => {
+    sentRef.current = true;
+    act({ a: "taps", cleared, perfect: counteredRef.current.size });
+  };
+
+  // the paw creeps in along a diagonal and lunges on the cat's beat; knock-back and squash decay every frame
   useEffect(() => {
     const root = rootRef.current;
     const paw = pawRef.current;
@@ -311,23 +340,42 @@ function CatFight({ scene }: { scene: Scene }) {
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(root);
-    const clock = makeClock(scene.phaseStart);
+    clockRef.current ??= makeClock(scene.phaseStart);
+    const clock = clockRef.current;
     const phys = physRef.current;
-    let last = performance.now();
+    const countered = counteredRef.current;
+    // wind-up cues already played: lunge n → ticks sounded
+    let cueN = -1;
+    let cueI = 0;
+    // SCN-1: the creep integrates scene-clock time, so a hold leaves the paw exactly where it was
+    let last = clock();
     let raf = 0;
-    const loop = (now: number) => {
+    const loop = () => {
       raf = requestAnimationFrame(loop);
-      const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
-      last = now;
       const t = clock();
+      const dt = Math.min(0.05, Math.max(0, t - last));
+      last = t;
+      if (dt === 0 && sceneHeld()) return;
       phys.squash = Math.max(0, phys.squash - dt * 5.5);
-      if (!sentRef.current) phys.reach += (0.85 / total) * dt;
-      const reach = clamp(phys.reach, 0.04, 0.9);
-      // the paw reaching the huddle is the real loss, not the clock
-      if (phys.reach >= 0.9 && !sentRef.current) {
-        sentRef.current = true;
+      if (!sentRef.current) phys.reach = creep(phys.reach, dt, total);
+      const L = lungeAt(seq, t, countered);
+      // the wind-up: three rising ticks (and now and then a growl) while the claws glint
+      if (!sentRef.current && L.windup >= 0) {
+        if (cueN !== L.n) {
+          cueN = L.n;
+          cueI = 0;
+          if (L.n % 4 === 0) sfxCue3("growl", { intensity: 0.6 });
+        }
+        while (cueI < WINDUP_TICKS.length && t >= L.peak - WINDUP_TICKS[cueI][0]) {
+          if (t - (L.peak - WINDUP_TICKS[cueI][0]) < 0.12) sfxCue("tick", { intensity: 0.7, pitch: WINDUP_TICKS[cueI][1] });
+          cueI++;
+        }
+      }
+      const reach = clamp(phys.reach + (sentRef.current ? 0 : L.bump), REACH_MIN, REACH_LOSE);
+      // the paw (or its lunge) reaching the huddle is the real loss, not the clock
+      if (phys.reach + L.bump >= REACH_LOSE && !sentRef.current) {
         sfx.meow();
-        act({ a: "taps", cleared: 0 });
+        finish(0);
       }
       const sx0 = W * 0.86;
       const sy0 = -H * 0.14;
@@ -340,6 +388,13 @@ function CatFight({ scene }: { scene: Scene }) {
       const ang = Math.atan2(-(tx - sx0), ty - sy0) + (reduced ? 0 : Math.sin(t * 3.1) * 0.035);
       const q = reduced ? 0 : phys.squash;
       paw.style.transform = `translate(${(x - pw / 2).toFixed(1)}px,${(y - ph).toFixed(1)}px) rotate(${ang.toFixed(3)}rad) scale(${(1 + 0.14 * q).toFixed(3)},${(1 - 0.2 * q).toFixed(3)})`;
+      const glint = glintRef.current;
+      if (glint) {
+        const on = L.glint && !sentRef.current;
+        glint.style.opacity = on ? (reduced ? "1" : (0.65 + 0.35 * Math.sin(t * 40)).toFixed(2)) : "0";
+        // at the claw tips — kept in view under the HUD when a counter has knocked the paw off the top edge
+        if (on) glint.style.transform = `translate(${x.toFixed(1)}px,${Math.max(H * 0.2, y - 6).toFixed(1)}px)`;
+      }
       if (panicRef.current) panicRef.current.style.opacity = reach > 0.62 ? "1" : "0";
     };
     raf = requestAnimationFrame(loop);
@@ -347,56 +402,72 @@ function CatFight({ scene }: { scene: Scene }) {
       cancelAnimationFrame(raf);
       ro.disconnect();
     };
-  }, [scene.phaseStart, total, reduced]);
+  }, [scene.phaseStart, total, reduced, seq]);
 
   // time is up: the cat wins
   useEffect(() => {
     if (!timeUp || sentRef.current) return;
-    sentRef.current = true;
     sfx.meow();
-    act({ a: "taps", cleared: 0 });
+    finish(0);
   }, [timeUp]);
 
-  const hit = (clientX: number, clientY: number) => {
-    if (sentRef.current) return;
+  const hit = (clientX: number, clientY: number, keyboard = false) => {
+    if (sentRef.current || sceneHeld()) return;
     limiterRef.current ??= makeTapLimiter();
     if (!limiterRef.current()) return;
     const root = rootRef.current;
     const phys = physRef.current;
-    hitsRef.current += 1;
+    const t = clockRef.current ? clockRef.current() : 0;
+    const n = clockRef.current ? counterOf(seq, t, counteredRef.current, keyboard) : -1;
+    const counter = n >= 0;
+    if (counter) counteredRef.current.add(n);
+    const e = tapEffect(hp, counter);
+    hitsRef.current += e.hits;
     setHits(hitsRef.current);
     setHint(false);
     phys.squash = 1;
-    phys.reach = Math.max(0.04, phys.reach - 1.4 / hp);
-    sfx.bonk();
-    shake(3, 130);
+    phys.reach = knockBack(phys.reach, e.knock);
+    if (counter) {
+      // «Контрудар!»: a heavier bonk, the counter's own «БОНГ», a bigger jolt
+      setCounters(counteredRef.current.size);
+      sfx.bonk();
+      sfx.thud();
+      sfxCue3("counter");
+      shake(6, 220);
+      buzz(30);
+    } else {
+      sfx.bonk();
+      shake(3, 130);
+    }
     if (root) {
       const r = root.getBoundingClientRect();
-      spawnBac(fxRef.current, clientX - r.left, clientY - r.top, reduced);
+      spawnBac(fxRef.current, clientX - r.left, clientY - r.top, reduced, counter);
     }
-    fxBurst(clientX, clientY, "glint", 4);
+    fxBurst(clientX, clientY, counter ? "gold" : "glint", counter ? 14 : 4);
     if (hitsRef.current >= hp) {
       // measure before the scene unmounts; the flourish lives on the global FxLayer
-      sentRef.current = true;
       const r = root?.getBoundingClientRect();
       const px = r ? r.left + r.width / 2 : clientX;
       const py = r ? r.top + Math.max(60, phys.tipY - 60) : clientY;
-      act({ a: "taps", cleared: 1 });
-      flourish("ПО УСАМ!", px, py, "#f2b84b", Math.min(50, (r?.width ?? 400) / 7), "gold", 34);
+      const routed = counteredRef.current.size >= 3;
+      finish(1);
+      flourish(routed ? "ХВОСТ ПОДЖАЛ!" : "ПО УСАМ!", px, py, "#f2b84b", Math.min(50, (r?.width ?? 400) / 7), "gold", 34);
     }
   };
 
-  // keyboard: Space / Enter bonks the paw where it is
+  // keyboard: Space / Enter bonks the paw where it is (auto-aimed: anywhere in the glint counts as a counter)
   const hitRef = useRef(hit);
   useEffect(() => {
     hitRef.current = hit;
   });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // held: the key is left alone (Space / Enter on a save-issue button over the scene still clicks it)
+      if (sceneHeld()) return;
       if ((e.code === "Space" || e.key === "Enter") && !e.repeat) {
         e.preventDefault();
         const r = rootRef.current?.getBoundingClientRect();
-        if (r) hitRef.current(r.left + physRef.current.tipX, r.top + physRef.current.tipY - 40);
+        if (r) hitRef.current(r.left + physRef.current.tipX, r.top + physRef.current.tipY - 40, true);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -416,11 +487,21 @@ function CatFight({ scene }: { scene: Scene }) {
       }}
       role="button"
       tabIndex={0}
-      aria-label={`Бить по лапе: осталось ${left} ${plural(left, "удар", "удара", "ударов")}`}
+      aria-label={`Бить по лапе: осталось ${left} ${plural(left, "удар", "удара", "ударов")}; когти блеснули — бейте: контрудар`}
     >
       <BurrowWall />
       <div ref={pawRef} className="pointer-events-none absolute left-0 top-0 will-change-transform" style={{ transformOrigin: "50% 100%" }}>
         <PawArt />
+      </div>
+      {/* SCN-4: the claws glint through the wind-up — the moment to strike back (moved to the claw tips every frame) */}
+      <div ref={glintRef} data-cat-glint="" className="pointer-events-none absolute left-0 top-0 z-30 opacity-0" aria-hidden>
+        <div className="flex -translate-x-1/2 -translate-y-1/2 gap-3 md:gap-5">
+          {[0, 1, 2, 3].map((k) => (
+            <span key={k} className="text-xl leading-none text-[#fffbe6] drop-shadow-[0_0_8px_rgba(255,240,170,1)] md:text-3xl" style={{ transform: `translateY(${k === 1 || k === 2 ? 7 : 0}px) rotate(${k * 22}deg)` }}>
+              ✦
+            </span>
+          ))}
+        </div>
       </div>
       <RatHuddle panicRef={panicRef} reduced={reduced} />
       <div ref={fxRef} className="pointer-events-none absolute inset-0 z-20" />
@@ -429,9 +510,17 @@ function CatFight({ scene }: { scene: Scene }) {
         <Countdown endsAt={scene.phaseEnds} total={total} />
         <div className="min-w-0 flex-1 rounded-lg border border-danger/60 bg-soot/85 px-2.5 py-1.5 shadow-[0_4px_14px_rgba(0,0,0,.6)]">
           <div className="flex items-baseline justify-between gap-2 text-xs">
-            <span className="font-display text-sm font-bold uppercase tracking-wider text-danger-light">Прочность лапы</span>
-            <span className="font-mono font-bold text-parchment tabular">
-              {fmtInt(left)}/{fmtInt(hp)}
+            <span className="truncate font-display text-sm font-bold uppercase tracking-wider text-danger-light">Прочность лапы</span>
+            <span className="flex shrink-0 items-baseline gap-2">
+              {counters > 0 && (
+                <span className={cx("font-display font-bold", counters >= 3 ? "text-gaslight" : "text-brass-light")} title="Контрудары: три — и Кот бежит, поджав хвост (награда ×1.5)">
+                  ⚔ {fmtInt(counters)}
+                  {counters >= 3 ? " · ×1.5" : "/3"}
+                </span>
+              )}
+              <span className="font-mono font-bold text-parchment tabular">
+                {fmtInt(left)}/{fmtInt(hp)}
+              </span>
             </span>
           </div>
           <Bar value={left} max={hp} color="linear-gradient(90deg,#c4453a,#e8705f)" className="mt-1 h-2.5" />
@@ -439,19 +528,20 @@ function CatFight({ scene }: { scene: Scene }) {
       </div>
 
       {hint && (
-        <div className="pointer-events-none absolute inset-x-0 top-[38%] z-30 flex justify-center">
+        <div className="pointer-events-none absolute inset-x-0 top-[34%] z-30 flex flex-col items-center gap-1 px-3">
           <span
-            className="rounded-lg border border-brass bg-soot/85 px-4 py-2 font-display text-2xl font-bold text-brass-light shadow-[0_6px_20px_rgba(0,0,0,.7)]"
+            className="rounded-lg border border-brass bg-soot/85 px-4 py-2 text-center font-display text-2xl font-bold text-brass-light shadow-[0_6px_20px_rgba(0,0,0,.7)]"
             style={reduced ? undefined : { animation: "rh-hint 1s ease-in-out infinite" }}
           >
             Бей по лапе! Чаще!
           </span>
+          <span className="rounded bg-soot/80 px-2 py-0.5 text-center text-xs text-parchment">Когти блеснули ✦ — бейте в выпад: контрудар за три</span>
         </div>
       )}
 
       <div className="pointer-events-none absolute inset-x-2 bottom-2 z-30 flex justify-center">
         <p className="max-w-lg rounded-lg border border-line bg-soot/85 px-3 py-1.5 text-center text-[11px] leading-snug text-parchment shadow-[0_6px_18px_rgba(0,0,0,.6)]">
-          <span className="font-bold text-good">На кону:</span> 📜 +{fmt(stakes.blueprints)} · 🧀 +{fmt(stakes.cheese)} · 👁 −25
+          <span className="font-bold text-good">На кону:</span> 📜 +{fmt(stakes.blueprints)} · 🧀 +{fmt(stakes.cheese)} · 👁 −25 · ⚔×3 → ×1.5
           <span className="mx-1 text-muted">|</span>
           <span className="font-bold text-danger-light">Провал:</span> {fmtInt(stakes.scared)} 🐀 в испуге, −{fmt(stakes.cheeseLoss)} 🧀 (5%)
         </p>
@@ -460,23 +550,36 @@ function CatFight({ scene }: { scene: Scene }) {
   );
 }
 
-/** «БАЦ!» comic burst at a point inside the fight layer (plain DOM, removed after the animation). */
-function spawnBac(host: HTMLDivElement | null, x: number, y: number, reduced: boolean) {
+/** «БАЦ!» comic burst at a point inside the fight layer (plain DOM, removed after the animation); a counter: «ХРЯСЬ!». */
+function spawnBac(host: HTMLDivElement | null, x: number, y: number, reduced: boolean, counter = false) {
   if (!host) return;
   const el = document.createElement("span");
-  el.textContent = BAC_WORDS[Math.floor(Math.random() * BAC_WORDS.length)];
+  el.textContent = counter ? "ХРЯСЬ!" : BAC_WORDS[Math.floor(Math.random() * BAC_WORDS.length)];
   el.className = "pointer-events-none absolute font-display font-black leading-none";
   el.style.left = `${x}px`;
   el.style.top = `${y}px`;
-  el.style.fontSize = `${28 + Math.random() * 12}px`;
-  el.style.color = "#ffd34d";
-  el.style.setProperty("-webkit-text-stroke", "1.5px #3a1d0e");
-  el.style.textShadow = "0 3px 0 #7a3f20, 0 0 14px rgba(242,184,75,.6)";
+  el.style.fontSize = `${counter ? 46 + Math.random() * 8 : 28 + Math.random() * 12}px`;
+  el.style.color = counter ? "#ff8a3a" : "#ffd34d";
+  el.style.setProperty("-webkit-text-stroke", counter ? "2px #3a1d0e" : "1.5px #3a1d0e");
+  el.style.textShadow = counter ? "0 4px 0 #7a2f10, 0 0 20px rgba(255,140,60,.8)" : "0 3px 0 #7a3f20, 0 0 14px rgba(242,184,75,.6)";
   el.style.setProperty("--r", `${(Math.random() * 24 - 12).toFixed(1)}deg`);
   el.style.transform = "translate(-50%,-50%)";
-  el.style.animation = reduced ? "none" : "rh-bac .62s ease-out forwards";
+  el.style.animation = reduced ? "none" : `rh-bac ${counter ? ".8s" : ".62s"} ease-out forwards`;
   host.appendChild(el);
-  window.setTimeout(() => el.remove(), reduced ? 380 : 650);
+  if (counter) {
+    // «Контрудар!» under the crash word
+    const sub = document.createElement("span");
+    sub.textContent = "Контрудар!";
+    sub.className = "pointer-events-none absolute whitespace-nowrap font-display text-lg font-bold uppercase tracking-wider leading-none text-gaslight";
+    sub.style.left = `${x}px`;
+    sub.style.top = `${y + 36}px`;
+    sub.style.transform = "translate(-50%,-50%)";
+    sub.style.textShadow = "0 2px 0 #3a1d0e, 0 0 10px rgba(0,0,0,.8)";
+    sub.style.animation = reduced ? "none" : "rh-bac .9s ease-out forwards";
+    host.appendChild(sub);
+    window.setTimeout(() => sub.remove(), reduced ? 500 : 920);
+  }
+  window.setTimeout(() => el.remove(), reduced ? 380 : counter ? 820 : 650);
 }
 
 /* ------------------------------------------------------------ art */

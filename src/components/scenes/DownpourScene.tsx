@@ -8,6 +8,7 @@
  * one); the three outlets gush at 1.6 / 1.0 / 0.6 of the flood rate (shuffled per downpour, stream width shows it), so
  * shutting the widest first visibly slows the water; past 55% the scene dims and bubbles; «до затопления N с» comes
  * from the water integrator. The result carries fastMs (first to last valve shut by hand).
+ * v3 SCN-1: the water, the rain and fastMs run on the scene clock; while the game is held no wheel turns.
  */
 import { memo, useCallback, useEffect, useId, useRef, useState, type RefObject } from "react";
 import { sfx } from "@/audio/sfx";
@@ -18,7 +19,7 @@ import type { CatchResult, Scene } from "@/game/types";
 import { fmtInt, plural } from "@/lib/format";
 import CatchCanvas from "./CatchCanvas";
 import { Countdown, HazardStyles, makeTapLimiter, useReduced, useTimeUp } from "./HazardKit";
-import { act, hash01, shake, WATER_FRAC } from "./sceneUtils";
+import { act, hash01, sceneHeld, sceneNow, shake, WATER_FRAC } from "./sceneUtils";
 
 /* Geometry, as fractions of the scene body (shared by the DOM valves and the water canvas). */
 const VALVE_X = [0.2, 0.5, 0.8];
@@ -105,7 +106,7 @@ export default function DownpourScene({ scene }: { scene: Scene }) {
   }, [openKey, taps]);
 
   const turn = (i: number) => {
-    if (!taps || sentRef.current || i < pre) return;
+    if (!taps || sentRef.current || i < pre || sceneHeld()) return;
     const h = hitsRef.current;
     if (h[i] >= hp) return;
     limiter.current ??= makeTapLimiter();
@@ -118,7 +119,7 @@ export default function DownpourScene({ scene }: { scene: Scene }) {
     if (h[i] >= hp) {
       sfx.clack();
       shake(2, 160);
-      shutAt.current.push(performance.now());
+      shutAt.current.push(sceneNow());
     }
     if (closedBy(h, pre, hp) >= 3 - pre) send();
   };
@@ -488,10 +489,13 @@ function WaterCanvas({ sharedRef, reduced }: { sharedRef: RefObject<Shared>; red
 
     let t = 0;
     let wasDeep = false;
-    let last = performance.now();
+    let last = sceneNow();
     let raf = 0;
-    const loop = (now: number) => {
+    const loop = () => {
       raf = requestAnimationFrame(loop);
+      // SCN-1: held — the flood waits (the canvas keeps its last frame)
+      if (sceneHeld()) return;
+      const now = sceneNow();
       const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
       last = now;
       t += dt;

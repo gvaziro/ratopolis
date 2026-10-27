@@ -155,7 +155,8 @@ function parts(ids: { copper: string; silver: string; gold: string }, moving: bo
         ))}
         <rect x={184} y={74} width={38} height={30} rx={2} fill="#c4453a" stroke="#5a1c17" />
         <rect x={189} y={80} width={28} height={16} rx={1} fill="#eadcc0" />
-        <text x={203} y={91} textAnchor="middle" fontSize={7} fontWeight={700} fill="#5a1c17" fontFamily="serif">
+        {/* lettering painted on the matchbox: part of the drawing, not text to read */}
+        <text aria-hidden x={203} y={91} textAnchor="middle" fontSize={7} fontWeight={700} fill="#5a1c17" fontFamily="serif">
           СПИЧКИ
         </text>
         <SmallWheel cx={192} cy={114} r={7} spin={moving} />

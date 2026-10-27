@@ -7,6 +7,8 @@
  * Taps: `taps.count` notes ♪ wave toward the burrow (each flies 3.2 s); tap to pop them (confetti, a semitone
  * higher each time). A note that reaches the burrow lures a hypnotised rat away.
  * Done → {a:"taps", cleared: popped}; ≥ 80% wins (the scene ends early once the win is certain).
+ * v3 SCN-1: the tune, the notes and the walkers stand still while the game is held (no pop lands meanwhile);
+ * SCN-5: «Откупиться» takes a keyboard player's focus.
  */
 import { memo, useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { sfx } from "@/audio/sfx";
@@ -17,7 +19,7 @@ import { useGame } from "@/game/store";
 import type { Scene } from "@/game/types";
 import { fmt, fmtInt, plural } from "@/lib/format";
 import { ChoiceButton, Countdown, flourish, HazardStyles, piperStakes, useReduced, useTimeUp, type PiperStakes } from "./HazardKit";
-import { act, clamp, EMOJI_FONT, fonts, hash01, makeClock, reducedNow } from "./sceneUtils";
+import { act, clamp, EMOJI_FONT, fonts, hash01, makeClock, reducedNow, sceneHeld } from "./sceneUtils";
 
 const FLY = 3.2; // seconds a note needs to reach the burrow
 const WIN_SHARE = 0.8;
@@ -60,6 +62,8 @@ function PiperWarn({ scene }: { scene: Scene }) {
   useEffect(() => {
     let i = 0;
     const iv = window.setInterval(() => {
+      // SCN-1: the piper does not play to an empty house (a ceremony on top, the tab hidden)
+      if (sceneHeld()) return;
       const n = TUNE[i++ % TUNE.length];
       if (n !== null) sfx.pipe(n);
     }, 340);
@@ -67,7 +71,7 @@ function PiperWarn({ scene }: { scene: Scene }) {
   }, []);
 
   const choose = (option: "pay" | "fight") => {
-    if (chosen.current) return;
+    if (chosen.current || sceneHeld()) return;
     chosen.current = true;
     act({ a: "choice", option });
   };
@@ -124,6 +128,7 @@ function PiperWarn({ scene }: { scene: Scene }) {
             title="Откупиться"
             tone="brass"
             hotkey="1"
+            focusFirst
             sub={
               <b>
                 −{fmt(stakes.payCoins)} 🪙{stakes.payCheese > 0 && <> · −{fmt(stakes.payCheese)} 🧀</>} · 👁 → 40
@@ -385,6 +390,7 @@ function PiperFight({ scene }: { scene: Scene }) {
     const onDown = (e: PointerEvent) => {
       if (done || (e.pointerType === "mouse" && e.button !== 0)) return;
       e.preventDefault();
+      if (sceneHeld()) return;
       onMove(e);
       const r = canvas.getBoundingClientRect();
       const px = e.clientX - r.left;
@@ -432,13 +438,15 @@ function PiperFight({ scene }: { scene: Scene }) {
       canvas.removeEventListener("pointerleave", onLeave);
     };
 
-    let last = performance.now();
+    // SCN-1: everything moves on the scene clock (notes, confetti, walkers), so a hold freezes the whole fight
+    let last = clock();
     let raf = 0;
-    const loop = (now: number) => {
+    const loop = () => {
       raf = requestAnimationFrame(loop);
-      const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
-      last = now;
       const t = clock();
+      const dt = Math.min(0.05, Math.max(0, t - last));
+      last = t;
+      if (dt === 0 && sceneHeld()) return;
 
       // advance notes
       for (const n of notes) {

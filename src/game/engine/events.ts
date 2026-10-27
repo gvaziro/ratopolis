@@ -2,9 +2,12 @@ import {
   CAPSULE_DROPS_CELLARS,
   CHEESE_CAR,
   CREW_POSITIONS,
+  DEEP_RUMBLE,
   EVENT_LINE_POOLS,
   EVENT_LINES,
   EVENT_TIMING as T,
+  FOG_TOAST,
+  GRATE_RAIN_TOAST,
   HOOK_JACKPOT,
   HOOK_JACKPOT_CAP_SEC,
   LANTERN_MULT,
@@ -19,7 +22,8 @@ import {
   TRAIN_VARIANTS,
 } from "../data/events";
 import { pickHumanHeadline } from "../data/headlines";
-import { districtTrait } from "../data/zones";
+import { districtInfo } from "../data/districts";
+import { CURIOS, CURIO_BELL_CHANCE, CURIO_LIFE_ADD, CURIO_SALT, rollCurio } from "../data/curios";
 import { RESOURCES } from "../data/resources";
 import { BUILDINGS } from "../data/buildings";
 import {
@@ -29,6 +33,7 @@ import {
   type BuildingId,
   type CatchItem,
   type CatchResult,
+  type CrewPosition,
   type EngineCtx,
   type GameState,
   type HaulSummary,
@@ -38,6 +43,7 @@ import {
   type SceneAction,
   type SceneEventId,
   type ScenePhase,
+  type Shiny,
   type TickInput,
   type TrainCarDef,
   type TrainCarKind,
@@ -48,7 +54,9 @@ import { fmtTime, plural } from "../../lib/format";
 import { check } from "./conditions";
 import { addAmounts, award, gain, gainAll, news, pushNews, stun, toast } from "./core";
 import { eventValue, type Derived } from "./derive";
-import { buildingCost, entries, humanClock, marketValue } from "./formulas";
+import { atMaxLevel, buildingCost, entries, humanClock, marketValue } from "./formulas";
+import { PURSE_TRINKETS, edictRank } from "./ranks";
+import { addCurioItem, catchCurio } from "./curios";
 import { chance, hash01, pickWeighted, rand, randInt, randRange } from "./rng";
 
 type TrainId = "capsule" | "metro_train" | "royal_express";
@@ -94,7 +102,7 @@ export function onZoneOpen(s: GameState, zone: ZoneId): void {
   } else if (zone === "cellars") {
     s.timers.catForcedAt = t + T.catFirstAfterCellars;
     s.timers.cat = t + T.catCheck;
-    s.timers.market = t + between(s, districtTrait(s.meta.district).mods.marketInterval ?? T.marketInterval);
+    s.timers.market = t + between(s, districtInfo(s.meta).trait.mods.marketInterval ?? T.marketInterval);
   } else if (zone === "metro") {
     s.timers.capsule = Infinity;
     s.timers.metro_train = t + T.metroFirstAfterOpen;
@@ -113,12 +121,27 @@ export function tickEvents(s: GameState, d: Derived, dt: number, input: TickInpu
   // ---- suspicion (from cellars, only while the player is active)
   // EN-12 «Щепки от дудки»: the King wants the piper, so the colony gets noticed three times faster
   const piperWanted = d.commission === "pipe_splinters" ? 3 : 1;
-  if (s.zones.cellars && input.active) s.suspicion = Math.min(100, s.suspicion + (dt / 60) * d.suspicionMult * piperWanted);
+  // v3 (ENG-9): in «Гороховый суп» nobody up there sees a thing — the scale stands still (addSuspicion adds 0 too)
+  if (s.zones.cellars && input.active && !fogActive(s)) s.suspicion = Math.min(100, s.suspicion + (dt / 60) * d.suspicionMult * piperWanted);
   // EN-12 «Дважды по усам»: a cat comes two minutes after the last one
   if (d.commission === "whiskers_twice" && s.zones.cellars && !d.silence && !Number.isFinite(s.timers.catForcedAt) && s.scene?.id !== "cat") s.timers.catForcedAt = t + 120;
   if (s.suspicion >= d.ratcatcherAt && !d.silence && !Number.isFinite(s.timers.ratcatcherAt) && s.scene?.id !== "ratcatcher") {
     s.timers.ratcatcherAt = t + T.ratcatcherDelay;
     toast(ctx, `Подозрение ${Math.round(d.ratcatcherAt)}%! Сверху доносится дудочка…`, "🎶", "bad");
+  }
+
+  // ---- «Гороховый суп» (ENG-9): from the Metro on, 3 min of fog every 20–30 min (a hash of the time, no RNG draw);
+  // a save from before the timer (or the Metro just opened) gets its first one scheduled here. Never under a scene
+  // (the toast would come in the middle of a pass whose variant is already decided), and only once the next metro
+  // train is due within the fog (≤ T.fogLength − 30 s): every fog brings a fog train
+  if (s.zones.metro) {
+    if (!Number.isFinite(s.timers.fog)) s.timers.fog = t + fogGap(t);
+    else if (t >= s.timers.fog && !s.scene && s.timers.metro_train - t <= T.fogLength - 30) {
+      s.buffs.fogUntil = t + T.fogLength;
+      s.timers.fog = t + fogGap(t);
+      toast(ctx, FOG_TOAST.text, FOG_TOAST.icon, "info");
+      news(s, "fog", {}, ctx);
+    }
   }
 
   // ---- background events
@@ -142,6 +165,9 @@ export function tickEvents(s: GameState, d: Derived, dt: number, input: TickInpu
       startTrain(s, d, nt.id, ctx);
       return;
     }
+    // v3 (ENG-9): after the Metro a carriage is no close-up: its loot rains through the grate into the colony
+    // (background, so it neither waits for a train nor pushes one)
+    if (s.zones.metro && s.timers.carriage <= t) startCarriage(s, d, ctx);
     const gapOk = t - s.timers.lastSceneEnd >= T.minSceneGap;
     const trainSoon = nt !== null && nt.at - t < T.trainGuard;
     if (!gapOk) return;
@@ -205,9 +231,15 @@ function tickBackground(s: GameState, d: Derived, dt: number, ctx: EngineCtx): v
     markSeen(s, "purse");
   }
 
-  // shinies
+  // shinies; an uncaught carriage one (grate rain, ENG-9) is swept up for T.rainAuto of its amount as it expires
   if (sceneUp) for (const x of s.shinies) x.until += dt;
-  if (s.shinies.length) s.shinies = s.shinies.filter((x) => x.until > t);
+  if (s.shinies.length && s.shinies.some((x) => x.until <= t)) {
+    const swept: Amounts = {};
+    for (const x of s.shinies) if (x.until <= t) addAmounts(swept, { [x.res]: sweepShiny(s, d, x, ctx) });
+    s.shinies = s.shinies.filter((x) => x.until > t);
+    for (const [r, v] of entries(swept)) if (v > 0) ctx.fx.push({ k: "drop", res: r, amount: v });
+  }
+  if (s.carriagePass && s.carriagePass.until <= t) s.carriagePass = null;
   if (t >= s.timers.shiny && s.flags.vagrants && !sceneUp) {
     const pool = T1.filter((r) => check(s, RESOURCES[r].reveal));
     const res = pool[Math.floor(rand(s) * pool.length)] ?? "crumbs";
@@ -228,6 +260,15 @@ function tickBackground(s: GameState, d: Derived, dt: number, ctx: EngineCtx): v
       markSeen(s, "market");
     }
     s.timers.market = t + between(s, d.marketInterval);
+  }
+
+  // «Гул из глубины» (ENG-9): once, the first quiet moment after 6:30 with ten rats, the Thunder God passes far below
+  // and the map's 4th tier gets its teaser (metroTeaser). No RNG draw, no timer touched.
+  if (!s.flags.first_rumble && !sceneUp && t >= T.rumbleAt && s.rats >= T.rumbleRats && !s.zones.metro) {
+    s.flags.first_rumble = true;
+    ctx.fx.push({ k: "deepRumble" });
+    toast(ctx, DEEP_RUMBLE.toast, DEEP_RUMBLE.icon, "info");
+    for (const line of DEEP_RUMBLE.news) pushNews(s, line, ctx);
   }
 }
 
@@ -250,7 +291,7 @@ function makeDeals(s: GameState, d: Derived) {
   for (const id of BUILDING_IDS) {
     const def = BUILDINGS[id];
     if (!s.zones[def.zone] || !check(s, def.unlock)) continue;
-    if (def.maxLevel !== undefined && s.buildings[id] >= def.maxLevel) continue;
+    if (atMaxLevel(s, id)) continue;
     const cost = buildingCost(id, s.buildings[id]);
     for (const [r, v] of entries(cost)) {
       const short = v - s.res[r];
@@ -317,6 +358,14 @@ export function clickPurse(s: GameState, d: Derived, ctx: EngineCtx): void {
       what = ` Даром: «${BUILDINGS[id].name}» +1`;
     } else gain(s, d, "coins", Math.max(30, 180 * eventValue(s, d, "coins")), true, ctx);
   }
+  // v3 (ENG-8) «Золотые усы» II/III: some purses also hold pocket watches (a hash of the purse count: no RNG draw)
+  const wr = edictRank(s, "golden_whiskers");
+  const watches = PURSE_TRINKETS.amount[Math.max(0, wr - 1)] ?? 0;
+  if (watches > 0 && hash01(s.meta.lifetime.purses, 0x7e57) < (PURSE_TRINKETS.chance[wr - 1] ?? 0)) {
+    gain(s, d, "trinkets", watches, true, ctx);
+    ctx.fx.push({ k: "drop", res: "trinkets", amount: watches, big: true });
+    what += ` А в подкладке ещё ${watches} 💍!`;
+  }
   ctx.fx.push({ k: "purse", outcome: o });
   toast(ctx, `Кошелёк: ${def.name}!${what}`, def.icon, "gold");
   if (!s.flags.first_purse) s.flags.first_purse = true;
@@ -330,7 +379,7 @@ function cheapestBuilding(s: GameState): BuildingId | null {
   for (const id of BUILDING_IDS) {
     const def = BUILDINGS[id];
     if (!s.zones[def.zone] || !check(s, def.unlock)) continue;
-    if (def.maxLevel !== undefined && s.buildings[id] >= def.maxLevel) continue;
+    if (atMaxLevel(s, id)) continue;
     const v = marketValue(buildingCost(id, s.buildings[id]));
     if (v < bestV) {
       bestV = v;
@@ -345,15 +394,32 @@ export function clickShiny(s: GameState, d: Derived, id: number, ctx: EngineCtx)
   if (i < 0) return;
   const sh = s.shinies[i];
   s.shinies.splice(i, 1);
-  const amt = 30 * eventValue(s, d, sh.res);
+  // v3 (ENG-10): a curio in the grate rain goes to «Кунсткамера Короля», nothing else
+  if (sh.curio) {
+    if (catchCurio(s, sh.curio, ctx)) toast(ctx, `В Кунсткамеру: «${CURIOS[sh.curio].name}»!`, CURIOS[sh.curio].icon, "gold");
+    return;
+  }
+  // v3 (ENG-9): a carriage shiny carries its own amount (grate rain); an uncaught one pays T.rainAuto (sweepShiny)
+  const amt = sh.amt ?? 30 * eventValue(s, d, sh.res);
   gain(s, d, sh.res, amt, true, ctx);
   ctx.fx.push({ k: "drop", res: sh.res, amount: amt, x: sh.x, y: sh.y, frac: true });
+}
+
+/**
+ * A shiny leaves uncaught (expired, or cleared by an absence): a carriage one (grate rain, ENG-9) is swept up by the
+ * colony for T.rainAuto (25%) of its amount — the close-up's auto-collect share; a plain shiny is just gone.
+ * Returns what was credited (the caller emits the drop Fx).
+ */
+export function sweepShiny(s: GameState, d: Derived, sh: Shiny, ctx?: EngineCtx): number {
+  if (sh.kind !== "carriage" || !(typeof sh.amt === "number" && sh.amt > 0)) return 0;
+  return gain(s, d, sh.res, sh.amt * T.rainAuto, true, ctx);
 }
 
 /* ================================================================ suspicion */
 
 export function addSuspicion(s: GameState, d: Derived, amt: number): void {
-  if (!s.zones.cellars) return;
+  // v3 (ENG-9): «Гороховый суп» — nobody up there sees a thing
+  if (!s.zones.cellars || fogActive(s)) return;
   s.suspicion = Math.max(0, Math.min(100, s.suspicion + amt * d.suspicionMult));
 }
 
@@ -381,7 +447,8 @@ function resolveLine(s: GameState, sc: Scene, p: LinePair): LinePair {
     sc.id === "metro_train" ? s.stats.trains + 1 : sc.id === "royal_express" ? s.stats.expresses + 1 : sc.id === "capsule" ? s.stats.capsules + 1 : sc.seq,
   );
   const f = (x: string) => x.replaceAll("{time}", time).replaceAll("{dest}", dest).replaceAll("{n}", n);
-  return { human: f(p.human), rat: f(p.rat) };
+  // v3 (ENG-9): the line's loot (drops, gift) travels with it
+  return { ...p, human: f(p.human), rat: f(p.rat) };
 }
 
 /**
@@ -465,6 +532,7 @@ function endScene(s: GameState, d: Derived, ctx: EngineCtx): void {
   if (!sc) return;
   s.scene = null;
   s.timers.lastSceneEnd = s.time;
+  trainBreather(s);
   if (sc.haul) {
     s.haulLog.unshift(sc.haul);
     if (s.haulLog.length > 10) s.haulLog.length = 10;
@@ -472,6 +540,23 @@ function endScene(s: GameState, d: Derived, ctx: EngineCtx): void {
   ctx.fx.push({ k: "sceneEnd", id: sc.id, haul: sc.haul });
   void d;
 }
+
+/**
+ * The breather after a scene (ENG-5): a metro train or Royal Express due within T.trainBreather (35 s) of now waits
+ * until then, so it never starts glued to the haul card it followed: its «К путям!» plays (30 s) and the colony gets
+ * 5 s. A whistle already used for that train moves with it (as tickEvents' start() helper does).
+ */
+export function trainBreather(s: GameState): void {
+  const until = s.time + T.trainBreather;
+  for (const id of BREATHER_TRAINS) {
+    const at = s.timers[id];
+    if (!trainActive(s, id) || !(at < until)) continue;
+    if (s.timers.whistleUsedFor === at) s.timers.whistleUsedFor = until;
+    s.timers[id] = until;
+  }
+}
+
+const BREATHER_TRAINS = ["metro_train", "royal_express"] as const;
 
 /* ================================================================ item generation */
 
@@ -496,11 +581,15 @@ function itemValue(s: GameState, d: Derived, r: ResId, S: number, mult: number, 
 
 interface FillOpts {
   mult: number;
+  /** Share of every item value the colony keeps (ENG-8 vigilance; trinkets too). Default 1. */
+  keep?: number;
   drops?: Partial<Record<ResId, number>>;
   S?: number;
   trinketPieces?: number;
   itemCount?: number;
   sparks?: number;
+  /** v3 (ENG-10): the spark count ×this, rounded (Полковник Хэтчетт's set: 0.8). */
+  sparkMult?: number;
   special?: "cheese";
 }
 
@@ -509,7 +598,7 @@ function fillCar(s: GameState, d: Derived, sc: Scene, def: TrainCarDef, carIndex
   const drops = opts.drops ?? def.drops;
   const S = opts.S ?? def.S;
   const count = opts.itemCount ?? def.items;
-  const sparks = opts.sparks ?? def.sparks;
+  const sparks = Math.round((opts.sparks ?? def.sparks) * (opts.sparkMult ?? 1));
   let nextId = sc.items.length;
   for (let k = 0; k < count; k++) {
     // 💍🔔 count as revealed from the Metro on (revealedRes), so 1st-class/baggage cars drop them before the first one is owned
@@ -518,7 +607,7 @@ function fillCar(s: GameState, d: Derived, sc: Scene, def: TrainCarDef, carIndex
       id: nextId++,
       car: carIndex,
       res: r,
-      value: itemValue(s, d, r, S, opts.mult, opts.trinketPieces ?? 1),
+      value: itemValue(s, d, r, S, opts.mult, opts.trinketPieces ?? 1) * (opts.keep ?? 1),
       weight: S,
       t: window[0] + rand(s) * (window[1] - window[0]),
     };
@@ -533,6 +622,70 @@ function fillCar(s: GameState, d: Derived, sc: Scene, def: TrainCarDef, carIndex
   sc.cars.push(opts.special ? { kind: def.kind, itemIds: ids, special: opts.special } : { kind: def.kind, itemIds: ids });
   sc.piles.push({});
   sc.pileFractions.push(0);
+}
+
+/* ---------------------------------------------------------------- the line decides the loot (ENG-9) */
+
+type DropTable = Partial<Record<ResId, number>>;
+
+/** Mean market value of one item drawn from `drops` (as trainDropRes turns it into what is revealed), per second of S. */
+function tableWorth(s: GameState, d: Derived, drops: DropTable): number {
+  let w = 0;
+  let v = 0;
+  for (const [r, p] of entries(drops)) {
+    if (!(p > 0)) continue;
+    const got = trainDropRes(s, r);
+    w += p;
+    v += p * eventValue(s, d, got) * (RESOURCES[got].market ?? 0);
+  }
+  return w > 0 ? v / w : 0;
+}
+
+/**
+ * The drop table a scene line gives (LinePair.drops, ENG-9) and the item value factor that keeps one item worth, in
+ * market value, what an item of the plain table `base` is worth right now: the human line changes what falls, not how
+ * much the pass pays (the mean carriage and capsule stay as in v2). No line drops: `base` at ×1.
+ */
+export function lineTable(s: GameState, d: Derived, line: LinePair | undefined, base: DropTable): { drops: DropTable; k: number } {
+  const drops = line?.drops;
+  if (!drops) return { drops: base, k: 1 };
+  const a = tableWorth(s, d, base);
+  const b = tableWorth(s, d, drops);
+  return { drops, k: a > 0 && b > 0 ? a / b : 1 };
+}
+
+/** The resource a line's gift arrives as: 💍 always (a ring is a ring, and it reveals itself), the rest as trains drop it. */
+function giftRes(s: GameState, r: ResId): ResId {
+  return r === "trinkets" ? r : trainDropRes(s, r);
+}
+
+/**
+ * The line's gift (LinePair.gift, ENG-9): one extra item of `res` worth S seconds of income (💍: S pieces), in a car
+ * and at a moment picked by hashes of the scene seq — no RNG draw, so the rest of the build is the same with or without it.
+ */
+function addGift(s: GameState, d: Derived, sc: Scene, gift: NonNullable<LinePair["gift"]>, mult: number, keep: number): void {
+  if (!sc.cars.length) return;
+  const ci = Math.min(sc.cars.length - 1, Math.floor(hash01(sc.seq, 304) * sc.cars.length));
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const id of sc.cars[ci].itemIds) {
+    const t = sc.items[id]?.t;
+    if (t === undefined) continue;
+    lo = Math.min(lo, t);
+    hi = Math.max(hi, t);
+  }
+  if (!Number.isFinite(lo)) lo = hi = 0.5;
+  const r = giftRes(s, gift.res);
+  const item: CatchItem = {
+    id: sc.items.length,
+    car: ci,
+    res: r,
+    value: itemValue(s, d, r, gift.S, mult, gift.S) * keep,
+    weight: gift.S,
+    t: lo + hash01(sc.seq, 305) * (hi - lo),
+  };
+  sc.items.push(item);
+  sc.cars[ci].itemIds.push(item.id);
 }
 
 /* ================================================================ trains */
@@ -561,7 +714,14 @@ export function floodedTracks(s: GameState): boolean {
  * rush hour gives «Час пик» with p = 0.6, then the weighted rows (mail 12%, freight 10%), else the plain train.
  */
 export function pickVariant(s: GameState): TrainVariantId {
+  // dev handle (store.devTrigger(id, variant)): no RNG draw, the field is used once
+  if (s.forceVariant && TRAIN_VARIANTS[s.forceVariant]) {
+    const v = s.forceVariant;
+    delete s.forceVariant;
+    return v;
+  }
   if (!s.flags.first_train) return "normal";
+  if (fogActive(s)) return "fog";
   if (floodedTracks(s)) return "flooded";
   if (rushHour(s) && chance(s, TRAIN_VARIANTS.rush_hour.weight)) return "rush_hour";
   const r = rand(s);
@@ -655,31 +815,44 @@ export function buildTrain(s: GameState, d: Derived, id: TrainId): Scene {
     sc.announce = CHEESE_CAR.announce;
   }
   const mult = isCapsule ? d.capsuleValueMult : d.trainValueMult;
+  // v3 (ENG-8): above d.vigilanceFrom 👁 the humans guard their things: every item is worth less (0.5 at 100)
+  const keep = vigilance(s.suspicion, d.vigilanceFrom);
+  if (keep < 1) sc.vigilance = 1 - keep;
+  // v3 (ENG-10) Полковник Хэтчетт's set: fewer sparks on the rails (the capsule has none)
+  const sparkMult = isCapsule ? 1 : d.sparkMult;
   const depot = s.buildings.express_depot;
+  // v3 (ENG-9): the capsule's 👤 line decides its loot («Курс стабилен» — coins, «засорилась у Чипсайда» — gears and wire)
+  const capsuleLoot = isCapsule ? lineTable(s, d, sc.line, s.zones.cellars ? CAPSULE_DROPS_CELLARS : TRAIN_CARS.capsule.drops) : null;
   kinds.forEach((kind, i) => {
     const def = TRAIN_CARS[kind];
     const window: [number, number] = [i * sc.perCar + 0.2, (i + 1) * sc.perCar];
-    if (kind === "capsule") {
-      fillCar(s, d, sc, def, i, window, { mult, drops: s.zones.cellars ? CAPSULE_DROPS_CELLARS : def.drops });
+    if (kind === "capsule" && capsuleLoot) {
+      fillCar(s, d, sc, def, i, window, { mult: mult * capsuleLoot.k, keep, drops: capsuleLoot.drops });
     } else if (kind === "royal") {
-      // royal car: coins with S = 60 * 1.5^(depot-1), trinkets 2 pieces each
-      fillCar(s, d, sc, def, i, window, { mult: mult * Math.pow(1.5, Math.max(0, depot - 1)), trinketPieces: 2 });
+      // royal car: coins with S = 60 * 1.5^(depot-1), trinkets 2 pieces each; v3 (ENG-10) Лорд Эшби's set: +2 items
+      fillCar(s, d, sc, def, i, window, { mult: mult * Math.pow(1.5, Math.max(0, depot - 1)), keep, trinketPieces: 2, itemCount: def.items + d.royalExtraItems });
     } else if (i === cheese) {
-      fillCar(s, d, sc, def, i, window, { mult, drops: { cheese: 1 }, S: CHEESE_CAR.S, itemCount: CHEESE_CAR.items, sparks: 0, special: "cheese" });
+      fillCar(s, d, sc, def, i, window, { mult, keep, drops: { cheese: 1 }, S: CHEESE_CAR.S, itemCount: CHEESE_CAR.items, sparks: 0, special: "cheese" });
     } else if (variant !== "normal") {
       fillCar(s, d, sc, def, i, window, {
         mult,
+        keep,
         drops: v.dropOverride?.[kind] ?? def.drops,
         S: def.S * v.sMul,
         itemCount: Math.max(1, Math.round(def.items * v.countMul)),
         sparks: Math.round(def.sparks * v.sparkMul),
+        sparkMult,
       });
     } else {
-      fillCar(s, d, sc, def, i, window, { mult });
+      fillCar(s, d, sc, def, i, window, { mult, keep, sparkMult });
     }
   });
+  if (isCapsule && sc.line?.gift) addGift(s, d, sc, sc.line.gift, mult, keep);
+  // v3 (ENG-10): at most one curio for «Кунсткамера Короля» (a hash of the seq: the loot above stays as it was)
+  addCurioItem(s, sc);
   if (!isCapsule) {
-    sc.lantern = chance(s, isExpress ? 0.4 : 0.2);
+    // v3 (ENG-9): in «Гороховый суп» the lantern is lit twice as often (nobody sees it anyway)
+    sc.lantern = chance(s, (isExpress ? 0.4 : 0.2) * (v.fog ? 2 : 1));
     if (s.upgrades.grappling_hook) {
       const target = isExpress ? kinds.indexOf("royal") : kinds.findIndex((k, i) => (k === "baggage" || k === "first") && i !== cheese);
       sc.hookCar = target;
@@ -713,19 +886,31 @@ function crashText(sc: Scene): string {
 
 function catchDuration(sc: Scene): number {
   let last = 0;
-  for (const it of sc.items) last = Math.max(last, it.t);
+  // v3 (ENG-10): a curio lives CatchItem.lifeAdd longer than the rest
+  for (const it of sc.items) last = Math.max(last, it.t + (it.lifeAdd ?? 0));
   return last + sc.itemLife + 0.3;
+}
+
+/** A crash overturns the trolleys: this train's auto-collect share is multiplied by this (ENG-8). */
+export const CRASH_AUTO_MULT = 0.5;
+
+/** The crash odds of this pass: crashChance(position, variant, royal) × 0.5 with «Расписание в голове». */
+export function sceneCrashChance(s: Pick<GameState, "meta">, sc: Pick<Scene, "id" | "position" | "variant">): number {
+  if (sc.id !== "metro_train" && sc.id !== "royal_express") return 0;
+  return crashChance(sc.position, sc.variant ?? "normal", sc.id === "royal_express") * (s.meta.edicts.timetable_in_head ? 0.5 : 1);
 }
 
 function beginCatch(s: GameState, d: Derived, sc: Scene, ctx: EngineCtx): void {
   sc.auto = sc.id === "carriage" ? 0.25 : isTrainScene(sc.id) ? trainAuto(s, d, sc) : 0;
   if (sc.id === "metro_train" || sc.id === "royal_express") {
-    const pos = CREW_POSITIONS[sc.position];
-    const risk = pos.crash * (s.meta.edicts.timetable_in_head ? 0.5 : 1);
+    // v3 (ENG-8): the crash costs loot, not rats — the trolleys overturn (auto-collect ×0.5 for this train) and 3% of
+    // the colony get a 90 s scare; the variant's crashMul and the Royal Express ×1.5 change the odds
+    const risk = sceneCrashChance(s, sc);
     if (risk > 0 && chance(s, risk)) {
       sc.crash = true;
+      sc.auto *= CRASH_AUTO_MULT;
       const n = stun(s, 0.03, 90, "crash");
-      toast(ctx, `${crashText(sc)} ${n} ${plural(n, "крыса напугана", "крысы напуганы", "крыс напуганы")}`, "💥", "bad");
+      toast(ctx, `${crashText(sc)} Тележки перевернулись: автосбор ×${CRASH_AUTO_MULT}, ${n} ${plural(n, "крыса напугана", "крысы напуганы", "крыс напуганы")}`, "💥", "bad");
     }
     s.trainPrefs.lastNets = [...sc.nets];
   }
@@ -756,8 +941,10 @@ function resolveCatch(s: GameState, d: Derived, sc: Scene, result: CatchResult |
   let totalN = 0;
   let lanternCaught = 0;
   let handN = 0;
+  // v3 (ENG-10): a curio is rating-neutral — it counts for neither the share, the caught/total count nor a clean car
+  let curio: CatchItem["curio"];
   for (const it of sc.items) {
-    if (it.spark || it.skip) continue;
+    if (it.spark || it.skip || it.curio) continue;
     totalW += it.weight;
     totalN++;
   }
@@ -767,7 +954,13 @@ function resolveCatch(s: GameState, d: Derived, sc: Scene, result: CatchResult |
       const it = byId.get(c.id);
       if (!it || it.spark || caught.has(it.id)) continue;
       caught.add(it.id);
-      const m = (1 + 0.02 * Math.min(Math.max(0, c.combo), 25)) * (c.lantern && sc.lantern ? LANTERN_MULT : 1);
+      if (it.curio) {
+        curio = it.curio;
+        handN++;
+        continue;
+      }
+      // v3 (ENG-9): the tutorial carriage pays the paw double, so the lesson «catching pays» lands
+      const m = (1 + 0.02 * Math.min(Math.max(0, c.combo), 25)) * (c.lantern && sc.lantern ? LANTERN_MULT : 1) * (sc.tutorial ? TUTORIAL_HAND_MULT : 1);
       hand[it.res] = (hand[it.res] ?? 0) + it.value * m;
       caughtW += it.weight;
       caughtN++;
@@ -778,6 +971,10 @@ function resolveCatch(s: GameState, d: Derived, sc: Scene, result: CatchResult |
       const it = byId.get(id);
       if (!it || it.spark || caught.has(it.id)) continue;
       caught.add(it.id);
+      if (it.curio) {
+        curio = it.curio;
+        continue;
+      }
       netted[it.res] = (netted[it.res] ?? 0) + it.value;
       caughtW += it.weight;
       caughtN++;
@@ -787,6 +984,10 @@ function resolveCatch(s: GameState, d: Derived, sc: Scene, result: CatchResult |
     autoNetsAndClockwork(s, sc, caught, netted);
     for (const id of caught) {
       const it = byId.get(id)!;
+      if (it.curio) {
+        curio = it.curio;
+        continue;
+      }
       caughtW += it.weight;
       caughtN++;
     }
@@ -815,7 +1016,7 @@ function resolveCatch(s: GameState, d: Derived, sc: Scene, result: CatchResult |
     const k = (royalCar ? (perfect ? HOOK_JACKPOT.royalPerfect : HOOK_JACKPOT.royalHit) : perfect ? HOOK_JACKPOT.perfect : HOOK_JACKPOT.hit) * pos.hook;
     for (const id of sc.cars[sc.hookCar]?.itemIds ?? []) {
       const it = byId.get(id);
-      if (it && !it.spark && !it.skip && it.res !== "trinkets") jackpot[it.res] = (jackpot[it.res] ?? 0) + it.value * k;
+      if (it && !it.spark && !it.skip && !it.curio && it.res !== "trinkets") jackpot[it.res] = (jackpot[it.res] ?? 0) + it.value * k;
     }
     sc.jackpot = true;
     if (hook === "perfect") {
@@ -828,7 +1029,7 @@ function resolveCatch(s: GameState, d: Derived, sc: Scene, result: CatchResult |
   const usesPiles = isTrainScene(sc.id);
   const leftovers: Amounts = {};
   for (const it of sc.items) {
-    if (it.spark || it.skip || caught.has(it.id)) continue;
+    if (it.spark || it.skip || it.curio || caught.has(it.id)) continue;
     if (usesPiles) sc.piles[it.car][it.res] = (sc.piles[it.car][it.res] ?? 0) + it.value;
     else leftovers[it.res] = (leftovers[it.res] ?? 0) + it.value;
   }
@@ -900,10 +1101,12 @@ function resolveCatch(s: GameState, d: Derived, sc: Scene, result: CatchResult |
     notes: [],
   };
   if (jackpotSeconds !== undefined) sc.haul.jackpotSeconds = jackpotSeconds;
+  // v3 (ENG-10): the curio goes to «Кунсткамера Короля» (an owned one — a second copy — is just a curiosity)
+  if (curio && catchCurio(s, curio, ctx)) sc.haul.curio = curio;
   if (result && isTrainScene(sc.id) && sc.id !== "capsule") {
     let clean = 0;
     for (const car of sc.cars) {
-      const items = car.itemIds.map((id) => byId.get(id)).filter((it): it is CatchItem => !!it && !it.spark && !it.skip);
+      const items = car.itemIds.map((id) => byId.get(id)).filter((it): it is CatchItem => !!it && !it.spark && !it.skip && !it.curio);
       if (items.length > 0 && items.every((it) => caught.has(it.id))) clean++;
     }
     s.stats.cleanCars += Math.max(0, Math.floor(result.cleanCars ?? clean));
@@ -1069,7 +1272,8 @@ function finishTrain(s: GameState, d: Derived, sc: Scene, ctx: EngineCtx): void 
     h.suspicionParts = { pass, lantern: sc.lanternSusp ?? 0, total };
     h.title = sc.id === "capsule" ? `Капсулы №${s.stats.capsules}` : sc.id === "metro_train" ? `Улов поезда №${s.stats.trains}` : `Королевский экспресс №${s.stats.expresses}`;
     if (sc.multiplier > 1) h.notes.push(`Первый раз: добыча ×${sc.multiplier}`);
-    if (sc.crash) h.notes.push(crashText(sc));
+    if (sc.crash) h.notes.push(`${crashText(sc)} Тележки перевернулись: автосбор ×${CRASH_AUTO_MULT}`);
+    if (sc.vigilance && sc.vigilance > 0) h.vigilance = sc.vigilance;
     if (sc.jackpot) h.notes.push("ДЖЕКПОТ: чемодан с полки!");
     if (sc.announce) {
       h.notes.push(sc.announce);
@@ -1143,16 +1347,92 @@ function fmtShort(n: number): string {
 
 /* ================================================================ carriage */
 
+/**
+ * The tutorial carriage (ENG-9): hand catches count double, on items worth half: the paw earns what a v2 carriage paid
+ * while auto-collect alone brings half of it — catching is 8× doing nothing (4× on other carriages), and the first
+ * three minutes keep their GDD 14.1 pace (a double-value lesson at 3:30 put the active bot 1:15 ahead at the Sewers).
+ */
+const TUTORIAL_HAND_MULT = 2;
+const TUTORIAL_ITEM_MULT = 0.5;
+
+/**
+ * «Экипаж над решёткой». Before the Metro a close-up: the 👤 line decides the loot (lineTable, gift); the very first
+ * one (flags.first_carriage unset) is the catch tutorial — a T.carriageWarn 'warn' pre-roll, items living
+ * T.tutorialItemLife s spread evenly over T.tutorialWindow, worth TUTORIAL_ITEM_MULT, hand catches ×TUTORIAL_HAND_MULT.
+ * From the Metro on: grate rain.
+ */
 function startCarriage(s: GameState, d: Derived, ctx: EngineCtx): void {
-  const sc = newScene(s, "carriage", "catch", 0);
-  sc.itemLife = 2.0;
+  if (s.zones.metro) {
+    startGrateRain(s, d, ctx);
+    s.timers.carriage = s.time + between(s, T.carriageIntervalMetro);
+    return;
+  }
+  const tutorial = !s.flags.first_carriage;
+  const sc = newScene(s, "carriage", tutorial ? "warn" : "catch", tutorial ? T.carriageWarn : 0);
+  sc.itemLife = tutorial ? T.tutorialItemLife : 2.0;
   const def = TRAIN_CARS.carriage;
-  fillCar(s, d, sc, def, 0, [0.3, 5], { mult: 1, itemCount: randInt(s, 6, 10) });
+  const loot = lineTable(s, d, sc.line, def.drops);
+  const window: [number, number] = tutorial ? [T.tutorialWindow[0], T.tutorialWindow[1]] : [0.3, 5];
+  const worth = tutorial ? TUTORIAL_ITEM_MULT : 1;
+  fillCar(s, d, sc, def, 0, window, { mult: loot.k * worth, drops: loot.drops, itemCount: randInt(s, 6, 10) });
+  if (sc.line?.gift) addGift(s, d, sc, sc.line.gift, worth, 1);
   sc.auto = 0.25;
-  sc.phaseEnds = s.time + catchDuration(sc);
-  const interval = s.zones.metro ? T.carriageIntervalMetro : s.flags.first_capsule ? T.carriageIntervalCapsule : T.carriageInterval;
-  s.timers.carriage = s.time + between(s, interval);
+  if (tutorial) {
+    // one at a time, evenly from the first to the last moment of the window (the draws above stay as they were)
+    sc.tutorial = true;
+    const order = sc.items.filter((it) => !it.spark).sort((a, b) => a.t - b.t || a.id - b.id);
+    const n = order.length;
+    order.forEach((it, i) => (it.t = window[0] + (n > 1 ? (i / (n - 1)) * (window[1] - window[0]) : 0)));
+  } else {
+    // v3 (ENG-10): a curio for «Кунсткамера Короля» (not in the lesson: it would only distract)
+    addCurioItem(s, sc);
+    sc.phaseEnds = s.time + catchDuration(sc);
+  }
+  s.timers.carriage = s.time + between(s, s.flags.first_capsule ? T.carriageIntervalCapsule : T.carriageInterval);
   beginScene(s, sc, ctx);
+}
+
+/** The tutorial carriage's 'warn' pre-roll is over: the loot starts falling. */
+function beginCarriageCatch(s: GameState, sc: Scene, ctx: EngineCtx): void {
+  enterPhase(s, sc, "catch", catchDuration(sc), ctx);
+}
+
+/**
+ * After the Metro the carriage only passes over the grate (ENG-9): no close-up, its loot rains through the bars as
+ * carriage shinies along the grate band (amt = T.rainS s of income of the line's drops, life T.rainLife s; an uncaught
+ * one pays T.rainAuto as it expires — sweepShiny), the sky strip shows the cab trotting by (s.carriagePass).
+ */
+function startGrateRain(s: GameState, d: Derived, ctx: EngineCtx): void {
+  const seq = ++s.sceneSeq;
+  const pool = EVENT_LINE_POOLS.carriage;
+  const line = pool[Math.floor(hash01(seq, 101) * pool.length)];
+  const loot = lineTable(s, d, line, TRAIN_CARS.carriage.drops);
+  const until = s.time + T.rainLife;
+  const n = randInt(s, T.rainCount[0], T.rainCount[1]);
+  for (let i = 0; i < n; i++) {
+    const res = trainDropRes(s, pickWeighted(s, loot.drops) as ResId);
+    const x = randRange(s, 0.15, 0.85);
+    const y = randRange(s, 0.45, 0.6);
+    s.shinies.push({ id: ++s.sceneSeq, x, y, res, until, kind: "carriage", amt: T.rainS * eventValue(s, d, res) * loot.k });
+  }
+  if (line.gift) {
+    const res = giftRes(s, line.gift.res);
+    const amt = itemValue(s, d, res, line.gift.S, 1, line.gift.S);
+    s.shinies.push({ id: ++s.sceneSeq, x: 0.15 + 0.7 * hash01(seq, 306), y: 0.45 + 0.15 * hash01(seq, 307), res, until, kind: "carriage", amt });
+  }
+  // v3 (ENG-10): the carriage's curio falls with the rain (a hash of the pass seq, as a scene's); amt 0: a click adds it
+  // to «Кунсткамера Короля», an uncaught one is gone (it may drop again later)
+  const curio = rollCurio(s, { id: "carriage", seq, cars: [{ kind: "carriage" }] });
+  if (curio) {
+    const x = 0.15 + 0.7 * hash01(seq, CURIO_SALT + 3);
+    const y = 0.45 + 0.15 * hash01(seq, CURIO_SALT + 4);
+    s.shinies.push({ id: ++s.sceneSeq, x, y, res: "trinkets", until: until + CURIO_LIFE_ADD, kind: "carriage", amt: 0, curio: curio.id });
+  }
+  s.carriagePass = { seq, until: s.time + T.rainPass };
+  s.stats.carriages++;
+  markSeen(s, "carriage");
+  toast(ctx, GRATE_RAIN_TOAST.text, GRATE_RAIN_TOAST.icon, "info");
+  news(s, "carriage", {}, ctx);
 }
 
 /* ================================================================ downpour */
@@ -1193,6 +1473,8 @@ function resolveDownpour(s: GameState, d: Derived, sc: Scene, cleared: number, c
   sc.pileFractions = [];
   sc.itemLife = 2.4;
   fillCar(s, d, sc, def, 0, [0.2, 6], { mult: 1, itemCount: 4 * closed });
+  // v3 (ENG-10): the water may bring what fell in the street (a carriage curio)
+  addCurioItem(s, sc);
   sc.auto = 0.25;
   enterPhase(s, sc, "catch", catchDuration(sc), ctx);
 }
@@ -1203,7 +1485,7 @@ function startCat(s: GameState, d: Derived, ctx: EngineCtx): void {
   const warn = T.catWarn + (s.upgrades.bell_the_cat ? 3 : 0);
   const sc = newScene(s, "cat", "warn", warn);
   const hp = Math.ceil(Math.min(40, 15 + 3 * s.stats.catsBeaten) * (s.upgrades.bell_the_cat ? 0.7 : 1));
-  sc.taps = { count: 1, hp, duration: T.catFight };
+  sc.taps = { count: 1, hp, duration: catFightSec(hp) };
   s.flags.first_cat = true;
   s.timers.catForcedAt = Infinity;
   s.timers.cat = s.time + T.catCheck;
@@ -1221,9 +1503,11 @@ function catHide(s: GameState, d: Derived, sc: Scene, ctx: EngineCtx): void {
   endScene(s, d, ctx);
 }
 
-function resolveCat(s: GameState, d: Derived, sc: Scene, beaten: boolean, ctx: EngineCtx): void {
+function resolveCat(s: GameState, d: Derived, sc: Scene, beaten: boolean, ctx: EngineCtx, perfect = 0): void {
   if (beaten) {
-    const bell = s.upgrades.bell_the_cat ? 1.5 : 1;
+    // v3 (ENG-9): CAT_ROUT_COUNTERS countered lunges send the cat off with its tail down — the stakes ×CAT_ROUT_MULT
+    const routed = perfect >= CAT_ROUT_COUNTERS;
+    const bell = (s.upgrades.bell_the_cat ? 1.5 : 1) * (routed ? CAT_ROUT_MULT : 1);
     const reward: Amounts = {
       blueprints: Math.max(10, 90 * s.ema.blueprints) * bell,
       cheese: 60 * eventValue(s, d, "cheese") * bell,
@@ -1232,10 +1516,13 @@ function resolveCat(s: GameState, d: Derived, sc: Scene, beaten: boolean, ctx: E
     s.suspicion = Math.max(0, s.suspicion - 25);
     s.stats.catsBeaten++;
     s.meta.lifetime.catsBeaten++;
-    if (!s.meta.trophies.includes("cat_fur")) s.meta.trophies.push("cat_fur");
     award(s, "cat_bonked", ctx);
     news(s, "cat_win", {}, ctx);
-    toast(ctx, `ПО УСАМ! ${summarize(sc.gained)} (подозрение −25)`, "🥊", "gold");
+    // v3 (ENG-10): the tuft of fur (the v2 trophy) on the first win; later the bell of Murzifer — always after a rout
+    const curio = catCurio(s, sc, routed, ctx);
+    if (!s.meta.trophies.includes("cat_fur")) s.meta.trophies.push("cat_fur");
+    const exhibit = curio ? ` В Кунсткамеру: «${CURIOS[curio].name}»!` : "";
+    toast(ctx, `${routed ? "Кот бежит, поджав хвост!" : "ПО УСАМ!"} ${summarize(sc.gained)} (подозрение −25)${exhibit}`, "🥊", "gold");
   } else {
     const n = stun(s, 0.03, 60, "cat");
     s.res.cheese = s.res.cheese * 0.95;
@@ -1247,6 +1534,13 @@ function resolveCat(s: GameState, d: Derived, sc: Scene, beaten: boolean, ctx: E
 }
 
 /* ================================================================ ratcatcher */
+
+/** The curio a cat win brings (ENG-10): the tuft first, then the bell (CURIO_BELL_CHANCE by hash, a rout always). */
+function catCurio(s: GameState, sc: Scene, routed: boolean, ctx: EngineCtx): CatchItem["curio"] {
+  if (!s.meta.curios.includes("cat_fur_tuft")) return catchCurio(s, "cat_fur_tuft", ctx) ? "cat_fur_tuft" : undefined;
+  if (s.meta.curios.includes("murzifer_bell") || !(routed || hash01(sc.seq, CURIO_SALT) < CURIO_BELL_CHANCE)) return undefined;
+  return catchCurio(s, "murzifer_bell", ctx) ? "murzifer_bell" : undefined;
+}
 
 function startRatcatcher(s: GameState, d: Derived, ctx: EngineCtx): void {
   const sc = newScene(s, "ratcatcher", "warn", T.ratcatcherWarn);
@@ -1282,10 +1576,12 @@ function resolveRatcatcher(s: GameState, d: Derived, sc: Scene, popped: number, 
     addAmounts(sc.gained, gainAll(s, d, reward, true, ctx));
     s.stats.pipersBroken++;
     s.meta.lifetime.pipersBroken++;
-    if (!s.meta.trophies.includes("broken_pipe")) s.meta.trophies.push("broken_pipe");
     award(s, "piper_broken", ctx);
     news(s, "ratcatcher_win", {}, ctx);
-    toast(ctx, `ДУДКА СЛОМАНА! ${summarize(sc.gained)}`, "🎶", "gold");
+    // v3 (ENG-10): the broken pipe (the v2 trophy) is an exhibit of «Кунсткамера Короля»
+    const exhibit = catchCurio(s, "broken_pipe", ctx) ? ` В Кунсткамеру: «${CURIOS.broken_pipe.name}»!` : "";
+    if (!s.meta.trophies.includes("broken_pipe")) s.meta.trophies.push("broken_pipe");
+    toast(ctx, `ДУДКА СЛОМАНА! ${summarize(sc.gained)}${exhibit}`, "🎶", "gold");
     sc.choice = "won";
   } else {
     s.suspicion = 40;
@@ -1328,7 +1624,8 @@ function autoResolvePhase(s: GameState, d: Derived, sc: Scene, ctx: EngineCtx): 
       resolvePiles(s, d, sc, null, ctx);
       break;
     case "warn":
-      if (sc.id === "cat") catHide(s, d, sc, ctx);
+      if (sc.id === "carriage") beginCarriageCatch(s, sc, ctx);
+      else if (sc.id === "cat") catHide(s, d, sc, ctx);
       else ratcatcherPay(s, d, sc, ctx);
       break;
     case "taps":
@@ -1349,12 +1646,28 @@ function finishSimpleCatch(s: GameState, d: Derived, sc: Scene, ctx: EngineCtx):
   if (sc.id === "carriage") {
     s.stats.carriages++;
     if (!s.flags.first_carriage) s.flags.first_carriage = true;
-    toast(ctx, `Экипаж проехал: ${summarize(sc.gained) || "ничего не поймано"}`, "🐎", "good");
+    toast(ctx, carriageToast(sc), EVENT_LINES.carriage.icon, "good");
     news(s, "carriage", {}, ctx);
   } else if (sc.id === "downpour") {
     toast(ctx, `Плавучий мусор: ${summarize(sc.gained) || "ничего"}`, "🌊", "good");
   }
   endScene(s, d, ctx);
+}
+
+/**
+ * The carriage's end toast (ENG-9) says how the paw did: «Экипаж: поймано 5/8 — 🍞+64 🪙+9 (без вас было бы 🍞+21)».
+ * The parenthesis — what auto-collect alone would have brought — only when the paw caught something.
+ */
+export function carriageToast(sc: Scene): string {
+  const got = summarize(sc.gained) || "ничего";
+  let text = `Экипаж: поймано ${sc.stats.caught}/${sc.stats.total} — ${got}`;
+  if (sc.stats.hand > 0) {
+    const alone: Amounts = {};
+    for (const it of sc.items) if (!it.spark && !it.skip) alone[it.res] = (alone[it.res] ?? 0) + it.value * sc.auto * sc.multiplier;
+    const a = summarize(alone);
+    if (a) text += ` (без вас было бы ${a})`;
+  }
+  return text;
 }
 
 export function sceneAction(s: GameState, d: Derived, action: SceneAction, ctx: EngineCtx): void {
@@ -1420,7 +1733,7 @@ export function sceneAction(s: GameState, d: Derived, action: SceneAction, ctx: 
       if (sc.id === "cat") {
         if (action.option === "fight") {
           sc.choice = "fight";
-          enterPhase(s, sc, "taps", T.catFight, ctx);
+          enterPhase(s, sc, "taps", sc.taps?.duration ?? T.catFight, ctx);
         } else catHide(s, d, sc, ctx);
       } else if (sc.id === "ratcatcher") {
         if (action.option === "fight") {
@@ -1432,7 +1745,7 @@ export function sceneAction(s: GameState, d: Derived, action: SceneAction, ctx: 
     case "taps":
       if (sc.phase !== "taps") return;
       if (sc.id === "downpour") resolveDownpour(s, d, sc, action.cleared, ctx, action.fastMs);
-      else if (sc.id === "cat") resolveCat(s, d, sc, action.cleared >= 1, ctx);
+      else if (sc.id === "cat") resolveCat(s, d, sc, action.cleared >= 1, ctx, Math.max(0, Math.floor(action.perfect ?? 0)));
       else resolveRatcatcher(s, d, sc, action.cleared, ctx);
       return;
     case "dismiss":
@@ -1534,6 +1847,111 @@ export function offlineTrains(s: GameState, d: Derived, seconds: number, eta: nu
   }
   // the sceneSeq advanced while building expectation scenes; harmless
   return { count, loot };
+}
+
+/**
+ * A short absence (≤ 60 s, store.creditShortHold) is credited as plain ticks, but a train due meanwhile must not play
+ * out unattended (K1): every active metro/express timer below s.time + away + 15 moves to s.time + away + 15 + h·10
+ * (h = a hash of the timer and s.time, no draw from the sim RNG). A whistle already used for that train moves with it.
+ * Its «К путям!» is held back during the credit ticks (toastFor = the new time) so it comes right after them with the
+ * real countdown: call releaseDeferredToast(s, deferred) once the credit ticks are done. Returns the new train times.
+ */
+export function deferTrainsForReturn(s: GameState, away: number): number[] {
+  const out: number[] = [];
+  const floor = s.time + Math.max(0, away) + 15;
+  const ids: TrainId[] = ["metro_train", "royal_express"];
+  ids.forEach((id, i) => {
+    const at = s.timers[id];
+    if (!trainActive(s, id) || !Number.isFinite(at) || at >= floor) return;
+    const next = floor + hash01(i + 1, Math.floor(s.time * 10)) * 10;
+    if (s.timers.whistleUsedFor === at) s.timers.whistleUsedFor = next;
+    s.timers[id] = next;
+    s.timers.toastFor = next;
+    out.push(next);
+  });
+  return out;
+}
+
+/** After the credit ticks: let the deferred train's «К путям!» fire on the next tick (see deferTrainsForReturn). */
+export function releaseDeferredToast(s: GameState, deferred: readonly number[]): void {
+  if (deferred.includes(s.timers.toastFor)) s.timers.toastFor = -1;
+}
+
+/* ================================================================ v3 contract helpers */
+
+/** «Гороховый суп» lies over London (ENG-9): suspicion does not grow, metro trains run as the 'fog' variant. */
+export function fogActive(s: Pick<GameState, "time" | "buffs">): boolean {
+  return s.time < (s.buffs.fogUntil ?? 0);
+}
+
+/** Seconds to the next «Гороховый суп» from run time t: T.fogInterval by a hash of t (no draw from the sim RNG). */
+export function fogGap(t: number): number {
+  const [lo, hi] = T.fogInterval;
+  return lo + hash01(Math.floor(t * 10), 0xf06) * (hi - lo);
+}
+
+/**
+ * Human vigilance (ENG-8): the share of train and capsule item values kept at suspicion S, 1 up to `from` (50, Биг-Бен
+ * 40), then −1% per point: 0.5 at 100. HaulSummary.vigilance = 1 − this.
+ */
+export function vigilance(S: number, from = 50): number {
+  return 1 - Math.max(0, S - from) / 100;
+}
+
+/**
+ * Crash odds of the crew position for one pass (ENG-8): CREW_POSITIONS[pos].crash × the variant's crashMul (freight 2,
+ * flooded 1.5, Edinburgh mail 0.5) × 1.5 for the Royal Express. Without the «Расписание в голове» halving.
+ */
+export function crashChance(pos: CrewPosition, variant: TrainVariantId = "normal", royal = false): number {
+  return CREW_POSITIONS[pos].crash * (TRAIN_VARIANTS[variant]?.crashMul ?? 1) * (royal ? 1.5 : 1);
+}
+
+/**
+ * The auto-collect share a position is worth on average (ENG-8 TrainRumble gamble readout): min(cap, base·posMult),
+ * halved on a crash, weighted by crashChance: × (1 − 0.5·crashChance).
+ */
+export function expectedAuto(pos: CrewPosition, variant: TrainVariantId, base: number, cap = 0.9): number {
+  return Math.min(cap, base * CREW_POSITIONS[pos].auto) * (1 - 0.5 * crashChance(pos, variant));
+}
+
+/** Seconds a perfect counter of the cat's lunge may be off its peak (ENG-9 SCN-4): ±0.18 s. */
+export const CAT_COUNTER_WINDOW = 0.18;
+
+/**
+ * The cat fight's hit rule (ENG-9): a countered lunge («Контрудар!») is worth this many hits against the paw's hp. The
+ * fight UI does the hit maths (catFight.tapEffect) and sends {taps, cleared, perfect}; the engine pays the rout.
+ */
+export const CAT_COUNTER_HITS = 3;
+/** Countered lunges that rout the cat («Кот бежит, поджав хвост!») and the reward multiplier they bring. */
+export const CAT_ROUT_COUNTERS = 3;
+export const CAT_ROUT_MULT = 1.5;
+
+/** Hits a fight of `plain` ordinary hits and `perfect` counters deals to the paw: plain + CAT_COUNTER_HITS · perfect. */
+export function catHits(plain: number, perfect: number): number {
+  return Math.max(0, plain) + CAT_COUNTER_HITS * Math.max(0, perfect);
+}
+
+/**
+ * How long the fight with a cat of `hp` lasts (s): T.catFight (10), or — for a tough cat — long enough to beat it by
+ * counters alone: the ceil(hp / CAT_COUNTER_HITS)-th lunge at its latest (+0.15) and its counter window, rounded up
+ * to a whole second. A 40-hp cat: 14 lunges → 16 s; up to 27 hp (9 lunges) the fight stays 10 s.
+ */
+export function catFightSec(hp: number): number {
+  const lunges = Math.ceil(Math.max(1, hp) / CAT_COUNTER_HITS);
+  return Math.max(T.catFight, Math.ceil(0.6 + 1.1 * (lunges - 1) + 0.15 + CAT_COUNTER_WINDOW));
+}
+
+/**
+ * When the cat's n-th lunge (0-based) peaks, in seconds from the start of the fight (ENG-9): 0.6 + 1.1·n ± 0.15, jittered
+ * by a hash of (seq, n) so the UI and the engine agree. The paw winds up 0.3 s before the peak.
+ */
+export function catLungeAt(seq: number, n: number): number {
+  return 0.6 + 1.1 * n + 0.15 * (2 * hash01(seq, n) - 1);
+}
+
+/** «🚇 ??? — там ходит Бог Грома»: the Metro teaser on the map once «Гул из глубины» played (ENG-9), until the Metro opens. */
+export function metroTeaser(s: Pick<GameState, "flags" | "zones">): string | null {
+  return s.flags.first_rumble && !s.zones.metro ? "🚇 ??? — там ходит Бог Грома" : null;
 }
 
 export { pushNews };

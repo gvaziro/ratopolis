@@ -5,6 +5,8 @@
  * when a coronation opens (next/dynamic, SH-5): the express runs through the five zone bands collecting rats while
  * the bell strikes twelve, gears and buttons rain down, then the King's portrait gets its crown and the line of
  * engine coronationLine() types itself. Reduced motion → a static tableau with the card shown at once.
+ * v3 (SHL-2): the third and later coronations open straight on the finale card under three bells; «Полная
+ * церемония ›» replays the whole ride.
  */
 import { memo, useEffect, useId, useRef, useState } from "react";
 import { sfx } from "@/audio/sfx";
@@ -15,8 +17,8 @@ import { ZONE_ORDER, ZONES } from "@/game/data/zones";
 import { coronationLine } from "@/game/engine/narrative";
 import { useGame } from "@/game/store";
 import { fmtInt, plural } from "@/lib/format";
+import { BELLS, ringBells, shortCoronation, SHORT_BELLS } from "./coronationGate";
 
-const BELLS = 12;
 /** Seconds between bell strikes; keep in step with sfx.coronationBells(). */
 const BELL_GAP = 0.9;
 const BELL_START = 0.25;
@@ -43,9 +45,20 @@ export default function Celebration({ onClose }: { onClose: () => void }) {
     const l = coronationLine(useGame.getState().game);
     return `${l.human} ${l.rat}`;
   });
-  const [finale, setFinale] = useState(reduced);
+  // a third and later coronation: the finale card at once, three bells; «Полная церемония ›» rides the whole way
+  const [repeat] = useState(() => shortCoronation(useGame.getState().game.meta.coronations, window.location.search));
+  const [ride, setRide] = useState(!repeat);
+  const bells = ride ? BELLS : SHORT_BELLS;
+  const [finale, setFinale] = useState(reduced || repeat);
   const [typed, setTyped] = useState(reduced ? LINE.length : 0);
   const showButton = typed >= LINE.length;
+  const replay = () => {
+    setRide(true);
+    setFinale(false);
+    setTyped(0);
+    // the twelve bells from the first, in step with the ride (the short form's three may still be sounding)
+    ringBells(BELLS, true);
+  };
 
   const rootRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -122,7 +135,7 @@ export default function Celebration({ onClose }: { onClose: () => void }) {
     };
 
     const strike = (n: number) => {
-      if (strikeRef.current) strikeRef.current.textContent = `${roman(n)} / XII`;
+      if (strikeRef.current) strikeRef.current.textContent = `${roman(n)} / ${roman(bells)}`;
       bellRef.current?.animate(
         [{ transform: "rotate(0)" }, { transform: "rotate(20deg)" }, { transform: "rotate(-14deg)" }, { transform: "rotate(7deg)" }, { transform: "rotate(0)" }],
         { duration: 760, easing: "ease-out" },
@@ -136,7 +149,7 @@ export default function Celebration({ onClose }: { onClose: () => void }) {
         window.setTimeout(() => ring.remove(), 950);
       }
       glowRef.current?.animate([{ opacity: 0.55 }, { opacity: 0 }], { duration: 700, easing: "ease-out" });
-      rain(n === BELLS ? 26 : 9);
+      rain(n === bells ? 26 : 9);
     };
 
     const t0 = performance.now();
@@ -149,10 +162,10 @@ export default function Celebration({ onClose }: { onClose: () => void }) {
       last = now;
       const t = (now - t0) / 1000;
 
-      while (next < BELLS && t >= BELL_START + next * BELL_GAP) strike(++next);
+      while (next < bells && t >= BELL_START + next * BELL_GAP) strike(++next);
 
-      // the express: left→right through each band, tunnel to tunnel
-      const k = (t - TRAIN_START) / BAND_TIME;
+      // the express: left→right through each band, tunnel to tunnel (the full ride only)
+      const k = ride ? (t - TRAIN_START) / BAND_TIME : -1;
       const b = Math.floor(k);
       if (k >= 0 && b < bands.length) {
         const u = k - b;
@@ -204,7 +217,7 @@ export default function Celebration({ onClose }: { onClose: () => void }) {
       }
     };
     raf = requestAnimationFrame(loop);
-    const fin = window.setTimeout(() => setFinale(true), FINALE_AT * 1000);
+    const fin = ride ? window.setTimeout(() => setFinale(true), FINALE_AT * 1000) : 0;
 
     return () => {
       cancelAnimationFrame(raf);
@@ -212,7 +225,7 @@ export default function Celebration({ onClose }: { onClose: () => void }) {
       window.removeEventListener("resize", resize);
       burstRef.current = null;
     };
-  }, [reduced]);
+  }, [reduced, ride, bells]);
 
   // the card: a confetti burst, then the line types itself
   useEffect(() => {
@@ -265,7 +278,7 @@ export default function Celebration({ onClose }: { onClose: () => void }) {
           <p className="truncate text-[11px] text-parchment-dim md:text-xs">Крысиный экспресс собирает колонию по всем пяти зонам</p>
         </div>
         <span ref={strikeRef} className="shrink-0 font-mono text-xs font-bold text-gaslight tabular sm:text-sm" aria-live="off">
-          {reduced ? "XII / XII" : "— / XII"}
+          {reduced ? `${roman(bells)} / ${roman(bells)}` : `— / ${roman(bells)}`}
         </span>
         {!finale && (
           <button type="button" className="ml-1 min-h-10 shrink-0 rounded-md border border-line px-2 text-xs text-parchment-dim hover:bg-panel-3" onClick={() => setFinale(true)}>
@@ -326,8 +339,11 @@ export default function Celebration({ onClose }: { onClose: () => void }) {
             className="relative m-auto w-full max-w-sm rounded-xl border-2 border-[#d4af37] bg-gradient-to-b from-[#3b2c12] via-panel-2 to-panel px-4 pb-4 pt-6 text-center shadow-[0_0_60px_rgba(212,175,55,.35),0_20px_40px_rgba(0,0,0,.7)]"
           >
             <Rivets />
-            <p className="font-display text-[11px] uppercase tracking-[0.3em] text-brass">Экстренный выпуск · Крысиные Ведомости</p>
-            <div className="relative mx-auto mt-3 w-28 sm:w-36">
+            {/* one line at 375 px: the paper's name joins from sm; the crown (-top-7) clears it by the wrapper's mt-8 */}
+            <p className="whitespace-nowrap font-display text-[10px] uppercase tracking-[0.16em] text-brass sm:text-[11px] sm:tracking-[0.2em]">
+              Экстренный выпуск<span className="max-sm:hidden"> · Крысиные Ведомости</span>
+            </p>
+            <div className="relative mx-auto mt-8 w-28 sm:w-36 short:w-20">
               <div className="absolute -top-7 left-1/2 z-10 w-14 -translate-x-1/2" style={reduced ? undefined : { animation: "rh-crown .9s cubic-bezier(.3,1.4,.5,1) .15s both" }}>
                 <CrownArt />
               </div>
@@ -350,6 +366,16 @@ export default function Celebration({ onClose }: { onClose: () => void }) {
               >
                 Да здравствует Крысиный Король!
               </BrassButton>
+            )}
+            {/* a repeat coronation: the whole ride on request (the card covers the header, so it lives here) */}
+            {repeat && !ride && !reduced && (
+              <button
+                type="button"
+                className="mt-2 inline-flex min-h-10 items-center rounded-md px-3 font-display text-sm text-brass-light underline decoration-brass-dark underline-offset-4 hover:bg-panel-3/60 hover:text-gaslight"
+                onClick={replay}
+              >
+                Полная церемония ›
+              </button>
             )}
           </div>
         </div>

@@ -1,34 +1,33 @@
 "use client";
 
 /**
- * "Медали" (PA-7): the medal cabinet (+1% each) grouped into Колония / События и поезда / Мета / Секретные, with
- * progress on counter medals and no spoilers (medals of zones the colony never reached show «???»), trophies,
- * the «Журнал путейца» (car kinds and train variants by best rating), the two-scale bestiary with the share of
- * lines seen, the run chronicle with colony records, and lifetime statistics.
+ * "Медали" (PA-7, v3 PAN-2): the medal cabinet (+1% each) grouped into Колония / События и поезда / Династия /
+ * Секретные, with progress on counter medals and no spoilers (medals of zones the colony never reached show «???»),
+ * the «Кунсткамера Короля» (Kunstkamera.tsx), the «Журнал путейца» (car kinds and train variants by best rating), the
+ * two-scale bestiary with the share of lines seen, the run chronicle with colony records, and lifetime statistics.
+ * Phones get four tiles a row with 10.5 px names (no text under 10 px, noTinyText.test.ts).
  * One pre-formatted model, sampled three times a second (PA-1).
  */
 import { memo, useMemo, useState } from "react";
+import { districtAt, districtInfoOf } from "@/game/data/districts";
 import { EVENT_LINE_POOLS, EVENT_LINES, RATING_TABLE, TRAIN_CARS, TRAIN_VARIANTS, TRAIN_VARIANT_ORDER } from "@/game/data/events";
 import { ACHIEVEMENT_ORDER, ACHIEVEMENTS } from "@/game/data/meta";
-import { districtName } from "@/game/data/zones";
 import { RECORD_LABEL, fmtRunTime } from "@/game/engine/actions";
 import { achievementProgress } from "@/game/engine/progress";
 import { useSampled } from "@/game/useSampled";
-import type { AchievementId, EventId, GameState, HaulRating, RecordKey, RunStats, SceneEventId, TrainCarKind, ZoneId } from "@/game/types";
-import { fmt, fmtInt, fmtTime } from "@/lib/format";
+import type { AchievementId, EventId, GameState, HaulRating, Meta, RecordKey, RunHistoryEntry, RunStats, SceneEventId, TrainCarKind, ZoneId } from "@/game/types";
+import { fmt, fmtDuration, fmtInt } from "@/lib/format";
 import { Badge, cx } from "@/components/ui/kit";
 import { isFresh } from "./alerts";
 import { SectionTitle, Toolbar } from "./common";
-
-const TROPHIES: { id: string; icon: string; name: string; desc: string }[] = [
-  { id: "cat_fur", icon: "🐈‍⬛", name: "Клок шерсти", desc: "Вырван у Кота Мурзифера в честном бою" },
-  { id: "broken_pipe", icon: "🎶", name: "Сломанная дудка", desc: "Отобрана у Крысолова. Больше не поёт" },
-];
+import Kunstkamera from "./Kunstkamera";
+import { LAP } from "./londonGeo";
 
 const BESTIARY: EventId[] = ["carriage", "purse", "shiny", "capsule", "downpour", "market", "cat", "ratcatcher", "metro_train", "royal_express"];
 
 const STATS: { key: keyof RunStats | "playSeconds" | "coinsEver"; label: string; fmt?: (n: number) => string }[] = [
-  { key: "playSeconds", label: "Время под землёй", fmt: fmtTime },
+  // elapsed time runs past fmtTime's «> 4 д» cap (v3 ENG-12)
+  { key: "playSeconds", label: "Время под землёй", fmt: fmtDuration },
   { key: "coinsEver", label: "Монеток за всё время", fmt },
   { key: "births", label: "Родилось крысят" },
   { key: "clicks", label: "Кликов по решётке" },
@@ -52,7 +51,7 @@ const STATS: { key: keyof RunStats | "playSeconds" | "coinsEver"; label: string;
 const GROUPS: { id: "colony" | "events" | "meta" | "secret"; title: string }[] = [
   { id: "colony", title: "Колония" },
   { id: "events", title: "События и поезда" },
-  { id: "meta", title: "Мета" },
+  { id: "meta", title: "Династия" },
   { id: "secret", title: "Секретные" },
 ];
 
@@ -101,7 +100,6 @@ interface MedalsModel {
   earned: number;
   tiles: MedalTile[];
   best: string;
-  trophies: string[];
   seen: string[];
   lines: Partial<Record<SceneEventId, number>>;
   cars: Partial<Record<TrainCarKind, HaulRating>>;
@@ -109,6 +107,11 @@ interface MedalsModel {
   records: { what: string; time: string }[];
   history: { district: string; time: string; eRun: string; crowns: number; crowned: boolean; best: string }[];
   stats: string[];
+}
+
+/** The district a chronicle entry was walked in: its own districtId (v3), else the colony's route at that index. */
+function historyDistrict(meta: Pick<Meta, "visited">, h: RunHistoryEntry): string {
+  return h.districtId ? districtInfoOf(h.districtId, Math.floor(Math.max(0, h.district) / LAP) + 1).name : districtAt(meta, h.district).name;
 }
 
 /** Everything the cabinet shows, numbers pre-formatted (sampled 3×/s, PA-1). */
@@ -127,14 +130,13 @@ function medalsModel(s: GameState): MedalsModel {
     earned: tiles.filter((t) => t.has).length,
     tiles,
     best: meta.bestRating,
-    trophies: meta.trophies,
     seen: meta.seenEvents,
     lines: Object.fromEntries(Object.entries(meta.seenLines).map(([k, v]) => [k, v?.length ?? 0])),
     cars: meta.carLog,
     variants: meta.variantLog,
     records: RECORD_KEYS.filter((k) => meta.records[k] !== undefined).map((k) => ({ what: RECORD_LABEL[k], time: fmtRunTime(meta.records[k] ?? 0) })),
     history: [...meta.history].reverse().map((h) => ({
-      district: districtName(h.district),
+      district: historyDistrict(meta, h),
       time: fmtRunTime(h.seconds),
       eRun: fmt(h.eRun),
       crowns: h.crowns,
@@ -159,19 +161,8 @@ export default function MedalsTab() {
       </p>
       <MedalCabinet tilesKey={tilesKey} />
 
-      <SectionTitle>Трофеи</SectionTitle>
-      <div className="grid grid-cols-2 gap-1.5">
-        {TROPHIES.map((t) => {
-          const has = m.trophies.includes(t.id);
-          return (
-            <div key={t.id} className={cx("rounded-lg border p-2 text-center", has ? "border-brass-dark bg-brass/10" : "border-dashed border-line bg-black/20")}>
-              <div className={cx("text-2xl", !has && "rr-silhouette")}>{t.icon}</div>
-              <p className={cx("font-display text-sm font-bold", has ? "text-brass-light" : "text-parchment-dim")}>{has ? t.name : "Пустая полка"}</p>
-              <p className="text-[10px] leading-tight text-parchment-dim">{has ? t.desc : "Трофей ещё предстоит добыть"}</p>
-            </div>
-          );
-        })}
-      </div>
+      <SectionTitle>Кунсткамера</SectionTitle>
+      <Kunstkamera />
 
       <SectionTitle>Журнал путейца</SectionTitle>
       <Journal carsKey={JSON.stringify(m.cars)} variantsKey={JSON.stringify(m.variants)} />
@@ -255,7 +246,7 @@ const MedalCabinet = memo(function MedalCabinet({ tilesKey }: { tilesKey: string
                 {got}/{list.length}
               </span>
             </p>
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(3.6rem,1fr))] gap-1">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(4.4rem,1fr))] gap-1">
               {list.map((t) => (
                 <MedalTileView key={t.id} t={t} selected={t.id === sel} onPick={() => setSel((v) => (v === t.id ? null : t.id))} />
               ))}
@@ -291,13 +282,15 @@ function MedalTileView({ t, selected, onPick }: { t: MedalTile; selected: boolea
       >
         <span className={cx(!t.has && "rr-silhouette")}>{t.show === "open" ? def.icon : t.show === "secret" ? "🔒" : "❔"}</span>
       </span>
-      <span className={cx("line-clamp-2 w-full text-[9px] font-bold leading-[11px]", t.has ? "text-brass-light" : "text-parchment-dim")}>{name}</span>
+      <span lang="ru" className={cx("line-clamp-2 w-full break-words text-[10.5px] font-bold leading-[12px] hyphens-auto", t.has ? "text-brass-light" : "text-parchment-dim")}>
+        {name}
+      </span>
       {t.progress && (
         <span className="w-full px-0.5">
           <span className="block h-0.5 overflow-hidden rounded-full bg-black/50">
             <span className="block h-full bg-gaslight" style={{ width: `${Math.round(t.frac * 100)}%` }} />
           </span>
-          <span className="block font-mono text-[8px] leading-tight text-parchment-dim tabular">{t.progress}</span>
+          <span className="block truncate font-mono text-[10px] leading-tight text-parchment-dim tabular">{t.progress}</span>
         </span>
       )}
       {t.fresh && <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-gaslight shadow-[0_0_6px_var(--gaslight)]" aria-label="новая" />}
@@ -337,7 +330,9 @@ const Journal = memo(function Journal({ carsKey, variantsKey }: { carsKey: strin
         style={r ? { borderColor: RATING_COLOR[r] } : undefined}
       >
         <span className={cx("text-lg leading-none", !r && "rr-silhouette")}>{icon}</span>
-        <span className="line-clamp-1 w-full text-[9px] leading-tight text-parchment-dim">{name}</span>
+        <span lang="ru" className="line-clamp-2 w-full break-words text-[10px] leading-[11px] text-parchment-dim hyphens-auto">
+          {name}
+        </span>
         <span className="text-[10px] leading-tight" style={{ color: r ? RATING_COLOR[r] : undefined }}>
           {r ? (row?.icon || "·") : "—"}
         </span>
@@ -346,8 +341,8 @@ const Journal = memo(function Journal({ carsKey, variantsKey }: { carsKey: strin
   };
   return (
     <div className="space-y-1.5">
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(3.6rem,1fr))] gap-1">{JOURNAL_CARS.map((k) => stamp(k, TRAIN_CARS[k].icon, TRAIN_CARS[k].name, cars[k]))}</div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(3.6rem,1fr))] gap-1">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(4.4rem,1fr))] gap-1">{JOURNAL_CARS.map((k) => stamp(k, TRAIN_CARS[k].icon, TRAIN_CARS[k].name, cars[k]))}</div>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(4.4rem,1fr))] gap-1">
         {TRAIN_VARIANT_ORDER.map((v) => stamp(v, TRAIN_VARIANTS[v].icon, TRAIN_VARIANTS[v].name, variants[v]))}
       </div>
     </div>

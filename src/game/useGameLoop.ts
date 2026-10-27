@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { creditHold } from "./engine/hold";
 import { TICK } from "./engine/step";
 import { isActive, noteHidden, noteVisible, useGame } from "./store";
 
@@ -12,9 +13,12 @@ import { isActive, noteHidden, noteVisible, useGame } from "./store";
  * the frame re-arms in `finally`, so a throw anywhere in it cannot silently stop the loop.
  * The game clock is *held* while the tab is hidden or a ceremony is open (store.ceremony: the coronation show, the
  * migration card): nothing ticks, saves stand for the moment the hold began, and once the tab is visible with no
- * ceremony open the held time is credited: above 60 s as an absence (catch-up and its report), below as plain ticks.
- * A short hold that involved a ceremony is a pause instead (not credited): a train or event due meanwhile then waits
- * for the player rather than playing out unattended in the catch-up ticks.
+ * ceremony open the held time is credited by engine/hold.creditHold (v3 ENG-5, K1):
+ * - above 60 s as an absence (catch-up and its report);
+ * - up to 60 s with a ceremony, or with a scene UI driving a scene (alt-tab mid-train), as a pause: nothing is credited,
+ *   the scene waits exactly where it was (SCN-1 froze its clock) and an event due meanwhile waits for the player;
+ * - up to 60 s otherwise as store.creditShortHold: a train due meanwhile is deferred behind a fresh «К путям!», then
+ *   plain ticks.
  */
 export function useGameLoop(): void {
   useEffect(() => {
@@ -32,6 +36,8 @@ export function useGameLoop(): void {
     let heldAt: number | null = null;
     /** A ceremony was open at some point of the current hold. */
     let heldForCeremony = false;
+    /** A scene UI was driving a scene when the current hold began (a short alt-tab mid-train is a pause). */
+    let heldForScene = false;
 
     const halted = () => {
       const st = useGame.getState();
@@ -40,8 +46,10 @@ export function useGameLoop(): void {
 
     /** Stop the game clock at `at`; every save from now on (interval, unload, take-over) is stamped `at`. */
     const hold = (at: number) => {
-      if (useGame.getState().ceremony) heldForCeremony = true;
+      const st = useGame.getState();
+      if (st.ceremony) heldForCeremony = true;
       if (heldAt !== null) return;
+      heldForScene = !!st.game.scene?.interactive;
       heldAt = at;
       noteHidden(at);
     };
@@ -50,14 +58,12 @@ export function useGameLoop(): void {
     const release = () => {
       if (heldAt === null || hiddenAt !== null || useGame.getState().ceremony) return;
       const away = (Date.now() - heldAt) / 1000;
-      const pause = heldForCeremony && away <= 60;
+      const ceremony = heldForCeremony;
+      const scene = heldForScene;
       heldAt = null;
       heldForCeremony = false;
-      if (!halted() && !pause) {
-        const st = useGame.getState();
-        if (away > 60) st.catchUp(away);
-        else if (away > 0.5) st.advance(Math.min(600, Math.floor(away / TICK)), false);
-      }
+      heldForScene = false;
+      if (!halted()) creditHold(useGame.getState(), away, ceremony, scene);
       noteVisible();
       last = performance.now();
       lastWall = Date.now();
@@ -99,11 +105,10 @@ export function useGameLoop(): void {
         }
         return;
       }
-      // a hidden period is caught up by release() instead; a negative gap (clock change) is ignored
+      // a hidden period is caught up by release() instead; a negative gap (clock change) is ignored. A frozen tab
+      // (system sleep) is credited like a hold: a scene on screen froze with it and waits, a due train is deferred
       if (gap > 2 && document.visibilityState === "visible") {
-        const st = useGame.getState();
-        if (gap > 60) st.catchUp(gap);
-        else st.advance(Math.min(600, Math.floor(gap / TICK)), false);
+        creditHold(useGame.getState(), gap, false);
         last = now;
         acc = 0;
         return;

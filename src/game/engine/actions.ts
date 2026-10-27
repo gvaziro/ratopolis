@@ -1,10 +1,11 @@
 import { BUILDINGS, MILESTONES, VISUAL_TIERS } from "../data/buildings";
 import { JOBS, OPEN_JOBS } from "../data/jobs";
 import { COMMISSIONS } from "../data/commissions";
-import { EDICTS, EXPRESS_STAGE_LINES, EXPRESS_STAGES, SEALS } from "../data/meta";
+import { EDICTS, EXPRESS_STAGES, SEALS, expressStageLine } from "../data/meta";
 import { RESOURCES } from "../data/resources";
 import { FOREMAN_UPGRADES, UPGRADES, ratMemoryUpgrades } from "../data/upgrades";
-import { ZONES, ZONE_FROM, ZONE_ORDER, districtName } from "../data/zones";
+import { districtFree, districtInfo, districtInfoOf, districtOptions, legacyVisited, type DistrictId } from "../data/districts";
+import { ZONES, ZONE_FROM, ZONE_ORDER } from "../data/zones";
 import {
   JOB_IDS,
   RES_IDS,
@@ -23,6 +24,7 @@ import {
   type ResId,
   type ResMap,
   type SealId,
+  type SteamPriority,
   type UpgradeId,
   type ZoneId,
 } from "../types";
@@ -32,6 +34,7 @@ import { award, edictRank, gain, hasFreeSlot, jobUnlocked, news, normalizeJobs, 
 import { converterPotential, derive, eventValue, idleRats, medalCount, type Derived } from "./derive";
 import { onZoneOpen } from "./events";
 import {
+  atMaxLevel,
   buildingCost,
   buyCount,
   canAfford,
@@ -42,12 +45,15 @@ import {
   expressStageCost,
   isComplete,
   remaining,
+  unitValue,
 } from "./formulas";
 import { coronationLine, humanWeekday } from "./narrative";
 import { commissionStat } from "./progress";
 import { rand } from "./rng";
 import { abandonCommission, commissionPossible, offerCommissions } from "./commissions";
 import { KEPT_STAGES_MAX, applyRoyalLitter, newRun } from "./state";
+import { potentialRate } from "./potential";
+import { CLICK_BLUEPRINTS } from "./ranks";
 
 /* ================================================================ click */
 
@@ -80,6 +86,14 @@ export function click(s: GameState, d: Derived, ctx: EngineCtx, opts: ClickOpts 
   const amount = (d.click + d.clickHuntPct * s.gross.crumbs) * power;
   const added = gain(s, d, "crumbs", amount, false, ctx);
   ctx.fx.push({ k: "click", amount: added > 0 ? added : amount, res: "crumbs", full: added <= 0, auto, x: opts.x, y: opts.y });
+  // v3 (ENG-8) «Лапы предков» II/III: a click of the paw also brings 0.5% / 1% of the potential 📜/s (the late bottleneck)
+  if (!auto) {
+    const k = CLICK_BLUEPRINTS[Math.max(0, edictRank(s, "ancestral_paws") - 1)] ?? 0;
+    if (k > 0) {
+      const bp = k * potentialRate(s, d, "blueprints");
+      if (bp > 0) gain(s, d, "blueprints", bp, true, ctx);
+    }
+  }
 
   // finds
   const drops: [ResId, number, number, boolean][] = [
@@ -218,6 +232,44 @@ export function setFocus(s: GameState, job: JobId): void {
   if (jobUnlocked(s, job)) s.focus = job;
 }
 
+/**
+ * The elder's «Сделать» for an assign hint (v3 ENG-1 HintAction 'assign'): move up to n rats into `job` (slots
+ * respected) from `donors` in their order — hints.applyHintAction passes potential.donorPool: the foragers above 1.3×
+ * the upkeep, then the idle, then crews whose output only overflows a full store; without donors, the foragers above
+ * assignJob's food reserve, then the idle. Into the foragers themselves (the hunger hint) it is assignJob: the idle,
+ * then the scavengers and pickpockets. With setFocusToo the job also becomes the newborn focus WITHOUT
+ * flags.focus_manual.
+ */
+export function applyAssignHint(s: GameState, d: Derived, job: JobId, n: number, setFocusToo = false, donors?: { job: JobId; n: number }[]): void {
+  if (setFocusToo && jobUnlocked(s, job)) s.focus = job;
+  let want = Math.floor(n);
+  if (!(want > 0) || job === "idle" || !jobUnlocked(s, job)) return;
+  if (job === "forager") {
+    assignJob(s, d, job, want);
+    return;
+  }
+  want = Math.min(want, d.slots[job] - s.jobs[job]);
+  const list = donors ?? [
+    { job: "forager" as JobId, n: Math.max(0, s.jobs.forager - foragerKeep(s, d, "forager")) },
+    { job: "idle" as JobId, n: idleRats(s) },
+  ];
+  for (const x of list) {
+    if (!(want > 0)) break;
+    if (x.job === job) continue;
+    const take = Math.min(want, x.n, x.job === "idle" ? idleRats(s) : s.jobs[x.job]);
+    if (!(take > 0)) continue;
+    if (x.job !== "idle") s.jobs[x.job] -= take;
+    s.jobs[job] += take;
+    want -= take;
+  }
+  normalizeJobs(s, d);
+}
+
+/** Steam priority valve (v3 ENG-4): "works" = smelters and smiths first (v2), "power" = presses and clocks first. */
+export function setSteamPriority(s: GameState, p: SteamPriority): void {
+  if (p === "works" || p === "power") s.steamPriority = p;
+}
+
 export function setAssignMode(s: GameState, mode: AssignMode): void {
   if (mode === "ratios" && !s.upgrades.rat_relay) return;
   if (mode === "smart" && !s.upgrades.tube_orders) return;
@@ -228,18 +280,57 @@ export function setRatios(s: GameState, ratios: Partial<GameState["ratios"]>): v
   s.ratios = { ...s.ratios, ...ratios };
 }
 
+/* ---------------------------------------------------------------- smart assignment (v3 ENG-6) */
+
+/** Limited producers without inputs, filled after the foragers (step 2). */
+const SMART_LIMITED: JobId[] = ["cheese_thief", "coal_miner", "appraiser"];
+/** Converters in the order smartAssign fills them (step 3). */
+const SMART_FILL: JobId[] = ["stoker", "smelter", "smith", "mechanic", "scholar"];
+/** The same converters in the order their terms enter an input's supply sum (the v2 order: keeps the sums bit-identical). */
+const SMART_SUM: JobId[] = ["mechanic", "stoker", "smelter", "smith", "scholar"];
+/** Open jobs that take the rest (step 4). */
+const SMART_OPEN: JobId[] = ["pickpocket", "scavenger", "forager"];
+/** Jobs without inputs (their output counts as supply as is), in JOB_IDS order. */
+const NO_INPUT_JOBS: JobId[] = JOB_IDS.filter((j) => Object.keys(JOBS[j].consumes).length === 0);
+/** Each converter's inputs as [res, per worker] pairs (what entries(consumes) gives), hoisted out of the fill loop. */
+const SMART_INPUTS = Object.fromEntries(
+  SMART_FILL.map((j) => [j, (Object.entries(JOBS[j].consumes) as [ResId, number | undefined][]).filter((e): e is [ResId, number] => e[1] !== undefined)]),
+) as Record<JobId, [ResId, number][]>;
+
+/**
+ * The supply of one converter input as a sum over the jobs that touch it: `base` (buildings) + Σ jobs[add]·addPw
+ * (producers without inputs) + Σ over converters (jobs·pw, then − jobs·use·speed). Jobs that neither make nor use
+ * the resource add exactly 0 and are left out, so the sum is the v2 one, term for term (same order, same rounding).
+ */
+interface SupplyTerms {
+  base: number;
+  add: JobId[];
+  addPw: number[];
+  conv: JobId[];
+  convPw: number[];
+  convUse: number[];
+  convSpeed: number[];
+}
+
 /**
  * "Умное распределение" (tube_orders): food positive, converter inputs covered,
  * the rest goes where the market value per worker is highest.
+ *
+ * v3 (ENG-6): same algorithm and result as v2, without its cost. v2 rebuilt every input's supply from all buildings
+ * and jobs for each worker it added (≈ 3 ms per call at 667 rats, 2 s for an 8 h catch-up); the supply terms are now
+ * built once per call and the fill loop only re-adds a handful of products. A running total (sup += delta) would be
+ * cheaper still, but its rounding drifts from the v2 sums and could flip a borderline worker; this keeps them exact.
  */
 export function smartAssign(s: GameState, d: Derived): void {
   const total = s.rats;
-  const jobs = Object.fromEntries(JOB_IDS.map((j) => [j, 0])) as Record<JobId, number>;
+  const jobs = {} as Record<JobId, number>;
+  for (const j of JOB_IDS) jobs[j] = 0;
   let left = total;
   const perWorker = (j: JobId, r: ResId) => (JOBS[j].produces[r] ?? 0) * d.jobSpeed[j] * d.jobYield[j];
+  const buildings = Object.keys(d.buildingOut) as BuildingId[];
   const passive = (r: ResId) => {
     let v = 0;
-    for (const id of Object.keys(d.buildingOut) as BuildingId[]) v += d.buildingOut[id][r] ?? 0;
+    for (const id of buildings) v += d.buildingOut[id][r] ?? 0;
     return v;
   };
   // 1. food
@@ -249,28 +340,51 @@ export function smartAssign(s: GameState, d: Derived): void {
   jobs.forager = foragers;
   left -= foragers;
   // 2. limited producers without inputs
-  for (const j of ["cheese_thief", "coal_miner", "appraiser"] as JobId[]) {
+  for (const j of SMART_LIMITED) {
     if (!jobUnlocked(s, j)) continue;
     const n = Math.min(left, d.slots[j]);
     jobs[j] = n;
     left -= n;
   }
   // 3. converters, limited by input supply (supply from producers so far + buildings)
+  const terms: Partial<Record<ResId, SupplyTerms>> = {};
+  const termsOf = (r: ResId): SupplyTerms => {
+    const t: SupplyTerms = { base: passive(r), add: [], addPw: [], conv: [], convPw: [], convUse: [], convSpeed: [] };
+    for (const j of NO_INPUT_JOBS) {
+      if (JOBS[j].produces[r] === undefined) continue;
+      t.add.push(j);
+      t.addPw.push(perWorker(j, r));
+    }
+    for (const j of SMART_SUM) {
+      const use = JOBS[j].consumes[r];
+      if (JOBS[j].produces[r] === undefined && use === undefined) continue;
+      t.conv.push(j);
+      t.convPw.push(perWorker(j, r));
+      t.convUse.push(use ?? 0);
+      t.convSpeed.push(d.jobSpeed[j]);
+    }
+    return (terms[r] = t);
+  };
   const supply = (r: ResId) => {
-    let v = passive(r);
-    for (const j of JOB_IDS) if (Object.keys(JOBS[j].consumes).length === 0) v += jobs[j] * perWorker(j, r);
-    for (const j of ["mechanic", "stoker", "smelter", "smith", "scholar"] as JobId[]) {
-      v += jobs[j] * perWorker(j, r);
-      v -= jobs[j] * (JOBS[j].consumes[r] ?? 0) * d.jobSpeed[j];
+    const t = terms[r] ?? termsOf(r);
+    let v = t.base;
+    for (let i = 0; i < t.add.length; i++) v += jobs[t.add[i]] * t.addPw[i];
+    for (let i = 0; i < t.conv.length; i++) {
+      const n = jobs[t.conv[i]];
+      v += n * t.convPw[i];
+      v -= n * t.convUse[i] * t.convSpeed[i];
     }
     return v;
   };
-  for (const j of ["stoker", "smelter", "smith", "mechanic", "scholar"] as JobId[]) {
+  const scavengerOpen = jobUnlocked(s, "scavenger");
+  for (const j of SMART_FILL) {
     if (!jobUnlocked(s, j)) continue;
+    const inputs = SMART_INPUTS[j];
+    const speed = d.jobSpeed[j];
     while (left > 0 && jobs[j] < d.slots[j]) {
       let failed: ResId | null = null;
-      for (const [r, v] of entries(JOBS[j].consumes)) {
-        if (supply(r) < v * d.jobSpeed[j] - 1e-9 && s.res[r] < 50 * v) {
+      for (const [r, v] of inputs) {
+        if (s.res[r] < 50 * v && supply(r) < v * speed - 1e-9) {
           failed = r;
           break;
         }
@@ -278,7 +392,7 @@ export function smartAssign(s: GameState, d: Derived): void {
       if (failed) {
         // a supporting scavenger only helps when the missing input is scrap (not coins or steam: those
         // would flood the colony with scavengers whenever the coin or steam stock dips)
-        if ((failed === "wire" || failed === "buttons") && jobUnlocked(s, "scavenger") && left > 1) {
+        if ((failed === "wire" || failed === "buttons") && scavengerOpen && left > 1) {
           jobs.scavenger++;
           left--;
           continue;
@@ -290,7 +404,7 @@ export function smartAssign(s: GameState, d: Derived): void {
     }
   }
   // 4. the rest: best market value per worker among open jobs (skip resources that are full)
-  const open = (["pickpocket", "scavenger", "forager"] as JobId[]).filter((j) => jobUnlocked(s, j));
+  const open = SMART_OPEN.filter((j) => jobUnlocked(s, j));
   if (open.length && left > 0) {
     const value = (j: JobId) =>
       entries(JOBS[j].produces).reduce((a, [r, v]) => a + (s.res[r] >= d.caps[r] ? 0 : v * (RESOURCES[r].market ?? 1) * d.jobYield[j]), 0);
@@ -347,19 +461,51 @@ export function contributeExpedition(s: GameState, zone: ZoneId, res: ResId | nu
   return any;
 }
 
+/**
+ * «Внести», keeping `keep` in the stores (v3 ENG-1: the elder's contribute hint saves the price of the building that
+ * starts a missing resource, e.g. the workshop's 150 🔘). Starts the dig when the expedition is complete.
+ */
+export function contributeExpeditionKeeping(s: GameState, zone: ZoneId, keep: Amounts, ctx: EngineCtx): boolean {
+  if (s.zones[zone] || s.digging) return false;
+  let any = false;
+  for (const [r, need] of entries(remaining(expeditionCost(s, zone), s.projects[zone] ?? {}))) {
+    const spare = s.res[r] - (keep[r] ?? 0);
+    if (!(need > 0) || !(spare > 0)) continue;
+    if (contributeExpedition(s, zone, r, ctx, Math.min(1, spare / s.res[r]))) any = true;
+  }
+  // a zero-fraction call only checks completion (the dig starts once the crew is there)
+  contributeExpedition(s, zone, null, ctx, 0);
+  return any;
+}
+
 /* ---------------------------------------------------------------- scouting payouts (EN-4) */
 
-/** Mean contributed fractions of an expedition that pay the scouts (steps 1, 2, 3). */
-export const SCOUT_STEPS = [0.25, 0.5, 0.75] as const;
+/**
+ * Contributed shares of an expedition (expeditionFraction) that pay the scouts: steps 1–4. v3 (ENG-3, K5): a fourth
+ * step at 90% gives the long last stretch of a coin-heavy expedition (the Terminal's 8M 🪙) a beat of its own.
+ */
+export const SCOUT_STEPS = [0.25, 0.5, 0.75, 0.9] as const;
+/** The 90% step's toast (ENG-3); steps 1–3 read «Разведчики вернулись: …». */
+export const SCOUT_NEAR_TEXT = "Разведчики: до цели рукой подать";
 /** A payout is this many seconds of the resource's event value. */
 export const SCOUT_SECONDS = 60;
 
-/** Contributed share of an expedition: the mean over its cost resources of min(1, contributed / need) (as GoalWidget shows it). */
+/**
+ * Contributed share of an expedition, weighted by value (v3 ENG-3, K5): Σ min(1, paid/need)·need·unitValue(r) /
+ * Σ need·unitValue(r). The map's % bar and the scout steps read it, so 8M 🪙 count for what they are worth: the four
+ * cheap resources of the Terminal no longer make 80% on their own. (v2: the plain mean of the per-resource shares.)
+ */
 export function expeditionFraction(s: GameState, zone: ZoneId): number {
-  const list = entries(expeditionCost(s, zone)).filter(([, v]) => v > 0);
-  if (!list.length) return 0;
   const prog = s.projects[zone] ?? {};
-  return list.reduce((a, [r, v]) => a + Math.min(1, (prog[r] ?? 0) / v), 0) / list.length;
+  let paid = 0;
+  let total = 0;
+  for (const [r, need] of entries(expeditionCost(s, zone))) {
+    if (!(need > 0)) continue;
+    const w = need * Math.max(unitValue(r), 1e-6);
+    total += w;
+    paid += Math.min(1, (prog[r] ?? 0) / need) * w;
+  }
+  return total > 0 ? paid / total : 0;
 }
 
 /**
@@ -387,8 +533,9 @@ export function scoutResource(s: GameState, d: Derived, zone: ZoneId): ResId | n
 }
 
 /**
- * Pay the scouts when an expedition's contributed share first crosses 25/50/75%: 60 s of event value of the scarcest
- * resource (over the cap), a news line and Fx scout. Each step pays once per run (s.scouted survives saves).
+ * Pay the scouts when an expedition's contributed share first crosses 25/50/75/90%: 60 s of event value of the scarcest
+ * resource (over the cap), a news line and Fx scout. Each step pays once per run (s.scouted survives saves); the 90%
+ * step (v3) pays like the others and has its own line («до цели рукой подать»).
  */
 function checkScouting(s: GameState, zone: ZoneId, ctx: EngineCtx, d?: Derived): void {
   const done = Math.max(0, Math.floor(s.scouted[zone] ?? 0));
@@ -403,8 +550,8 @@ function checkScouting(s: GameState, zone: ZoneId, ctx: EngineCtx, d?: Derived):
     const r = scoutResource(s, dd, zone);
     if (!r) continue;
     const amount = gain(s, dd, r, SCOUT_SECONDS * eventValue(s, dd, r), true, ctx);
-    ctx.fx.push({ k: "scout", zone, res: r, amount, step: k as 1 | 2 | 3 });
-    news(s, "scout", { from: ZONE_FROM[zone], amount: fmt(amount), icon: RESOURCES[r].icon }, ctx);
+    ctx.fx.push({ k: "scout", zone, res: r, amount, step: k as 1 | 2 | 3 | 4 });
+    news(s, k >= 4 ? "scout_near" : "scout", { from: ZONE_FROM[zone], amount: fmt(amount), icon: RESOURCES[r].icon }, ctx);
   }
 }
 
@@ -482,7 +629,8 @@ export function contributeExpress(s: GameState, res: ResId | null, ctx: EngineCt
     if (s.express.stage < 10) {
       s.express.stage++;
       ctx.fx.push({ k: "expressStage", stage: s.express.stage });
-      news(s, "express_stage", { stage: EXPRESS_STAGES[s.express.stage - 1], human: EXPRESS_STAGE_LINES[s.express.stage - 1]?.human ?? "" }, ctx);
+      // v3 (ENG-11): the second express and the later ones get their own lines (stages 6–10 replay every run)
+      news(s, "express_stage", { stage: EXPRESS_STAGES[s.express.stage - 1], human: expressStageLine(s.express.stage, s.meta.coronations).human }, ctx);
       if (s.express.stage >= 10) coronation(s, ctx);
     } else {
       s.express.wagons++;
@@ -505,7 +653,8 @@ function coronation(s: GameState, ctx: EngineCtx): void {
   // v2 (EN-11): «Ещё до обеда» is a coronation before 10:00 of the human clock: 05:00 + time·5 s < 10:00
   if (s.time * 5 < 5 * 3600) award(s, "before_noon", ctx);
   if (s.hungry) award(s, "hungry_king", ctx);
-  if (s.meta.migrations === 0) award(s, "forever_tuesday", ctx);
+  // v3 (ENG-3) «Короткая неделя»: the express plan needs a migration, so the second run is the earliest crown
+  if (s.meta.migrations === 1) award(s, "forever_tuesday", ctx);
   checkRecord(s, "coronation", ctx);
   // EN-12: the King starts handing out commissions
   if (!s.commissions) offerCommissions(s);
@@ -602,9 +751,7 @@ export function foremanTick(s: GameState, d: Derived, ctx: EngineCtx): void {
       let best: BuildingId | null = null;
       let bestV = Infinity;
       for (const id of list) {
-        if (!buildingVisible(s, id)) continue;
-        const def = BUILDINGS[id];
-        if (def.maxLevel !== undefined && s.buildings[id] >= def.maxLevel) continue;
+        if (!buildingVisible(s, id) || atMaxLevel(s, id)) continue;
         const cost = buildingCost(id, s.buildings[id]);
         if (!canAfford(s, cost)) continue;
         const v = entries(cost).reduce((a, [rr, x]) => a + x * (RESOURCES[rr].market ?? 1), 0);
@@ -624,14 +771,25 @@ export function setForeman(s: GameState, key: "nests" | "storage", on: boolean):
 
 /* ================================================================ prestige */
 
-export function migrate(s: GameState, now: number, ctx: EngineCtx): GameState | null {
+/**
+ * The Great Migration: crowns, the chronicle, a fresh run. v3 (ENG-11): `to` picks the next district (the map offers
+ * migrationPreview(s).options; any district not yet visited on this lap is accepted); without it, or for a visited /
+ * unknown id, options[0] — the legacy sequence while it is free, so the sim and the default route walk London as v2 did.
+ */
+export function migrate(s: GameState, now: number, ctx: EngineCtx, to?: DistrictId): GameState | null {
   if (!canMigrate(s)) return null;
   const gained = crownsForRun(s);
   const meta = structuredClone(s.meta);
   meta.crowns += gained;
   meta.crownsEver += gained;
   meta.migrations += 1;
-  meta.district += 1;
+  const options = districtOptions(s.meta);
+  const dest = to && districtFree(s.meta, to) ? districtInfoOf(to, options[0].lap) : options[0];
+  const visited = s.meta.visited.length === s.meta.district + 1 ? [...s.meta.visited] : legacyVisited(s.meta.district);
+  visited.push(dest.id);
+  meta.visited = visited;
+  meta.districtId = dest.id;
+  meta.district = visited.length - 1;
   meta.lifetime.playSeconds = s.meta.lifetime.playSeconds;
   // remembered even without the edict: "Чертежи экспресса" bought on the migration screen keeps these stages;
   // at most KEPT_STAGES_MAX (5): stages 6–10 and the coronation (×1.25 crowns, before_noon) replay every run
@@ -640,6 +798,7 @@ export function migrate(s: GameState, now: number, ctx: EngineCtx): GameState | 
   // EN-11 chronicle: the finished run, newest last, at most 20
   meta.history.push({
     district: s.meta.district,
+    districtId: districtInfo(s.meta).id,
     seconds: s.time,
     eRun: s.eRun,
     crowns: gained,
@@ -654,6 +813,7 @@ export function migrate(s: GameState, now: number, ctx: EngineCtx): GameState | 
     k: "migration",
     crowns: gained,
     district: meta.district,
+    districtId: dest.id,
     weekday: humanWeekday(next),
     summary: { seconds: s.time, eRun: s.eRun, trains: s.stats.trains, bestRating, rats: s.rats },
   });
@@ -661,8 +821,8 @@ export function migrate(s: GameState, now: number, ctx: EngineCtx): GameState | 
   applyReveals(next);
   award(next, "first_migration", ctx);
   if (miser) award(next, "miser", ctx);
-  news(next, "migration", { district: districtName(meta.district) }, ctx);
-  ctx.fx.push({ k: "toast", text: `Великое Переселение! +${gained} 👑. Новый район: ${districtName(meta.district)}`, icon: "👑", tone: "gold" });
+  news(next, "migration", { district: dest.name }, ctx);
+  ctx.fx.push({ k: "toast", text: `Великое Переселение! +${gained} 👑. Новый район: ${dest.name}`, icon: "👑", tone: "gold" });
   return next;
 }
 
@@ -779,7 +939,8 @@ export function applyReveals(s: GameState): void {
   set("tab_jobs", s.rats >= 2);
   set("tab_upgrades", UPGRADE_IDS.some((u) => upgradeVisible(s, u)));
   set("news", s.rats >= 5 || s.meta.migrations > 0);
-  set("goal", s.time >= 120 || s.meta.migrations > 0);
+  // v3 (ENG-1): the goal widget comes with the first visitors, not at 2:00
+  set("goal", !!s.flags.vagrants || s.time >= 120 || s.meta.migrations > 0);
   set("tab_map", s.rats >= 12 || !!s.zones.sewers);
   set("tab_schedule", !!s.flags.first_capsule || !!s.zones.metro || !!s.zones.sewers);
   set("suspicion", !!s.zones.cellars);

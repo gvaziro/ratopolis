@@ -1,0 +1,108 @@
+# CI (REP-1): every push to main and every pull request is typechecked, linted, unit-tested and built twice —
+# the server build (Vercel) and the static export (GitHub Pages / any file host, REP-3; built, never deployed here).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  check:
+    name: Typecheck, lint, tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Restore ESLint cache
+        uses: actions/cache@v4
+        with:
+          path: .eslintcache
+          key: eslint-${{ runner.os }}-${{ hashFiles('package-lock.json', 'eslint.config.mjs') }}-${{ github.sha }}
+          restore-keys: |
+            eslint-${{ runner.os }}-${{ hashFiles('package-lock.json', 'eslint.config.mjs') }}-
+
+      # next-env.d.ts and the route types are generated, not committed: create them before tsc
+      - name: Typecheck
+        run: |
+          npm run typegen
+          npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # fast suite only (*.slow.test.ts run nightly in balance.yml)
+      - name: Unit tests
+        run: npm test
+
+  build:
+    name: Build (server + static export)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Restore Next.js build cache
+        uses: actions/cache@v4
+        with:
+          path: .next/cache
+          key: nextjs-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ hashFiles('src/**', 'public/**', 'next.config.ts', 'tsconfig.json') }}
+          restore-keys: |
+            nextjs-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-
+
+      - name: next build
+        run: npm run build
+
+      # the same layout as the Pages deploy (pages.yml), so a broken export fails here and not on main
+      - name: Static export
+        run: npm run build:static
+        env:
+          BASE_PATH: /ratopolis
+          NEXT_PUBLIC_SITE_URL: https://gvaziro.github.io/ratopolis
+
+      # the same site URL as the export above: without it the check skips og:image, which pages.yml does check
+      - name: Check the export's links
+        run: node .github/scripts/check-export.mjs out /ratopolis
+        env:
+          NEXT_PUBLIC_SITE_URL: https://gvaziro.github.io/ratopolis
+
+      - name: Upload the static site
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-site
+          path: out/
+          retention-days: 7
+          if-no-files-found: error
+
+  # e2e (REP-2): the Playwright smoke + screenshot suite goes here as its own job, e.g.
+  #   e2e:
+  #     needs: build
+  #     runs-on: ubuntu-latest
+  #     steps: checkout, setup-node (.nvmrc), npm ci, `npx playwright install --with-deps chromium`, `npm run e2e`
+  #       (its webServer builds and serves the app on :3100), then upload e2e/__shots__ as an artifact.

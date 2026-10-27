@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { fmt, fmtInt, fmtPct, fmtRate, fmtTime, plural, setSciNotation } from "./format";
+import { fmt, fmtDuration, fmtInt, fmtPct, fmtRate, fmtTime, plural, setSciNotation } from "./format";
 
 describe("fmt", () => {
   afterEach(() => setSciNotation(false));
@@ -61,7 +61,13 @@ describe("fmtTime", () => {
     expect(fmtTime(3900)).toBe("1ч 05м");
     expect(fmtTime((2 * 24 + 3) * 3600 + 59)).toBe("2д 3ч");
     expect(fmtTime(-5)).toBe("0с");
-    expect(fmtTime(Infinity)).toBe("∞");
+    expect(fmtTime(Infinity)).toBe("—");
+    expect(fmtTime(NaN)).toBe("—");
+    // v3 (ENG-1): an ETA over 100 h is a shrug, not «1.0100706197823662e+25д»
+    expect(fmtTime(1e30)).toBe("> 4 д");
+    expect(fmtTime(100 * 3600)).toBe("> 4 д");
+    expect(fmtTime(100 * 3600 - 1)).toBe("4д 3ч");
+    expect(fmtDuration(30 * 24 * 3600 + 7200)).toBe("30д 2ч");
   });
 });
 

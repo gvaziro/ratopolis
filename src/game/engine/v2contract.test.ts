@@ -8,7 +8,7 @@ import { acceptCommission, buyBuilding, buyEdict, buyEdictRank, buySeal, click, 
 import { edictRank } from "./core";
 import { derive } from "./derive";
 import { buildingCostFor, grossRates, levelGain, milestoneInfo, paybackSeconds } from "./economy";
-import { buildTrain, catchProgress, onZoneOpen, sceneAction } from "./events";
+import { buildTrain, catchProgress, sceneAction } from "./events";
 import { buyCount, crownThreshold, crownsForRun, nextCrownAt, prevCrownAt } from "./formulas";
 import { coronationLine, migrationPreview, weekdayAt } from "./narrative";
 import { LINEMAN_START, PILE_HOLD_RATE, PILE_STEP, linemanX, pileLockTime, stepPile } from "./piles";
@@ -17,21 +17,7 @@ import { rand } from "./rng";
 import { migrate as migrateSave, serialize } from "./save";
 import { createInitialState } from "./state";
 import { step, TICK } from "./step";
-
-function metroState(seed = 99): GameState {
-  const s = createInitialState(seed, 0);
-  const ctx: EngineCtx = { fx: [] };
-  for (const z of ["sewers", "cellars", "metro"] as const) {
-    openZone(s, z, ctx);
-    onZoneOpen(s, z);
-  }
-  s.flags.vagrants = true;
-  s.flags.first_train = true;
-  s.rats = 200;
-  s.jobs.forager = 200;
-  s.res.crumbs = 1e5;
-  return s;
-}
+import { metroState } from "./testkit";
 
 describe("piles (EN-5 helpers)", () => {
   it("the lineman walks 0 → 1 between LINEMAN_START and 85% of the phase", () => {
@@ -326,18 +312,22 @@ describe("meta depth (EN-9 surface)", () => {
     expect(s.meta.seal).toBe("railway");
   });
 
-  it("district traits: 6 named ones, then a ×1.25 cycle of 1–5", () => {
+  it("district traits (v3 ENG-11): every district keeps its own; the second lap of London is «II» and ×1.25", () => {
     expect(districtTrait(0).name).toBe("Туман");
     expect(districtTrait(1).mods.marketInterval).toEqual([240, 300]);
-    expect(districtTrait(1).mods.res?.cheese).toBe(1.5);
-    const again = districtTrait(6);
+    expect(districtTrait(1).mods.satietyMult).toBe(1.5);
+    expect(districtTrait(1).mods.res?.blueprints).toBe(0.75);
+    // the legacy route goes on into the six v3 districts (v2: «Боро-маркет II» at index 6)
+    expect(districtTrait(6).name).toBe("Банки");
+    const again = districtTrait(13);
     expect(again.name).toBe("Боро-маркет II");
-    expect(again.mods.res?.cheese).toBeCloseTo(1.625, 12);
-    expect(again.mods.catCheckMult).toBeCloseTo(1.375, 12);
-    expect(districtTrait(11).name).toBe("Боро-маркет III");
-    expect(districtTrait(10).name).toBe("Биг-Бен II");
+    expect(again.mods.satietyMult).toBeCloseTo(1.625, 12);
+    expect(again.mods.res?.blueprints).toBeCloseTo(0.6875, 12);
+    expect(districtTrait(17).name).toBe("Биг-Бен II");
+    expect(districtTrait(17).mods.vigilanceFrom).toBe(38);
     expect(districtLoc(1)).toBe("в Саутварке");
-    expect(districtLoc(9)).toBe("в Вестминстере");
+    expect(districtLoc(9)).toBe("в Челси");
+    expect(districtLoc(13)).toBe("в Саутварке II");
   });
 });
 
@@ -369,7 +359,7 @@ describe("progress (EN-11/12 surface)", () => {
     s.stats.catsBeaten++;
     expect(commissionProgress(s)).toEqual({ id: "whiskers_twice", cur: 1, goal: 2 });
     expect(acceptCommission(s, "bullseye", ctx)).toBe(false); // one at a time
-    expect(COMMISSION_ORDER).toHaveLength(12);
+    expect(COMMISSION_ORDER).toHaveLength(13); // v3 (ENG-3): + clean_three (replenish stays for old saves)
     expect(Object.values(COMMISSIONS).every((c) => c.goal > 0)).toBe(true);
   });
 });

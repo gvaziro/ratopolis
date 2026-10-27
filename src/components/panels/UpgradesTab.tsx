@@ -17,9 +17,10 @@ import { Badge, Bar, BrassButton, cx } from "@/components/ui/kit";
 import { isFresh } from "./alerts";
 import { CostView, HoverTip, SectionTitle, Toolbar, WaitView, condHint, costItems, floatAt, waitInfo, type CostItem, type WaitInfo } from "./common";
 
+/** Plain words on the tag (PAN-1); the exact terms («скорость», «выход») stay in the tooltip. */
 const KIND: Record<"speed" | "yield", { label: string; tone: "verdigris" | "brass"; tip: string }> = {
-  speed: { label: "скорость", tone: "verdigris", tip: "Скорость: умножает и вход, и выход — пропорции цепочки сохраняются." },
-  yield: { label: "выход", tone: "brass", tip: "Выход: умножает только выход — ощущается как рост КПД." },
+  speed: { label: "быстрее", tone: "verdigris", tip: "Скорость: умножает и вход, и выход — пропорции цепочки сохраняются." },
+  yield: { label: "больше добычи", tone: "brass", tip: "Выход: умножает только выход, сырья уходит столько же — ощущается как рост КПД." },
 };
 
 /** Available (cheapest first) and invented ids, and how many are affordable: "a,b|c|2". */

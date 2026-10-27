@@ -1,33 +1,22 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { Bot, offlineCheck } from "../../../scripts/sim-core";
+import { offlineCheck } from "../../../scripts/sim-core";
 import type { EngineCtx, GameState } from "../types";
 import { expressCost } from "./actions";
 import { derive } from "./derive";
 import { simulateOffline } from "./offline";
 import { createInitialState } from "./state";
 import { step, TICK } from "./step";
-
-/** A mid-game state played by the active bot (sewers + cellars open). */
-function midGame(minutes: number, seed = 21): GameState {
-  const s = createInitialState(seed, 0);
-  const bot = new Bot("active", seed);
-  const ctx: EngineCtx = { fx: [] };
-  for (let i = 0; i < (minutes * 60) / TICK; i++) {
-    const d = step(s, TICK, { active: true }, ctx);
-    bot.tick(s, ctx, d);
-    ctx.fx.length = 0;
-  }
-  return s;
-}
+import { loadFixture } from "./testkit";
 
 describe("offline progress", () => {
   let s0: GameState;
   beforeAll(() => {
-    s0 = midGame(40);
+    // a mid-game colony the active bot played for an hour (the Metro just opened): the golden save, not 36 000 ticks
+    s0 = loadFixture("v3-run1-60min");
     // the base offline limits (the bot may already own the night shift)
     delete s0.upgrades.night_shift;
     delete s0.meta.edicts.eternal_night_shift;
-  }, 120_000);
+  });
 
   it("10 h away is capped at capSec with efficiency η", () => {
     const s = structuredClone(s0);

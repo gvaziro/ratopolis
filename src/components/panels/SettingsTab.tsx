@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * ⚙ Настройки: sound with effects and ambience volumes, motion («как в системе»), hints, train toasts, number format,
+ * ⚙ Настройки: sound with a master volume and the effects / background / music buses (v3), motion («как в системе»), hints, train toasts, number format,
  * text size, the hotkey list, save export/import (string or .txt file),
  * a rollback to the rolling backups, «Сохранить сейчас», a doubly-confirmed hard reset, and a short «Об игре».
  */
@@ -42,10 +42,18 @@ function Card({ children, className }: { children: ReactNode; className?: string
 
 /* ------------------------------------------------------------ sound */
 
+/**
+ * The v3 mixer's live previews (AUD-3). Optional: until the audio package ships them, the sliders still save their
+ * value and AudioDirector applies it from the settings.
+ */
+const mixer = sfx as typeof sfx & { setSfxVolume?: (v: number) => void; setMusic?: (v: number) => void };
+
 function SoundSection() {
   const [sound, setSound] = useSetting("sound");
   const [volume, setVolume] = useSetting("volume");
+  const [effects, setEffects] = useSetting("sfxVolume");
   const [ambience, setAmbience] = useSetting("ambience");
+  const [music, setMusic] = useSetting("music");
 
   return (
     <>
@@ -62,16 +70,37 @@ function SoundSection() {
           label="Звук"
           sub="Писк, звон монет, гул поездов — всё синтезировано прямо в колонии"
         />
+        {/* v3 SHL-6 (audio-9): «Громкость» is the master; effects, background and music each have their own bus */}
         <Slider
           id="rr-volume"
-          label="Эффекты"
+          label="Громкость"
+          sub="Всё сразу"
           value={volume}
           disabled={!sound}
           onLive={(v) => sfx.setVolume(v, sound)}
           onCommit={setVolume}
           onDone={() => sound && sfx.tin()}
         />
+        <Slider
+          id="rr-sfx"
+          label="Эффекты"
+          sub="Клики, монеты, поезда"
+          value={effects}
+          disabled={!sound}
+          onLive={(v) => mixer.setSfxVolume?.(v)}
+          onCommit={setEffects}
+          onDone={() => sound && sfx.tin()}
+        />
         <Slider id="rr-ambience" label="Фон" sub="Капель, гул поездов вдали, тиканье часов" value={ambience} disabled={!sound} onLive={(v) => sfx.setAmbience(v)} onCommit={setAmbience} />
+        <Slider
+          id="rr-music"
+          label="Музыка"
+          sub="Шарманка и музыкальная шкатулка района"
+          value={music}
+          disabled={!sound}
+          onLive={(v) => mixer.setMusic?.(v)}
+          onCommit={setMusic}
+        />
       </Card>
     </>
   );
@@ -188,7 +217,7 @@ function ViewSection() {
           sub={reduced ? "Уже включено вместе с «Меньше движения»" : "Экран не дрожит от поездов и раскопок"}
         />
         <Switch on={hints} onToggle={() => setHints(!hints)} label="Подсказки" sub="Совет старейшины в «Целях колонии» с кнопкой «Сделать»" />
-        <Switch on={toasts} onToggle={() => setToasts(!toasts)} label="Тосты «К путям!»" sub="Колокольчик и напоминание за 30 с до поезда" />
+        <Switch on={toasts} onToggle={() => setToasts(!toasts)} label="Тосты «К путям!»" sub={"Колокольчик и напоминание за 30 с до поезда"} />
         <Switch
           on={sci}
           onToggle={() => setSci(!sci)}
@@ -308,7 +337,7 @@ function SaveSection() {
             💾 Сохранить сейчас
           </BrassButton>
           <span className="text-[11px] leading-tight text-parchment-dim">
-            Автосохранение каждые 15 с.
+            Автосохранение каждые 15&nbsp;с.
             <br />
             Последнее: <span className="font-mono tabular">{lastLine}</span>
           </span>
@@ -333,7 +362,7 @@ function SaveSection() {
               value={exported}
               rows={3}
               onFocus={(e) => e.currentTarget.select()}
-              className="block w-full resize-none break-all rounded-md border border-line bg-soot/80 p-2 font-mono text-[10.5px] leading-snug text-parchment-dim outline-none focus:border-brass-dark"
+              className="block w-full resize-none break-all rounded-md border border-line bg-soot/80 p-2 font-mono text-[10.5px] leading-snug text-parchment-dim focus:border-brass-dark"
               aria-label="Строка сохранения"
             />
           )}
@@ -350,7 +379,7 @@ function SaveSection() {
             onChange={(e) => setImportText(e.target.value)}
             rows={3}
             placeholder="Вставьте сюда строку сохранения…"
-            className="block w-full resize-none break-all rounded-md border border-line bg-soot/80 p-2 font-mono text-[10.5px] leading-snug text-parchment outline-none placeholder:text-muted focus:border-brass-dark"
+            className="block w-full resize-none break-all rounded-md border border-line bg-soot/80 p-2 font-mono text-[10.5px] leading-snug text-parchment placeholder:text-muted focus:border-brass-dark"
           />
           <div className="flex flex-wrap items-center gap-2">
             <BrassButton tone="copper" onClick={doImport} disabled={!importText.trim()} className="min-h-10">
@@ -546,7 +575,7 @@ function ResetSection() {
               autoComplete="off"
               spellCheck={false}
               aria-label="Наберите СБРОС для подтверждения"
-              className="block h-10 w-full rounded-md border border-danger/50 bg-soot/80 px-2 font-mono text-sm uppercase tracking-widest text-parchment outline-none placeholder:text-muted focus:border-danger-light"
+              className="block h-10 w-full rounded-md border border-danger/50 bg-soot/80 px-2 font-mono text-sm uppercase tracking-widest text-parchment placeholder:text-muted focus:border-danger-light"
             />
             <div className="flex flex-wrap gap-2">
               <BrassButton

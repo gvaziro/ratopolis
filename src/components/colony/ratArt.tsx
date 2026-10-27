@@ -154,9 +154,10 @@ export const RatBody = memo(function RatBody({
   /** A resident's zone accessory instead of the job one. */
   zoneLook?: ZoneId;
 }) {
+  // COL-3: the tail and the feet carry the walk cycle (colonyCss .cv-rat / .cv-walk); data-decor: reduced motion pauses it
   return (
     <g>
-      <path d="M-12 -6Q-24 -1 -31 -8Q-35 -13 -29 -16" stroke="#c98b8b" strokeWidth="1.8" fill="none" strokeLinecap="round" />
+      <path className="cv-tail" data-decor="" d="M-12 -6Q-24 -1 -31 -8Q-35 -13 -29 -16" stroke="#c98b8b" strokeWidth="1.8" fill="none" strokeLinecap="round" />
       <ellipse cx="-2" cy="-9" rx="13" ry="8" fill={fur} stroke={INK} strokeWidth=".8" />
       <ellipse cx="-3" cy="-5.5" rx="8" ry="3" fill="#fff" opacity=".14" />
       <path d="M5 -15Q14 -19 21.5 -11Q16 -6 6 -5.5z" fill={fur} stroke={INK} strokeWidth=".8" />
@@ -166,8 +167,8 @@ export const RatBody = memo(function RatBody({
       <circle cx="14.5" cy="-13" r=".45" fill="#fff" />
       <circle cx="21.5" cy="-11" r="1.4" fill="#e98a96" />
       <path d="M19 -10.5l6 -1.5M19 -9.8l6 1" stroke="#e8e0d8" strokeWidth=".4" />
-      <rect x="-9" y="-2" width="3.4" height="2" rx="1" fill={INK} />
-      <rect x="4" y="-2" width="3.4" height="2" rx="1" fill={INK} />
+      <rect className="cv-foot-a" data-decor="" x="-9" y="-2" width="3.4" height="2" rx="1" fill={INK} />
+      <rect className="cv-foot-b" data-decor="" x="4" y="-2" width="3.4" height="2" rx="1" fill={INK} />
       {looks?.map((u) => {
         const l = UPGRADE_LOOKS[u];
         return l && (!l.job || l.job === job) ? <g key={u}>{l.accessory}</g> : null;

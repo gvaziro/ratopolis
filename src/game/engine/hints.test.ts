@@ -60,6 +60,10 @@ describe("nextHint", () => {
 
   it("2. housing full and a nest within reach → build a nest", () => {
     const s = colony(3, 0);
+    // every free resource has a gatherer (rule 3 comes first since v3)
+    s.jobs.forager = 1;
+    s.jobs.pickpocket = 1;
+    s.jobs.scavenger = 1;
     s.res.crumbs = 6; // the first nest costs 10 ≤ 2 × 6
     const h = nextHint(s, derive(s))!;
     expect(h.id).toBe("housing");
@@ -113,9 +117,10 @@ describe("nextHint", () => {
 
   it("5. the expedition can take a real contribution → contribute", () => {
     const s = colony(15, 10);
-    s.jobs.forager = 11;
-    s.jobs.pickpocket = 2;
-    s.jobs.scavenger = 2;
+    // no forager surplus (3 × 0.3 = 1.5 × the 0.6 upkeep): the rebalance rule (3b) stays quiet
+    s.jobs.forager = 3;
+    s.jobs.pickpocket = 6;
+    s.jobs.scavenger = 6;
     s.res.crumbs = 100; // at the 100 cap: it would only spill over
     const h = nextHint(s, derive(s))!;
     expect(h.id).toBe("expedition:sewers");
@@ -186,6 +191,7 @@ describe("storageHintFor", () => {
     expect(h.text).toBe("«Жестяная мастерская» — в новой зоне «Канализация»");
     expect(h.target).toBe("z_sewers");
     open(s, "sewers");
+    s.buildings.stash = 5; // the workshop's 300 🪙 and 150 🔘➰ fit the stores (a cap-locked store is never suggested)
     expect(storageHintFor(s, derive(s), "gears").text).not.toContain("в новой зоне");
   });
 });

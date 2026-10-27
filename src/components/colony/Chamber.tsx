@@ -1,10 +1,11 @@
 "use client";
 
 /**
- * A building's chamber in the colony cross-section: a carved niche with the building art,
- * a level plate (with progress to the next ×2), and reactions to buy / milestone / tier fx.
- * Idle chambers grey out and doze (💤); the press and the clock tower hang a «НЕТ ПАРА» tag when starved.
- * Clicking it shows a tooltip and pokes it.
+ * A building's chamber in the colony cross-section, drawn in two layers (COL-3) so the rats walk between them:
+ * the back (the carved niche with its zone wall, the hanging lamp that lights it, the floor lip) and the front
+ * (the building art, the level plate with progress to the next ×2, reactions to buy / milestone / tier fx).
+ * Idle chambers grey out, doze (💤) and their lamp goes out; the press and the clock tower hang a «НЕТ ПАРА» tag
+ * when starved. Clicking the front shows a tooltip and pokes it.
  */
 import { memo, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { BUILDINGS } from "@/game/data/buildings";
@@ -19,21 +20,26 @@ import { fmtInt } from "@/lib/format";
 import { flightPending, fxBurst, inColony, onLand } from "../fx/fxBus";
 import { BuildingArt } from "./buildingArt";
 import { toScreen, wasDrag } from "./camera";
-import { artLevel, BUILDING_SLOT, shade } from "./geometry";
-import { Glow, type GlowKind } from "./parts";
+import { artLevel, BUILDING_SLOT, bulkImpact, lampX, seeded, shade } from "./geometry";
+import { NICHE, ZoneLamp } from "./parts";
 import { registerCull, registerCullItems, registerPoke } from "./registry";
 
-export const NICHE = "M-88 0V-108Q-88 -148 -48 -148H48Q88 -148 88 -108V0Z";
-const ZONE_GLOW: Record<ZoneId, GlowKind> = { burrow: "warm", sewers: "teal", cellars: "warm", metro: "red", terminal: "gold" };
+/** The niche outline (panels/Thumb and the dev art gallery draw their miniature chambers with it). */
+export { NICHE };
+
 const INK = "#1a120c";
 
-const BOUNCE: Keyframe[] = [
-  { transform: "translateY(0) scale(1,1)" },
-  { transform: "translateY(0) scale(1.08,.9)", offset: 0.18 },
-  { transform: "translateY(-12px) scale(.95,1.07)", offset: 0.45 },
-  { transform: "translateY(0) scale(1.04,.96)", offset: 0.75 },
-  { transform: "translateY(0) scale(1,1)" },
-];
+/** The buy bounce, `m` times as strong (COL-4 bulkImpact; m = 1 is the plain +1 bounce, unchanged). */
+function bounceFrames(m: number): Keyframe[] {
+  const f = (v: number) => +v.toFixed(3);
+  return [
+    { transform: "translateY(0) scale(1,1)" },
+    { transform: `translateY(0) scale(${f(1 + 0.08 * m)},${f(1 - 0.1 * m)})`, offset: 0.18 },
+    { transform: `translateY(${f(-12 * m)}px) scale(${f(1 - 0.05 * m)},${f(1 + 0.07 * m)})`, offset: 0.45 },
+    { transform: `translateY(0) scale(${f(1 + 0.04 * m)},${f(1 - 0.04 * m)})`, offset: 0.75 },
+    { transform: "translateY(0) scale(1,1)" },
+  ];
+}
 const BOUNCE_SOFT: Keyframe[] = [{ transform: "scale(1)" }, { transform: "scale(1.03)" }, { transform: "scale(1)" }];
 
 /* ------------------------------------------------------------ mood */
@@ -58,9 +64,18 @@ export function chamberMood(g: GameState, id: BuildingId): ChamberMood {
 /**
  * Level plate (bottom-right of the niche). The inner group scales by --plate-k (set by ColonyView from the
  * camera zoom) from its bottom-right corner, so the digits stay ≥ 11 css px. A bar shows the way to the next ×2;
- * 1–2 levels before it the plate glows and grows a little «×2» tab.
+ * 1–2 levels before it the plate glows and grows a little «×2» tab. COL-4: on a change the digits roll — the old
+ * value slides out below, the new one drops in from above (300 ms, clipped to the plate; none with reduced motion).
  */
-function LevelPlate({ level }: { level: number }) {
+function LevelPlate({ id, level }: { id: BuildingId; level: number }) {
+  const [roll, setRoll] = useState<{ level: number; from: number | null; seq: number }>({ level, from: null, seq: 0 });
+  if (roll.level !== level) setRoll({ level, from: roll.level, seq: roll.seq + 1 });
+  const rolling = roll.from !== null;
+  useEffect(() => {
+    if (!rolling) return;
+    const t = window.setTimeout(() => setRoll((r) => ({ ...r, from: null })), 340);
+    return () => window.clearTimeout(t);
+  }, [rolling, roll.seq]);
   const t = fmtInt(level);
   const w = 12 + t.length * 6;
   const gold = level >= 10;
@@ -68,6 +83,7 @@ function LevelPlate({ level }: { level: number }) {
   const hasNext = Number.isFinite(ms.next);
   const frac = hasNext ? Math.max(0, Math.min(1, (level - ms.prev) / (ms.next - ms.prev))) : 1;
   const near = hasNext && ms.next - level <= 2;
+  const clip = `cv-plate-${id}`;
   return (
     <g transform="translate(66 -12)" pointerEvents="none">
       <g className="cv-plate">
@@ -75,9 +91,25 @@ function LevelPlate({ level }: { level: number }) {
         <rect x={-w / 2} y="-8" width={w} height="15" rx="3" fill="url(#cv-brass)" stroke={gold ? "#fff1b8" : INK} strokeWidth={gold ? 1.4 : 0.9} />
         <circle cx={-w / 2 + 3} cy="-0.5" r="1" fill="#5c4520" />
         <circle cx={w / 2 - 3} cy="-0.5" r="1" fill="#5c4520" />
-        <text x="0" y="3.4" fontSize="9.5" textAnchor="middle" fill="#2a1a0c" className="font-mono" fontWeight="700">
-          {t}
-        </text>
+        {rolling && (
+          <clipPath id={clip}>
+            <rect x={-w / 2} y="-8" width={w} height="15" />
+          </clipPath>
+        )}
+        {rolling ? (
+          <g clipPath={`url(#${clip})`}>
+            <text key={`o${roll.seq}`} x="0" y="3.4" fontSize="9.5" textAnchor="middle" fill="#2a1a0c" className="font-mono cv-roll-out" fontWeight="700">
+              {fmtInt(roll.from ?? level)}
+            </text>
+            <text key={`n${roll.seq}`} x="0" y="3.4" fontSize="9.5" textAnchor="middle" fill="#2a1a0c" className="font-mono cv-roll-in" fontWeight="700">
+              {t}
+            </text>
+          </g>
+        ) : (
+          <text x="0" y="3.4" fontSize="9.5" textAnchor="middle" fill="#2a1a0c" className="font-mono" fontWeight="700">
+            {t}
+          </text>
+        )}
         {hasNext && (
           <g transform={`translate(${w / 2 - 30} 9)`}>
             <rect width="30" height="3.2" rx="1.6" fill={INK} opacity=".85" />
@@ -92,6 +124,24 @@ function LevelPlate({ level }: { level: number }) {
             </text>
           </g>
         )}
+      </g>
+    </g>
+  );
+}
+
+/** COL-4: a brass «+k» tag that slides up from the level plate after a bulk buy (reduced motion: it only fades). */
+function BulkTag({ k }: { k: number }) {
+  const t = `+${fmtInt(k)}`;
+  const w = 14 + t.length * 6.4;
+  return (
+    <g transform="translate(66 -32)" pointerEvents="none">
+      <g className="cv-plate">
+        <g className="cv-badge cv-bulk">
+          <rect x={-w / 2} y="-9" width={w} height="17" rx="4" fill="url(#cv-brass)" stroke="#fff1b8" strokeWidth="1.2" />
+          <text y="4" fontSize="11" textAnchor="middle" fill="#2a1a0c" className="font-display" fontWeight="700">
+            {t}
+          </text>
+        </g>
       </g>
     </g>
   );
@@ -129,35 +179,144 @@ function IdlePlate() {
   );
 }
 
-/* ------------------------------------------------------------ the chamber */
+/* ------------------------------------------------------------ «непрокопано» (COL-1) */
 
-export const Chamber = memo(function Chamber({ id, onTip }: { id: BuildingId; onTip: (id: BuildingId) => void }) {
+/** A rough hollow inside the niche bounds, seeded by the building id (stable across renders and runs). */
+function hollowPath(id: BuildingId): string {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619);
+  const r = seeded(h >>> 0);
+  const n = 11;
+  const pts: [number, number][] = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + 0.2;
+    const k = 0.8 + r() * 0.2;
+    // a flat-ish floor: the lower points never sink below the niche floor
+    pts.push([Math.cos(a) * 78 * k, Math.min(-3 - r() * 4, -68 + Math.sin(a) * 62 * k)]);
+  }
+  const mid = (a: [number, number], b: [number, number]) => `${((a[0] + b[0]) / 2).toFixed(1)} ${((a[1] + b[1]) / 2).toFixed(1)}`;
+  let d = `M${mid(pts[n - 1], pts[0])}`;
+  for (let i = 0; i < n; i++) d += `Q${pts[i][0].toFixed(1)} ${pts[i][1].toFixed(1)} ${mid(pts[i], pts[(i + 1) % n])}`;
+  return `${d}Z`;
+}
+
+/**
+ * A slot of an open zone whose building is not known yet: a dug-out hollow, a pick-axe left in it and a chalk «?».
+ * Five nodes, no animation, not clickable — the first frame shows where the colony will grow.
+ */
+const DigSite = memo(function DigSite({ id }: { id: BuildingId }) {
+  const slot = BUILDING_SLOT[id];
+  const bg = ZONES[slot.zone].palette.bg;
+  const d = useMemo(() => hollowPath(id), [id]);
+  return (
+    <g transform={`translate(${slot.cx} ${slot.floor})`} pointerEvents="none" aria-hidden>
+      <path d={d} fill={shade(bg, -0.2)} stroke={shade(bg, 0.3)} strokeOpacity=".5" strokeWidth="2.5" strokeDasharray="10 4 3 4" />
+      <path d="M30 -3L52 -60" stroke="#8a6438" strokeWidth="4" strokeLinecap="round" />
+      <path d="M33 -66Q51 -74 70 -54" stroke="#8d949a" strokeWidth="5" strokeLinecap="round" fill="none" />
+      <text x="-14" y="-40" fontSize="46" textAnchor="middle" fill="#eadcc0" opacity=".3" className="font-display" fontWeight="700">
+        ?
+      </text>
+    </g>
+  );
+});
+
+/* ------------------------------------------------------------ the back layer (COL-3) */
+
+/**
+ * The interior of a built niche, drawn behind the rats: the light falling from the floor to a dark apex, the zone's
+ * back wall (earth strata, brick, boards, white tile, plaster) and the lamp hung on its chain — the key light.
+ * Three nodes plus the lamp's few. Pure: the dev gallery and the panel thumbnails may draw it too.
+ */
+export function NicheBackdrop({ zone, lamp = 0, lit = true }: { zone: ZoneId; lamp?: number; lit?: boolean }) {
+  const pal = ZONES[zone].palette;
+  return (
+    <>
+      <path d={NICHE} fill={`url(#cv-niche-light-${zone})`} />
+      <path d={NICHE} fill={`url(#cv-wall-${zone})`} fillOpacity=".55" stroke={shade(pal.detail, 0.15)} strokeWidth="2" strokeOpacity=".55" />
+      <ZoneLamp zone={zone} x={lamp} on={lit} />
+    </>
+  );
+}
+
+const ChamberBack = memo(function ChamberBack({ id }: { id: BuildingId }) {
+  const slot = BUILDING_SLOT[id];
+  const level = useGame((s) => s.game.buildings[id]);
+  const visible = useGame((s) => s.game.buildings[id] > 0 || buildingVisible(s.game, id));
+  const zoneOpen = useGame((s) => !!s.game.zones[slot.zone]);
+  const lit = useGame((s) => chamberMood(s.game, id) === "ok");
+  const ref = useRef<SVGGElement>(null);
+  const built = level > 0;
+  const lvl = artLevel(id, level);
+  const shown = zoneOpen && (visible || built);
+
+  // the lamp's flicker pauses while the chamber's top is out of the view (and all of it with the chamber)
+  useEffect(() => {
+    const el = ref.current;
+    if (!shown || !el) return;
+    const offAll = registerCull(el, slot.floor - 170, slot.floor + 12);
+    const offItems = built ? registerCullItems(el, slot.floor) : null;
+    return () => {
+      offItems?.();
+      offAll();
+    };
+  }, [shown, built, slot, lvl]);
+
+  if (!shown) return zoneOpen ? <DigSite id={id} /> : null;
+  const pal = ZONES[slot.zone].palette;
+  return (
+    <g ref={ref} transform={`translate(${slot.cx} ${slot.floor})`} pointerEvents="none">
+      {built ? (
+        <NicheBackdrop zone={slot.zone} lamp={lampX(id, lvl)} lit={lit} />
+      ) : (
+        <path d={NICHE} fill={shade(pal.bg, -0.4)} stroke={shade(pal.detail, 0.15)} strokeWidth="2" strokeOpacity=".4" strokeDasharray="6 5" />
+      )}
+      <rect x="-86" y="-6" width="172" height="6" fill={shade(pal.bg, 0.1)} opacity=".55" />
+    </g>
+  );
+});
+
+/* ------------------------------------------------------------ the front layer */
+
+const ChamberFront = memo(function ChamberFront({ id, onTip }: { id: BuildingId; onTip?: (id: BuildingId) => void }) {
   const slot = BUILDING_SLOT[id];
   const level = useGame((s) => s.game.buildings[id]);
   const visible = useGame((s) => s.game.buildings[id] > 0 || buildingVisible(s.game, id));
   const zoneOpen = useGame((s) => !!s.game.zones[slot.zone]);
   const mood = useGame((s) => chamberMood(s.game, id));
+  // COL-3: the bunting comes out only for this run's coronation and for a frenzy
+  const festive = useGame((s) => s.game.express.stage >= 10 || s.game.buffs.frenzyUntil > s.game.time);
   const [initialBuilt] = useState(level > 0);
   // the first build's scaffolding and «БУМ!» leave the DOM once played (the hammer's loop would tap on unseen)
   const [firstPlayed, setFirstPlayed] = useState(false);
   const firstBuilt = level > 0 && !initialBuilt;
   const [ring, setRing] = useState(0);
   const [flash, setFlash] = useState(0);
+  const [bulk, setBulk] = useState<{ seq: number; k: number } | null>(null);
   const rootRef = useRef<SVGGElement>(null);
   const bodyRef = useRef<SVGGElement>(null);
   const artRef = useRef<SVGGElement>(null);
   const lvl = artLevel(id, level);
-  const art = useMemo(() => <BuildingArt id={id} lvl={lvl} />, [id, lvl]);
+  const art = useMemo(() => <BuildingArt id={id} lvl={lvl} festive={festive} />, [id, lvl, festive]);
   const shown = zoneOpen && (visible || level > 0);
 
   useEffect(() => {
     let seq = 0;
     let ringTimer = 0;
     let flashTimer = 0;
+    let bulkTimer = 0;
+    // COL-4: the size of the last level jump (the store's own before/after), for the buy fx that follows it
+    let jump = { level: -1, k: 1 };
+    // the k of each buy whose icon is still in the air, in landing order
+    const pendingK: number[] = [];
     const rm = () => useGame.getState().game.settings.reducedMotion;
     const animate = (frames: Keyframe[], ms: number) => {
       bodyRef.current?.animate(frames, { duration: ms, easing: "ease-out" });
     };
+    const offSub = useGame.subscribe((s, prev) => {
+      const a = prev.game.buildings[id];
+      const b = s.game.buildings[id];
+      if (b > a) jump = { level: b, k: b - a };
+    });
     const offPoke = registerPoke(id, (k) => {
       const a = 0.07 * k * (rm() ? 0.35 : 1);
       animate(
@@ -171,23 +330,35 @@ export const Chamber = memo(function Chamber({ id, onTip }: { id: BuildingId; on
       );
     });
     const target = `building:${id}`;
-    // the bounce and its dust (none over the panel when the chamber is off-screen: EdgePings shows that buy)
-    const land = () => {
-      animate(rm() ? BOUNCE_SOFT : BOUNCE, 520);
+    // the bounce and its dust (none over the panel when the chamber is off-screen: EdgePings shows that buy);
+    // a bulk buy of k levels lands harder, with more dust and a «+k» tag
+    const land = (k: number) => {
+      const hit = bulkImpact(k);
+      animate(rm() ? BOUNCE_SOFT : bounceFrames(hit.bounce), 520);
       const p = toScreen(slot.cx, slot.floor - 8);
-      if (inColony(p)) fxBurst(p.x, p.y, "dust", 12, 1.4);
+      if (inColony(p)) fxBurst(p.x, p.y, "dust", hit.dust, 1.4);
+      if (k >= 2) {
+        setBulk({ seq: ++seq, k });
+        window.clearTimeout(bulkTimer);
+        bulkTimer = window.setTimeout(() => setBulk(null), 1250);
+      }
     };
     const offLand = onLand((t) => {
-      if (t === target) land();
+      if (t !== target) return;
+      land(pendingK.shift() ?? 1);
+      // nothing left in the air: drop the k of buys that sent no icon of their own (a tip buy during a flight)
+      if (!flightPending(target)) pendingK.length = 0;
     });
     const offFx = onFx((fx) => {
       if (fx.k !== "buy" && fx.k !== "milestone" && fx.k !== "tier") return;
       if (fx.building !== id) return;
       if (fx.k === "buy") {
+        const k = jump.level === fx.level ? jump.k : 1;
         // CO-7: a card buy sends its icon flying here right after this fx — the chamber bounces when it lands;
         // a buy from the chamber tip (or with reduced motion: no flight) bounces at once
         queueMicrotask(() => {
-          if (!flightPending(target)) land();
+          if (!flightPending(target)) land(k);
+          else pendingK.push(k);
         });
         return;
       }
@@ -208,11 +379,13 @@ export const Chamber = memo(function Chamber({ id, onTip }: { id: BuildingId; on
       }
     });
     return () => {
+      offSub();
       offPoke();
       offLand();
       offFx();
       window.clearTimeout(ringTimer);
       window.clearTimeout(flashTimer);
+      window.clearTimeout(bulkTimer);
     };
   }, [id, slot]);
 
@@ -233,11 +406,10 @@ export const Chamber = memo(function Chamber({ id, onTip }: { id: BuildingId; on
       offItems?.();
       offAll();
     };
-  }, [shown, slot, lvl]);
+  }, [shown, slot, lvl, festive]);
 
   if (!shown) return null;
 
-  const pal = ZONES[slot.zone].palette;
   const built = level > 0;
   const dim = built && mood !== "ok";
   const click = (e: MouseEvent) => {
@@ -248,14 +420,11 @@ export const Chamber = memo(function Chamber({ id, onTip }: { id: BuildingId; on
       [{ transform: "scale(1,1)" }, { transform: `scale(${1 + a},${1 - a * 1.3})`, offset: 0.25 }, { transform: `scale(${1 - a * 0.5},${1 + a * 0.6})`, offset: 0.6 }, { transform: "scale(1,1)" }],
       { duration: 380, easing: "ease-out" },
     );
-    onTip(id);
+    onTip?.(id);
   };
 
   return (
     <g ref={rootRef} transform={`translate(${slot.cx} ${slot.floor})`}>
-      <path d={NICHE} fill={shade(pal.bg, built ? -0.55 : -0.4)} stroke={shade(pal.detail, 0.15)} strokeWidth="2" strokeOpacity={built ? 0.55 : 0.4} strokeDasharray={built ? undefined : "6 5"} />
-      {built && <Glow x={0} y={-36} r={96} kind={ZONE_GLOW[slot.zone]} opacity={dim ? 0.08 : 0.3} />}
-      <rect x="-86" y="-6" width="172" height="6" fill={shade(pal.bg, 0.1)} opacity=".55" />
       <g ref={bodyRef} data-chamber="" className="cv-fbb" onClick={click} style={{ cursor: "pointer" }}>
         <path d={NICHE} fill="transparent" />
         {built ? (
@@ -269,14 +438,18 @@ export const Chamber = memo(function Chamber({ id, onTip }: { id: BuildingId; on
             <text x="0" y="-62" fontSize="34" textAnchor="middle">
               {BUILDINGS[id].icon}
             </text>
-            <text x="0" y="-30" fontSize="10" textAnchor="middle" fill="#eadcc0" className="font-display" fontWeight="700">
-              свободное место
-            </text>
+            {/* mobile-8: the caption keeps ≥ 10 css px on phones (counter-scaled like the level plates) */}
+            <g className="cv-cap">
+              <text x="0" y="-30" fontSize="10" textAnchor="middle" fill="#eadcc0" className="font-display" fontWeight="700">
+                свободное место
+              </text>
+            </g>
           </g>
         )}
       </g>
       {flash > 0 && <path key={`f${flash}`} d={NICHE} fill="#fff6dc" className="cv-flash" pointerEvents="none" />}
-      {built && <LevelPlate level={level} />}
+      {built && <LevelPlate id={id} level={level} />}
+      {bulk && <BulkTag key={`k${bulk.seq}`} k={bulk.k} />}
       {built && mood === "idle" && <IdlePlate />}
       {built && mood === "nosteam" && <NoSteamTag />}
       {ring > 0 && (
@@ -316,4 +489,12 @@ export const Chamber = memo(function Chamber({ id, onTip }: { id: BuildingId; on
       )}
     </g>
   );
+});
+
+/**
+ * A chamber layer (COL-3): ColonyView draws every chamber's back before the shaft, the rail and the rats, and every
+ * front after them — the rats at work stand behind the furniture, the art stays readable.
+ */
+export const Chamber = memo(function Chamber({ id, layer, onTip }: { id: BuildingId; layer: "back" | "front"; onTip?: (id: BuildingId) => void }) {
+  return layer === "back" ? <ChamberBack id={id} /> : <ChamberFront id={id} onTip={onTip} />;
 });

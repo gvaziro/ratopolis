@@ -4,6 +4,7 @@
  * SC-5: below md, a 168×60 «Наверху» inset: a tiny side-view human train crossing right→left over the whole pass
  * (static with reduced motion); `cab` draws a hansom cab instead (CarriageScene). `className` places it: TrainPass
  * stacks it in its tag column under the car tag ("relative"), the carriage parks it on the floor, clear of the grate.
+ * v3 SCN-1: the ride is paused while the game is held (it is timed to the pass).
  */
 import { cx } from "@/components/ui/kit";
 
@@ -33,7 +34,8 @@ export function UpstairsInset({
         <rect x="0" y="43" width="168" height="2" fill="#2a2420" />
         <rect x="12" y="20" width="18" height="24" fill="#6b5a45" />
         <rect x="128" y="14" width="26" height="30" fill="#5a4a3a" />
-        <g style={reduced ? { transform: "translateX(-40px)" } : { animation: `rr-inset-ride ${dur}s linear forwards` }}>
+        {/* SCN-1: the ride pauses with the scene (SceneFrame: [data-scene-dialog][data-held] [data-hold-pause]) */}
+        <g data-hold-pause="" style={reduced ? { transform: "translateX(-40px)" } : { animation: `rr-inset-ride ${dur}s linear forwards` }}>
           {cab ? (
             <g>
               <rect x="150" y="24" width="20" height="14" rx="3" fill="#2a2420" />

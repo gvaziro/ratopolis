@@ -121,7 +121,8 @@ export const ZonePips = memo(function ZonePips({ onZone, onOverview, overview }:
             title={isOpen ? `${def.icon} ${def.name}` : `${def.name} — ещё не раскопано`}
             aria-label={isOpen ? `Показать зону «${def.name}»` : `Зона «${def.name}» ещё закрыта`}
             className={cx(
-              "relative flex h-8 w-8 items-center justify-center rounded-full border text-[15px] leading-none shadow-[0_2px_6px_rgba(0,0,0,.55)] transition-transform data-[here]:ring-2 data-[here]:ring-parchment/80",
+              // mobile-5: hit-slop (globals.css) grows the tap area to ≥ 40 px around the 32 px pip
+              "hit-slop relative flex h-8 w-8 items-center justify-center rounded-full border text-[15px] leading-none shadow-[0_2px_6px_rgba(0,0,0,.55)] transition-transform data-[here]:ring-2 data-[here]:ring-parchment/80",
               isOpen ? "border-brass-light bg-[radial-gradient(circle_at_35%_30%,#f2d896,#c9a25a_45%,#6b4f22)] hover:scale-110" : "border-line bg-soot-2/85",
               isNext && "hover:scale-110",
             )}
@@ -147,7 +148,7 @@ export const ZonePips = memo(function ZonePips({ onZone, onOverview, overview }:
         title={overview ? "Вернуться к решётке" : "Вся колония разом"}
         aria-label={overview ? "Вернуться к решётке" : "Показать всю колонию"}
         className={cx(
-          "flex h-8 w-8 items-center justify-center rounded-full border text-[15px] leading-none shadow-[0_2px_6px_rgba(0,0,0,.55)] transition-transform hover:scale-110",
+          "hit-slop relative flex h-8 w-8 items-center justify-center rounded-full border text-[15px] leading-none shadow-[0_2px_6px_rgba(0,0,0,.55)] transition-transform hover:scale-110",
           tall && "mt-1",
           overview ? "border-gaslight bg-panel-3 ring-2 ring-gaslight/70" : "border-brass-dark bg-soot-2/85",
         )}

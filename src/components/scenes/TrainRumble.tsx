@@ -4,19 +4,28 @@
  * «Гул» — the prep phase before a pass: dust from the ceiling, growing tremor and rumble, the big countdown,
  * and (metro / express) the translucent prep panel: crew position, nets, «По местам!», «Пропустить».
  * Capsules only get the shaking tube, the countdown and «Пропустить».
+ * v3: the tremor stands still while the game is held (SCN-1); keys (SCN-5): Enter / Space — «По местам!», 1 / 2 / 3 —
+ * crew position, R — «Как в прошлый раз»; the ⌨ hints show once the keyboard is in play. A phone in landscape puts
+ * the countdown beside the panel, so «По местам!» stays in view.
+ * SCN-2: the position chips lead the panel (one row at the top: «авария N%» and «≈ сбор ×X» per position, the crash
+ * risk of this very train), the countdown stands under it, and the rail crew with its tarp stays in view on the rail
+ * head, stepping into the chosen stance. SCN-4: the gentleman grumbles down at his heavy step back.
  */
 import { useEffect, useRef } from "react";
 import { sfx } from "@/audio/sfx";
 import { CREW_POSITIONS, TRAIN_CARS, TRAIN_VARIANTS } from "@/game/data/events";
-import { sfxCue } from "@/game/fx";
-import { netCost } from "@/game/engine/events";
+import { sfxCue, sfxCue3 } from "@/game/fx";
+import { crashChance, expectedAuto, netCost } from "@/game/engine/events";
 import { derivedOf, useGame } from "@/game/store";
-import type { CrewPosition, Scene } from "@/game/types";
+import type { CrewPosition, Scene, TrainVariantId } from "@/game/types";
 import { fmt, fmtPct } from "@/lib/format";
+import { useShortLayout } from "@/lib/layoutMode";
 import { BrassButton, cx } from "@/components/ui/kit";
 import CapsuleTube from "./CapsuleTube";
+import { CrewLine } from "./CrewArt";
 import { TrainDust } from "./TrainBackdrop";
-import { act, clamp, shake } from "./sceneUtils";
+import { isControlTarget, isTypingTarget, rumbleKey } from "./sceneInput";
+import { act, clamp, sceneHeld, shake, useKeyboardUsed } from "./sceneUtils";
 
 const POSITIONS: CrewPosition[] = ["wall", "rails", "ties"];
 const SECTION_NAMES = ["Левая треть", "Центр", "Правая треть"];
@@ -34,11 +43,15 @@ export default function TrainRumble({ scene }: { scene: Scene }) {
   const remain = Math.max(0, scene.phaseEnds - time);
   const p = clamp(1 - remain / total);
   const capsule = scene.id === "capsule";
+  // SCN-5: a phone in landscape — the countdown steps aside, so the whole prep panel (and «По местам!») is in view
+  const side = useShortLayout() && !capsule;
 
   // tremor and rumble ramp (AudioDirector starts/stops the rumble itself); the giant gentleman's three beats (SC-5)
   const beats = useRef(0);
   useEffect(() => {
     const iv = window.setInterval(() => {
+      // SCN-1: under a ceremony (or with the tab hidden) the platform does not tremble
+      if (sceneHeld()) return;
       const sc = useGame.getState().game.scene;
       if (!sc || sc.phase !== "rumble") return;
       const k = clamp(1 - (sc.phaseEnds - useGame.getState().game.time) / Math.max(0.1, sc.phaseEnds - sc.phaseStart));
@@ -48,13 +61,54 @@ export default function TrainRumble({ scene }: { scene: Scene }) {
       while (beats.current < GENT_BEATS.length && k >= GENT_BEATS[beats.current]) {
         const b = beats.current++;
         sfxCue("footstep", { intensity: b === 1 ? 1 : 0.55 });
-        if (b === 1) shake(3, 300);
+        if (b === 1) {
+          shake(3, 300);
+          // beat 2: the heavy step back comes with a grumble from above
+          sfxCue3("giantVoice");
+        }
       }
     }, 200);
     return () => window.clearInterval(iv);
   }, []);
 
+  // SCN-5: the prep panel's keys (capsules: none — Enter on the focused «Пропустить» clicks it as usual)
+  useEffect(() => {
+    if (capsule) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented || isTypingTarget(e.target as Element | null)) return;
+      const k = rumbleKey(e.key, isControlTarget(e.target as Element | null));
+      if (!k) return;
+      const g = useGame.getState().game;
+      const sc = g.scene;
+      if (!sc || sc.phase !== "rumble") return;
+      e.preventDefault();
+      if (k.k === "ready") act({ a: "ready" });
+      else if (k.k === "position") act({ a: "position", pos: k.pos });
+      else {
+        const d = derivedOf(g);
+        if (d.netSlots > 0 && g.trainPrefs.lastNets.length > 0 && sc.nets.length < d.netSlots) act({ a: "netsRepeat" });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [capsule]);
+
   const n = Math.ceil(remain);
+  const countdown = (
+    <div className={cx("flex shrink-0 flex-col items-center gap-2", side && "max-w-[180px] pt-1")}>
+      <div className="pointer-events-none flex flex-col items-center leading-none">
+        <span
+          key={n}
+          className={cx("font-display font-bold text-brass-light", side ? "text-5xl" : capsule ? "text-6xl md:text-7xl" : "text-5xl md:text-6xl")}
+          style={{ animation: reduced ? undefined : "rr-pop .45s ease-out", textShadow: "0 3px 0 #2a1d0e, 0 0 26px rgba(242,184,75,.55)" }}
+        >
+          {n}…
+        </span>
+        <span className="mt-1 text-xs uppercase tracking-[0.25em] text-parchment-dim">{capsule ? "капсулы на подходе" : "до прохода"}</span>
+      </div>
+      {!capsule && <VariantBanner scene={scene} reduced={reduced} />}
+    </div>
+  );
   return (
     <div className="absolute inset-0">
       {capsule && <CapsuleTube amp={reduced ? 0 : 0.4 + 2.6 * p} pressure={0.15 + 0.8 * p} />}
@@ -62,19 +116,33 @@ export default function TrainRumble({ scene }: { scene: Scene }) {
       <TrainDust intensity={Math.min(1, 0.2 + 0.8 * p + (!capsule && p >= GENT_BEATS[1] && p < GENT_BEATS[1] + 0.08 ? 0.8 : 0))} />
       {!capsule && <Headlamp p={p} />}
       {!capsule && <GiantGent p={p} reduced={reduced} />}
-      <div className={cx("absolute inset-x-0 top-0 flex flex-col items-center gap-2 overflow-y-auto px-3 pt-2", capsule ? "bottom-0 justify-center" : "bottom-[30%]")}>
-        <div className="pointer-events-none flex flex-col items-center leading-none">
-          <span
-            key={n}
-            className="font-display text-6xl font-bold text-brass-light md:text-7xl"
-            style={{ animation: reduced ? undefined : "rr-pop .45s ease-out", textShadow: "0 3px 0 #2a1d0e, 0 0 26px rgba(242,184,75,.55)" }}
-          >
-            {n}…
-          </span>
-          <span className="mt-1 text-xs uppercase tracking-[0.25em] text-parchment-dim">{capsule ? "капсулы на подходе" : "до прохода"}</span>
-        </div>
-        {!capsule && <VariantBanner scene={scene} reduced={reduced} />}
-        {capsule ? <CapsulePanel /> : <PrepPanel scene={scene} />}
+      {/* SCN-2: the crew waits on the rail head in the chosen stance, tarp at the ready */}
+      {!capsule && <CrewLine position={scene.position} reduced={reduced} />}
+      <div
+        className={cx(
+          "absolute inset-x-0 top-0 flex items-center gap-2 overflow-y-auto px-3 pt-2",
+          side ? "flex-row items-start justify-center" : "flex-col",
+          // the crew stands on the rail head (70%): keep the countdown clear of their heads
+          capsule ? "bottom-0 justify-center" : "bottom-[calc(30%+clamp(34px,6vmin,60px))]",
+        )}
+      >
+        {/* the crew-position chips lead (top of the scene); the countdown stands under them, over the empty track */}
+        {capsule ? (
+          <>
+            {countdown}
+            <CapsulePanel />
+          </>
+        ) : side ? (
+          <>
+            {countdown}
+            <PrepPanel scene={scene} compact />
+          </>
+        ) : (
+          <>
+            <PrepPanel scene={scene} compact={false} />
+            {countdown}
+          </>
+        )}
       </div>
       {!capsule && <NetSections scene={scene} />}
     </div>
@@ -183,7 +251,26 @@ function CapsulePanel() {
   );
 }
 
-function PrepPanel({ scene }: { scene: Scene }) {
+/** A small key cap next to a control (shown once the keyboard is in play). */
+function Kbd({ k }: { k: string }) {
+  return <kbd className="ml-1 rounded border border-current/40 px-1 font-mono text-[10px] font-normal leading-tight opacity-70">{k}</kbd>;
+}
+
+/**
+ * One position's gamble on this train (ENG-8): the crash odds (the variant's crashMul, ×1.5 for the Royal Express,
+ * halved by «Расписание в голове») and the auto-collect it is worth on average once a crash's halving is priced in,
+ * as a multiple of the base share.
+ */
+export function positionOdds(pos: CrewPosition, variant: TrainVariantId, royal: boolean, base: number, halfRisk: boolean): { crash: number; gain: number } {
+  const crash = crashChance(pos, variant, royal) * (halfRisk ? 0.5 : 1);
+  // expectedAuto knows neither the express nor the edict: price those risks in the same way
+  const exp = !royal && !halfRisk ? expectedAuto(pos, variant, base) : Math.min(0.9, base * CREW_POSITIONS[pos].auto) * (1 - 0.5 * crash);
+  return { crash, gain: base > 0 ? exp / base : CREW_POSITIONS[pos].auto };
+}
+
+/** `compact` (a phone in landscape): lower position buttons without the italic hints. */
+function PrepPanel({ scene, compact }: { scene: Scene; compact: boolean }) {
+  const kbd = useKeyboardUsed();
   const base = useGame((s) => derivedOf(s.game).trainAutoBase);
   const netSlots = useGame((s) => derivedOf(s.game).netSlots);
   const cost = useGame((s) => netCost(s.game, derivedOf(s.game)));
@@ -193,41 +280,49 @@ function PrepPanel({ scene }: { scene: Scene }) {
   const hook = useGame((s) => !!s.game.upgrades.grappling_hook);
   const halfRisk = useGame((s) => !!s.game.meta.edicts.timetable_in_head);
   const pos = CREW_POSITIONS[scene.position];
-  const autoNow = Math.min(0.9, (base + (scene.ready ? 0.15 : 0)) * pos.auto);
+  const b = base + (scene.ready ? 0.15 : 0);
+  const autoNow = Math.min(0.9, b * pos.auto);
   const autoReady = Math.min(0.9, (base + 0.15) * pos.auto);
+  const variant: TrainVariantId = scene.variant ?? "normal";
+  const royal = scene.id === "royal_express";
 
   return (
-    <div className="pointer-events-auto w-full max-w-lg rounded-lg border border-line bg-panel/80 p-2.5 shadow-[0_8px_24px_rgba(0,0,0,.6)] backdrop-blur-sm md:p-3">
-      <h3 className="mb-1.5 font-display text-sm font-bold uppercase tracking-widest text-brass-light">Позиция бригады</h3>
+    <div className="pointer-events-auto w-full max-w-lg shrink-0 rounded-lg border border-line bg-panel/80 p-2 shadow-[0_8px_24px_rgba(0,0,0,.6)] backdrop-blur-sm md:p-2.5">
+      <h3 className="mb-1 font-display text-xs font-bold uppercase tracking-widest text-brass-light">Позиция бригады</h3>
       <div className="grid grid-cols-3 gap-1.5">
-        {POSITIONS.map((id) => {
+        {POSITIONS.map((id, i) => {
           const d = CREW_POSITIONS[id];
           const on = scene.position === id;
-          const crash = d.crash * (halfRisk ? 0.5 : 1);
+          const odds = positionOdds(id, variant, royal, b, halfRisk);
           return (
             <button
               key={id}
               type="button"
               aria-pressed={on}
+              aria-keyshortcuts={String(i + 1)}
+              title={POSITION_HINT[id]}
               onClick={() => act({ a: "position", pos: id })}
               className={cx(
-                "flex min-h-14 flex-col items-center justify-center rounded-md border px-1 py-1 text-center transition active:translate-y-px",
+                "flex min-w-0 flex-col items-center justify-center rounded-md border px-1 py-1 text-center transition active:translate-y-px",
+                compact ? "min-h-11" : "min-h-12",
                 on ? "border-brass bg-brass/20 shadow-[0_0_12px_rgba(201,162,90,.35)]" : "border-line bg-black/25 hover:bg-panel-3",
               )}
             >
-              <span className="text-sm font-bold leading-tight text-parchment">
+              <span className="text-[13px] font-bold leading-tight text-parchment sm:text-sm">
                 {d.icon} {d.name}
+                {kbd && <Kbd k={String(i + 1)} />}
               </span>
-              <span className="mt-0.5 font-mono text-[10px] leading-tight text-parchment-dim tabular">
-                сбор ×{fmt(d.auto)} · <span className={crash > 0 ? "text-danger-light" : "text-good"}>авария {fmtPct(crash)}</span>
-                {hook && <> · крюк ×{fmt(d.hook)}</>}
+              <span className="mt-0.5 flex flex-wrap justify-center gap-x-1.5 font-mono text-[10px] leading-tight text-parchment-dim tabular">
+                <span className={odds.crash > 0 ? "text-danger-light" : "text-good"}>авария {fmtPct(odds.crash)}</span>
+                <span>≈ сбор ×{fmt(odds.gain)}</span>
+                {hook && <span>крюк ×{fmt(d.hook)}</span>}
               </span>
-              <span className={cx("mt-0.5 text-[10px] italic leading-tight", on ? "text-brass-light" : "text-parchment-dim")}>{POSITION_HINT[id]}</span>
+              {!compact && <span className={cx("mt-0.5 text-[10px] italic leading-tight max-sm:hidden", on ? "text-brass-light" : "text-parchment-dim")}>{POSITION_HINT[id]}</span>}
             </button>
           );
         })}
       </div>
-      <p className="mt-2 text-xs text-parchment-dim">
+      <p className="mt-1.5 text-xs text-parchment-dim">
         Автосбор: <span className="font-mono font-bold text-good tabular">{fmtPct(autoNow)}</span>
         {!scene.ready && (
           <>
@@ -252,14 +347,16 @@ function PrepPanel({ scene }: { scene: Scene }) {
           <span>
             🕸 Сети {scene.nets.length}/{netSlots} · <span className={wire >= cost ? "text-parchment" : "text-danger-light"}>➰ {fmt(cost)}</span> за сеть — ставьте на перроне внизу
           </span>
-          <BrassButton size="sm" tone="ghost" className="min-h-10" disabled={lastNets === 0 || scene.nets.length >= netSlots} onClick={() => act({ a: "netsRepeat" })}>
+          <BrassButton size="sm" tone="ghost" className="min-h-10" aria-keyshortcuts="R" disabled={lastNets === 0 || scene.nets.length >= netSlots} onClick={() => act({ a: "netsRepeat" })}>
             Как в прошлый раз
+            {kbd && <Kbd k="R" />}
           </BrassButton>
         </div>
       )}
       <div className="mt-2.5 flex items-center gap-2">
-        <BrassButton size="lg" className="min-h-11 flex-1" onClick={() => act({ a: "ready" })}>
+        <BrassButton size="lg" className="min-h-11 flex-1" data-autofocus="" aria-keyshortcuts="Enter" onClick={() => act({ a: "ready" })}>
           По местам!
+          {kbd && <Kbd k="Enter" />}
         </BrassButton>
         <BrassButton tone="ghost" className="min-h-11" onClick={() => act({ a: "skip" })}>
           Пропустить

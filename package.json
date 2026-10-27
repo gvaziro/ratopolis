@@ -2,14 +2,32 @@
   "name": "ratropolis-underground",
   "version": "0.1.0",
   "private": true,
+  "description": "Incremental browser game: a Victorian-steampunk rat colony under London, where every human train is an earthquake.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gvaziro/ratopolis.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gvaziro/ratopolis/issues"
+  },
+  "engines": {
+    "node": ">=20.9"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:static": "next build",
     "start": "next start",
-    "lint": "eslint",
+    "lint": "eslint --cache --cache-strategy content",
+    "typegen": "next typegen",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "sim": "tsx scripts/balance-sim.ts"
+    "test:slow": "vitest run --mode slow",
+    "test:all": "vitest run --mode all",
+    "check": "npm run typecheck && npm run lint && npm test",
+    "sim": "tsx scripts/balance-sim.ts",
+    "sim:matrix": "tsx scripts/sim-matrix.ts",
+    "sim:baseline": "tsx scripts/sim-matrix.ts --write-baseline"
   },
   "dependencies": {
     "next": "16.4.3",

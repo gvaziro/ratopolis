@@ -1,34 +1,22 @@
 import { describe, expect, it } from "vitest";
 import type { EngineCtx, GameState } from "../types";
-import { autoContributeUncapped, buyBuilding, openZone, smartAssign } from "./actions";
+import { autoContributeUncapped, buyBuilding, smartAssign } from "./actions";
 import { derive } from "./derive";
-import { onZoneOpen } from "./events";
-import { createInitialState } from "./state";
 import { step, TICK } from "./step";
+import { metroState } from "./testkit";
 
-/** A colony on the metro station: zones open through the real hooks, nothing scheduled to interrupt. */
-function metroState(seed = 99): GameState {
-  const s = createInitialState(seed, 0);
-  const ctx: EngineCtx = { fx: [] };
-  for (const z of ["sewers", "cellars", "metro"] as const) {
-    openZone(s, z, ctx);
-    onZoneOpen(s, z);
-  }
-  s.flags.vagrants = true;
-  s.flags.first_train = true;
-  s.rats = 200;
-  s.jobs.forager = 200;
-  s.res.crumbs = 1e5;
+/** The kit's metro colony with nothing scheduled to interrupt, coins and buttons already found. */
+function quietMetro(seed = 99): GameState {
+  const s = metroState(seed, { quiet: true });
   s.resEver.coins = 1;
   s.resEver.buttons = 1;
-  for (const k of ["metro_train", "carriage", "purse", "shiny", "market"] as const) s.timers[k] = Infinity;
   return s;
 }
 
 describe("smart assignment (tube_orders)", () => {
   /** 200 rats, 5 foundries (10 smelter slots), 1 boiler (2 stoker slots), full button/wire stores. */
   function smelterColony(): GameState {
-    const s = metroState();
+    const s = quietMetro();
     s.upgrades.tube_orders = true;
     s.assignMode = "smart";
     s.buildings.brass_foundry = 5;
@@ -73,7 +61,7 @@ describe("smart assignment (tube_orders)", () => {
 
 describe("milestones", () => {
   it("only buildings with a produce effect announce the ×2 milestone", () => {
-    const s = metroState();
+    const s = quietMetro();
     s.res.crumbs = 1e12;
     s.res.coins = 1e12;
     s.buildings.nest = 9;
@@ -90,7 +78,7 @@ describe("milestones", () => {
 
 describe("«Автовзнос» of uncapped resources", () => {
   it("takes half of the tick's gain, never more, and leaves capped resources alone", () => {
-    const s = metroState();
+    const s = quietMetro();
     s.autoContribute = true;
     s.revealed.exp_terminal = true;
     const before = { ...s.res };
@@ -105,7 +93,7 @@ describe("«Автовзнос» of uncapped resources", () => {
 
   it("the measured rate (HUD, ETAs) is the net after the contribution", () => {
     const run = (on: boolean) => {
-      const s = metroState(5);
+      const s = quietMetro(5);
       s.buildings.library = 10; // 0.05 × 10 × 2 (milestone) = 1 📜/s, no global multipliers
       s.revealed.exp_terminal = true;
       s.autoContribute = on;

@@ -1,18 +1,24 @@
-import { MILESTONES, MILESTONE_JOB_BOOST } from "../data/buildings";
+import { BUILDINGS, MILESTONES, MILESTONE_JOB_BOOST } from "../data/buildings";
 import { CONVERTERS, JOBS } from "../data/jobs";
 import { RESOURCES } from "../data/resources";
-import { BUILDING_IDS, JOB_IDS, RES_IDS, type Amounts, type BuildingId, type EngineCtx, type GameState, type ResId, type ResMap, type TickInput } from "../types";
+import { BUILDING_IDS, JOB_IDS, RES_IDS, type Amounts, type BuildingId, type EngineCtx, type GameState, type JobId, type ResId, type ResMap, type TickInput } from "../types";
 import { autoContributeUncapped } from "./actions";
 import { award, gain, newbornJob, news, normalizeJobs, toast } from "./core";
 import { converterPotential, derive, resMult, stunnedRats, type Derived } from "./derive";
-import { buildingCost, entries } from "./formulas";
+import { buildingCost, entries, unitValue } from "./formulas";
+import { autoFocus } from "./potential";
 import { zeroRes } from "./state";
 
 /** Longest production slice of an offline step (s): see tickEconomy. */
 export const OFFLINE_SLICE = 2;
 
+/** Converters that burn steam (smelters, smiths): with s.steamPriority "power" they get what the press and clocks leave. */
+export const STEAM_CONVERTERS: readonly JobId[] = CONVERTERS.filter((j) => (JOBS[j].consumes.steam ?? 0) > 0);
+
 /**
  * Passive economy for one fixed step: producers -> converters -> steam consumers -> food -> births.
+ * v3 (ENG-4): s.steamPriority "power" moves the steam consumers (press, clocktower) in front of the steam-burning
+ * converters (smelters, smiths), right after the stokers; "works" keeps the v2 order.
  * Mutates `s`. `dt` may be large (offline simulation); everything here is stable for big steps.
  */
 export function tickEconomy(s: GameState, d: Derived, dt: number, input: TickInput, ctx: EngineCtx): void {
@@ -55,6 +61,15 @@ export function tickEconomy(s: GameState, d: Derived, dt: number, input: TickInp
   const h = dt / slices;
   let crumbOverflow = 0; // crumbs the full store turned away: they feed the colony first (step 4)
   let steamEffSum = 0;
+  const power = s.steamPriority === "power";
+  // ---- 3. steam consumers (press, clocktower): after the converters ("works"), or before the steam converters ("power")
+  const steamPhase = () => {
+    if (d.steamNeed <= 0) return;
+    const need = d.steamNeed * h * eta;
+    const e = need > 0 ? Math.min(1, s.res.steam / need) : 1;
+    s.res.steam = Math.max(0, s.res.steam - need * e);
+    steamEffSum += e;
+  };
   for (let slice = 0; slice < slices; slice++) {
     for (const r of RES_IDS) {
       if (perSec[r] <= 0) continue;
@@ -63,7 +78,12 @@ export function tickEconomy(s: GameState, d: Derived, dt: number, input: TickInp
     }
 
     // ---- 2. converters in fixed order
+    let steamDone = false;
     for (const j of CONVERTERS) {
+      if (power && !steamDone && STEAM_CONVERTERS.includes(j)) {
+        steamPhase();
+        steamDone = true;
+      }
       const def = JOBS[j];
       const n = s.jobs[j];
       if (n <= 0) {
@@ -95,14 +115,7 @@ export function tickEconomy(s: GameState, d: Derived, dt: number, input: TickInp
       const prev = s.convEff[j] ?? e;
       s.convEff[j] = prev + (e - prev) * (1 - Math.exp(-h / 5));
     }
-
-    // ---- 3. steam consumers (press, clocktower)
-    if (d.steamNeed > 0) {
-      const need = d.steamNeed * h * eta;
-      const e = need > 0 ? Math.min(1, s.res.steam / need) : 1;
-      s.res.steam = Math.max(0, s.res.steam - need * e);
-      steamEffSum += e;
-    }
+    if (!steamDone) steamPhase();
   }
   s.steamEff = d.steamNeed > 0 ? steamEffSum / slices : 1;
 
@@ -150,7 +163,8 @@ export function tickEconomy(s: GameState, d: Derived, dt: number, input: TickInp
       s.rats += 1;
       s.stats.births += 1;
       s.meta.lifetime.births += 1;
-      const job = newbornJob(s, d, crumbNet);
+      // ENG-1 auto focus: the colony's own pick, recomputed per newborn (each one changes the upkeep and the crews)
+      const job = newbornJob(s, d, crumbNet, () => autoFocus(s, d).job);
       if (job !== "idle") s.jobs[job] += 1;
       if (!input.offline) ctx.fx.push({ k: "birth", job });
     }
@@ -224,7 +238,9 @@ export function levelGain(s: GameState, d: Derived, id: BuildingId, k: number): 
   let s2: GameState = { ...s, buildings: { ...s.buildings, [id]: s.buildings[id] + Math.max(1, Math.floor(k)) } };
   let d2 = derive(s2);
   if (d2.steamNeed > d.steamNeed) {
-    const avail = Math.max(d.steamNeed > 0 ? s.steamEff * d.steamNeed : 0, converterPotential(s, d, "steam") - converterSteamUse(s, d));
+    // v3 (ENG-4): with the valve on "power" the press and the clocks are served before the smelters and smiths
+    const spare = converterPotential(s, d, "steam") - (s.steamPriority === "power" ? 0 : converterSteamUse(s, d));
+    const avail = Math.max(d.steamNeed > 0 ? s.steamEff * d.steamNeed : 0, spare);
     s2 = { ...s2, steamEff: Math.max(0, Math.min(1, avail / d2.steamNeed)) };
     d2 = derive(s2);
   }
@@ -249,10 +265,35 @@ function converterSteamUse(s: GameState, d: Derived): number {
   return use;
 }
 
-/** Market value of one unit for payback maths (📜💍 have no market price: 50, like marketValue; 💨 counts as 0). */
-export function unitValue(r: ResId): number {
-  return RESOURCES[r].market ?? (r === "steam" ? 0 : 50);
+/**
+ * The steam budget (v3 ENG-4, the Jobs-tab valve and the colony gauge): what the stokers can make per second (supply,
+ * ignoring a full buffer), the buffer cap, and what the presses, the clocktowers and the steam converters (smelters,
+ * smiths) want per second at full speed; eff = the press/clock efficiency of the last tick. Who is served first when
+ * supply < demand is s.steamPriority ("works": converters first, the v2 order; "power": presses and clocks first).
+ * With the boiler capped at 12 levels (ENG-4) the supply tops out at 24 stokers × 3 × 1.5 × 1.25 = 135 💨/s.
+ */
+export function steamBudget(s: GameState, d: Derived): { supply: number; cap: number; press: number; clock: number; conv: number; eff: number } {
+  let press = 0;
+  let clock = 0;
+  for (const id of ["steam_press", "clocktower"] as const) {
+    const L = s.buildings[id];
+    if (L <= 0) continue;
+    for (const e of BUILDINGS[id].effects) {
+      if (e.t === "steamPress") press += e.use * L;
+      else if (e.t === "steamClock") clock += e.use * L;
+    }
+  }
+  const workforce = s.rats > 0 ? 1 - stunnedRats(s) / s.rats : 1;
+  let conv = 0;
+  for (const j of CONVERTERS) {
+    const v = JOBS[j].consumes.steam ?? 0;
+    if (v > 0 && s.jobs[j] > 0) conv += s.jobs[j] * d.jobSpeed[j] * workforce * v;
+  }
+  return { supply: converterPotential(s, d, "steam"), cap: d.caps.steam, press, clock, conv, eff: d.steamNeed > 0 ? s.steamEff : 1 };
 }
+
+/** Market value of one unit for payback maths (moved to formulas.ts in v3 so actions.ts can weigh expeditions). */
+export { unitValue };
 
 /** Seconds of the extra production needed to pay back k levels (Infinity when the levels produce nothing). */
 export function paybackSeconds(s: GameState, d: Derived, id: BuildingId, k: number): number {

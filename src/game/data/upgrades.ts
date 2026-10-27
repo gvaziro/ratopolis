@@ -276,7 +276,8 @@ export const UPGRADES: Record<UpgradeId, UpgradeDef> = {
     name: "Предохранительные клапаны",
     icon: "🎚️",
     cost: { brass: 120, blueprints: 400 },
-    effect: "Кочегары ×1.5 (выход); буфер 💨 ×2",
+    // v3 (ENG-4): with the boiler capped at 12 the stokers are a fixed budget, so this is a real +50% to it
+    effect: "Кочегары ×1.5 (выход): +50% к бюджету пара; буфер 💨 ×2",
     kind: "yield",
     unlock: { building: "boiler", gte: 3 },
     flavor: "Чтобы чайник не улетел к людям.",
@@ -334,8 +335,10 @@ export const UPGRADES: Record<UpgradeId, UpgradeDef> = {
     icon: "📐",
     cost: { blueprints: 1500, trinkets: 20 },
     effect: "Открывает проект «Крысиный экспресс» (10 этапов → коронация)",
-    unlock: { all: [{ zone: "terminal" }, { building: "clocktower", gte: 1 }] },
+    // v3 (ENG-3): the plan needs a Great Migration (a colony that never moved was crowned sooner than one that did)
+    unlock: { all: [{ zone: "terminal" }, { building: "clocktower", gte: 1 }, { migrations: 1 }] },
     flavor: "Свой поезд. Из хлама. Для Короля.",
+    lockedFlavor: "Король выдаёт чертёж только колонии, пережившей Переселение",
   },
 };
 

@@ -9,16 +9,23 @@
  * A body chunk that will not load (offline, a deploy swapped the chunk names) is retried, and if it still fails the
  * scene shows «Сцена не загрузилась» and the engine resolves it on its own clock — instead of the whole-game crash
  * screen; the body gets a fresh loader, because React.lazy (under next/dynamic) remembers a failed import for good.
+ * v3 SCN-1: drives the scene clock's hold (a ceremony, a crash, a save issue or a hidden tab — see sceneClock.ts).
+ * v3 SCN-5: on the phone layout (narrow or short: a phone in landscape too) the dialog covers the whole screen and is
+ * modal; the colony under it is inert on every layout, the bars and the side panel too on phones. A keyboard player's
+ * focus moves into the scene on every phase ([data-autofocus], else the first enabled button) and goes back where it
+ * was (or to the grate) when the scene ends.
  */
 import dynamic from "next/dynamic";
-import { Component, useEffect, type ComponentType, type ErrorInfo, type ReactNode } from "react";
+import { Component, useEffect, useLayoutEffect, useRef, useState, type ComponentType, type ErrorInfo, type ReactNode, type RefObject } from "react";
 import { BrassButton } from "@/components/ui/kit";
 import { onFx } from "@/game/fx";
-import { useGame } from "@/game/store";
+import { isHeld, useGame } from "@/game/store";
 import type { Scene, SceneEventId } from "@/game/types";
+import { usePhoneLayout } from "@/lib/layoutMode";
 import { MarketChip } from "./MarketPopup";
+import { onSceneHold, sceneHeld, setSceneHeld } from "./sceneClock";
 import SceneFrame from "./SceneFrame";
-import { act, actQuiet } from "./sceneUtils";
+import { act, actQuiet, keyboardUsed, trackInputModality } from "./sceneUtils";
 
 const PHASE_LABEL: Record<string, string> = {
   warn: "Тревога",
@@ -141,16 +148,200 @@ function usePrefetchScenes(): void {
   }, []);
 }
 
+/** SCN-1: the scene clock is held while the game is (isHeld: ceremony, crash, save issue) or the tab is hidden. */
+function useSceneHold(): void {
+  useEffect(() => {
+    const sync = () => setSceneHeld(isHeld(useGame.getState()) || document.visibilityState === "hidden");
+    sync();
+    const off = useGame.subscribe(sync);
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      off();
+      document.removeEventListener("visibilitychange", sync);
+    };
+  }, []);
+}
+
 export default function SceneHost() {
   usePrefetchScenes();
+  useSceneHold();
+  useEffect(() => trackInputModality(), []);
   const id = useGame((s) => s.game.scene?.id ?? null);
   const seq = useGame((s) => s.game.scene?.seq ?? 0);
   if (!id) return null;
+  return <SceneDialog key={seq} id={id} seq={seq} />;
+}
+
+/** The dialog box: the colony window on desktop, the whole screen (and modal) on the phone layout. */
+function SceneDialog({ id, seq }: { id: SceneEventId; seq: number }) {
+  const phone = usePhoneLayout();
+  const phase = useGame((s) => s.game.scene?.phase ?? "done");
+  const ref = useRef<HTMLDivElement>(null);
+  // the focus to give back when the scene ends, taken in the first render: the focus layout effect may move it into
+  // the dialog before any passive effect runs
+  const [before] = useState<Element | null>(() => (typeof document !== "undefined" ? document.activeElement : null));
+  useInertBackground(ref, phone, phase);
+  useSceneFocus(ref, seq, phase, before);
+  // the hold marks the box (CSS pauses the time-bound loops under it: the «Наверху» inset)
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const mark = (held: boolean) => el.toggleAttribute("data-held", held);
+    mark(sceneHeld());
+    return onSceneHold(mark);
+  }, []);
   return (
-    <div className="fixed inset-0 z-40 md:absolute md:inset-0 md:z-20" role="dialog" aria-modal="false" aria-label="Событие крупным планом">
-      <SceneInstance key={seq} id={id} seq={seq} />
+    // JS-driven, not a CSS variant: a landscape phone (812×375) is md by width but still gets the whole screen
+    <div ref={ref} data-scene-dialog="" className={phone ? "fixed inset-0 z-40" : "absolute inset-0 z-20"} role="dialog" aria-modal={phone} aria-label="Событие крупным планом">
+      <SceneInstance id={id} seq={seq} />
     </div>
   );
+}
+
+/* ------------------------------------------------------------ focus & inert background (SCN-5) */
+
+const AUTOFOCUS = "[data-autofocus]:not([disabled])";
+const ENABLED = "button:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])";
+
+const shown = (el: Element) => el.getClientRects().length > 0;
+
+/** Where a keyboard player's focus goes in the dialog: [data-autofocus] in the body, then anywhere, then the first enabled button. */
+function focusTarget(dlg: HTMLElement): HTMLElement | null {
+  const body = dlg.querySelector("[data-scene-body]") ?? dlg;
+  for (const root of [body, dlg]) {
+    for (const sel of [AUTOFOCUS, ENABLED]) {
+      for (const el of root.querySelectorAll<HTMLElement>(sel)) if (shown(el) && !el.closest("[inert]")) return el;
+    }
+  }
+  return null;
+}
+
+/** The grate in the colony (the focus goes back there when nothing better was focused before the scene). */
+function grate(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('.cv-root [aria-label^="Решётка водостока"]') ?? document.querySelector<HTMLElement>('[aria-label^="Решётка водостока"]');
+}
+
+/**
+ * Keyboard focus follows the scene: on mount and on every phase change (and whenever it falls to <body> mid-phase),
+ * a keyboard player whose focus is on the page body or outside the dialog lands on the phase's [data-autofocus]
+ * control; when the scene ends the focus returns to what had it before (`saved`, or the grate), unless it moved on meanwhile.
+ */
+function useSceneFocus(ref: RefObject<HTMLDivElement | null>, seq: number, phase: string, saved: Element | null): void {
+  useEffect(() => {
+    const dlg = ref.current;
+    const lost = () => !document.activeElement || document.activeElement === document.body;
+    // focus that falls to <body> mid-phase (a focused button unmounted: the hook's bar, a swept pile) comes back
+    const iv = window.setInterval(() => {
+      if (dlg && keyboardUsed() && !sceneHeld() && lost()) focusTarget(dlg)?.focus({ preventScroll: true });
+    }, 100);
+    return () => {
+      window.clearInterval(iv);
+      // after the inert background is lifted (its cleanup runs first; the microtask makes sure)
+      queueMicrotask(() => {
+        const active = document.activeElement;
+        if (active && active !== document.body && active.isConnected && !dlg?.contains(active)) return; // moved on
+        const back = (saved instanceof HTMLElement || saved instanceof SVGElement) && !dlg?.contains(saved) ? saved : null;
+        const target = back && back !== document.body && back.isConnected && !back.closest("[inert]") ? back : grate();
+        target?.focus({ preventScroll: true });
+      });
+    };
+  }, [ref, seq, saved]);
+
+  // Tab from nowhere (the page body) goes into the scene; on the phone layout (modal) Tab also stays inside it
+  useEffect(() => {
+    const dlg = ref.current;
+    if (!dlg) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" || e.ctrlKey || e.metaKey || e.altKey || sceneHeld()) return;
+      const active = document.activeElement;
+      const modal = dlg.getAttribute("aria-modal") === "true";
+      if (!active || active === document.body || (modal && !dlg.contains(active))) {
+        const target = focusTarget(dlg);
+        if (!target) return;
+        e.preventDefault();
+        target.focus({ preventScroll: true });
+        return;
+      }
+      if (!modal || !dlg.contains(active)) return;
+      const all = [...dlg.querySelectorAll<HTMLElement>(ENABLED)].filter((el) => el.tabIndex >= 0 && shown(el));
+      if (!all.length) return;
+      const first = all[0];
+      const last = all[all.length - 1];
+      if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus({ preventScroll: true });
+      } else if (e.shiftKey && active === first) {
+        e.preventDefault();
+        last.focus({ preventScroll: true });
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [ref, seq]);
+
+  // a layout effect: the phase that just replaced the focused control never leaves the focus on <body> for a frame
+  useLayoutEffect(() => {
+    const dlg = ref.current;
+    if (!dlg || !keyboardUsed()) return;
+    // the body chunk may still be on its way: look again for a moment
+    let tries = 0;
+    let t = 0;
+    const place = () => {
+      const active = document.activeElement;
+      if (active && active !== document.body && dlg.contains(active) && shown(active)) return;
+      // a ceremony over the scene keeps its own focus
+      if (sceneHeld()) {
+        if (++tries < 40) t = window.setTimeout(place, 50);
+        return;
+      }
+      const target = focusTarget(dlg);
+      target?.focus({ preventScroll: true });
+      if ((!target || document.activeElement !== target) && ++tries < 40) t = window.setTimeout(place, 50);
+    };
+    place();
+    return () => window.clearTimeout(t);
+  }, [ref, seq, phase]);
+}
+
+/** In-flow page bars (header, sky strip, resource bar, ticker): not the fixed overlays, toasts or the fx layer. */
+function inFlow(el: Element): boolean {
+  if (!(el instanceof HTMLElement) || el.getAttribute("role") === "dialog") return false;
+  const cs = getComputedStyle(el);
+  return cs.display !== "none" && cs.position !== "fixed" && cs.position !== "absolute";
+}
+
+/**
+ * While a scene is up the colony under it is inert (nothing to Tab into under the close-up); on the phone layout the
+ * whole screen is the scene, so the header, the sky strip, the resource bar, the side panel and the ticker are too.
+ * Re-applied on every phase (a remounted colony gets it again); only what this hook made inert is released.
+ */
+function useInertBackground(ref: RefObject<HTMLDivElement | null>, phone: boolean, phase: string): void {
+  useEffect(() => {
+    const dlg = ref.current;
+    if (!dlg) return;
+    const targets = new Set<HTMLElement>();
+    const add = (el: Element | null | undefined) => {
+      if (el instanceof HTMLElement && !el.contains(dlg) && !el.inert) targets.add(el);
+    };
+    document.querySelectorAll(".cv-root").forEach(add);
+    if (phone) {
+      const main = dlg.closest("main");
+      const shell = main?.parentElement;
+      if (main) for (const el of main.children) if (el.tagName === "ASIDE") add(el);
+      if (main && shell) for (const el of shell.children) if (el !== main && inFlow(el)) add(el);
+    }
+    for (const el of targets) {
+      el.inert = true;
+      el.setAttribute("data-scene-inert", "");
+    }
+    return () => {
+      for (const el of targets) {
+        if (!el.hasAttribute("data-scene-inert")) continue;
+        el.inert = false;
+        el.removeAttribute("data-scene-inert");
+      }
+    };
+  }, [ref, phone, phase]);
 }
 
 function SceneInstance({ id, seq }: { id: SceneEventId; seq: number }) {
@@ -219,7 +410,7 @@ class BodyGuard extends Component<{ chunk: Chunk; seq: number; children: ReactNo
           <p className="font-display text-lg font-bold text-brass-light">Сцена не загрузилась</p>
           <p className="text-xs leading-snug text-parchment-dim">Связь с машинным отделением оборвалась. Колония справится сама, без лап, — или попробуйте ещё раз.</p>
           <div className="flex flex-wrap justify-center gap-2">
-            <BrassButton className="min-h-11" onClick={this.retry}>
+            <BrassButton className="min-h-11" data-autofocus="" onClick={this.retry}>
               Ещё раз
             </BrassButton>
             <BrassButton tone="ghost" className="min-h-11" onClick={this.skip}>
@@ -232,11 +423,14 @@ class BodyGuard extends Component<{ chunk: Chunk; seq: number; children: ReactNo
   }
 }
 
+/** The phase name at the header's right edge; phones below sm drop it, so the scene title keeps the room. */
 function PhaseBadge() {
   const phase = useGame((s) => s.game.scene?.phase ?? "done");
   const label = PHASE_LABEL[phase];
   if (!label) return null;
-  return <span className="rounded border border-brass-dark/70 bg-black/30 px-1.5 py-0.5 font-display text-[11px] font-bold uppercase tracking-widest text-brass">{label}</span>;
+  return (
+    <span className="rounded border border-brass-dark/70 bg-black/30 px-1.5 py-0.5 font-display text-[11px] font-bold uppercase tracking-widest text-brass max-sm:hidden">{label}</span>
+  );
 }
 
 /** Routes the running scene to its body component (re-renders with the scene, ~10 Hz). */

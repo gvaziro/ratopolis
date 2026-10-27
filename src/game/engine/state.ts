@@ -1,7 +1,8 @@
 import { EVENT_TIMING } from "../data/events";
 import { HEADLINES } from "../data/headlines";
 import { FOREMAN_UPGRADES, ratMemoryUpgrades } from "../data/upgrades";
-import { WEEKDAYS_FULL, districtLoc, districtTrait } from "../data/zones";
+import { districtInfo } from "../data/districts";
+import { WEEKDAYS_FULL } from "../data/zones";
 import { RANKED, byRank, edictRank } from "./ranks";
 import {
   BUILDING_IDS,
@@ -17,8 +18,11 @@ import {
   type Timers,
 } from "../types";
 
-/** 2 = v2 (meta ranks/seals/history, settings hints/ambience/textScale, scouting, commissions). */
-export const SCHEMA_VERSION = 2;
+/**
+ * 2 = v2 (meta ranks/seals/history, settings hints/ambience/textScale, scouting, commissions).
+ * 3 = v3 (districts by id + visited, curios, steam priority, sfxVolume/music, fog, carriage pass; save.ts MIGRATIONS[2]).
+ */
+export const SCHEMA_VERSION = 3;
 
 /** Express stages a run may start with (express_blueprints, v2 EN-3: 9 → 5): stages 6–10 and the coronation replay every run. */
 export const KEPT_STAGES_MAX = 5;
@@ -75,6 +79,8 @@ export function defaultSettings(): Settings {
     ambience: 0.5,
     textScale: 1,
     reducedMotionFromOS: false,
+    sfxVolume: 1,
+    music: 0.35,
   };
 }
 
@@ -101,6 +107,9 @@ export function defaultMeta(): Meta {
     seenLines: {},
     history: [],
     records: {},
+    districtId: "whitechapel",
+    visited: ["whitechapel"],
+    curios: [],
   };
 }
 
@@ -122,6 +131,7 @@ function freshTimers(): Timers {
     toastFor: -1,
     nextGeneration: 180,
     filler: 150,
+    fog: Infinity,
   };
 }
 
@@ -158,7 +168,7 @@ export function newRun(meta: Meta, settings: Settings, seed: number, now: number
     foreman: { nests: true, storage: true },
     suspicion: 0,
     bustle: { value: 0, lastClickAt: -10 },
-    buffs: { feastUntil: 0, luckyPawUntil: 0, soggyUntil: 0, frenzyUntil: 0, frenzyCooldownUntil: 0 },
+    buffs: { feastUntil: 0, luckyPawUntil: 0, soggyUntil: 0, frenzyUntil: 0, frenzyCooldownUntil: 0, fogUntil: 0 },
     stats: zeroStats(),
     flags: {},
     revealed: {},
@@ -187,6 +197,9 @@ export function newRun(meta: Meta, settings: Settings, seed: number, now: number
     recentLines: {},
     coronatedAt: -1,
     runBestRating: "none",
+    steamPriority: "works",
+    carriagePass: null,
+    hintMemo: { id: "", since: 0, muted: "", mutedUntil: 0 },
   };
 
   const e = meta.edicts;
@@ -201,7 +214,7 @@ export function newRun(meta: Meta, settings: Settings, seed: number, now: number
     // rank II: the Cellars too (the same timers as onZoneOpen("cellars"); the market at the middle of the district's
     // interval instead of its random roll: Боро-маркет's stall comes sooner)
     if (edictRank(s, "old_tunnels") >= 2) {
-      const mi = districtTrait(meta.district).mods.marketInterval ?? EVENT_TIMING.marketInterval;
+      const mi = districtInfo(meta).trait.mods.marketInterval ?? EVENT_TIMING.marketInterval;
       s.zones.cellars = true;
       s.zoneOpenedAt.cellars = 0;
       s.timers.catForcedAt = 420;
@@ -210,7 +223,7 @@ export function newRun(meta: Meta, settings: Settings, seed: number, now: number
     }
   }
   if (e.express_blueprints) s.express.stage = Math.min(KEPT_STAGES_MAX, meta.expressKept);
-  const start = meta.migrations > 0 ? HEADLINES.restart[0].replace("{loc}", districtLoc(meta.district)).replace("{weekday}", WEEKDAYS_FULL[meta.migrations % 7]) : HEADLINES.start[0];
+  const start = meta.migrations > 0 ? HEADLINES.restart[0].replace("{loc}", districtInfo(meta).loc).replace("{weekday}", WEEKDAYS_FULL[meta.migrations % 7]) : HEADLINES.start[0];
   s.news.push({ t: 0, text: start });
   return s;
 }

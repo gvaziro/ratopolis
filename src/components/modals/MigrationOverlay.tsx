@@ -12,6 +12,7 @@ import { canMigrate } from "@/game/engine/formulas";
 import { onFx } from "@/game/fx";
 import { useGame } from "@/game/store";
 import type { Fx } from "@/game/types";
+import { useBackCloses } from "@/lib/useBackCloses";
 import CeremonyLoading from "./CeremonyLoading";
 
 type MigrationFx = Extract<Fx, { k: "migration" }>;
@@ -53,6 +54,8 @@ export default function MigrationOverlay() {
     setFx(null);
     useGame.getState().setTab("migration");
   }, []);
+  // phones: the system Back closes the card like «Обустроиться в …» instead of leaving the game
+  useBackCloses(open, close);
   if (!fx) return null;
   return <Ceremony key={fx.n} data={fx.data} onClose={close} />;
 }

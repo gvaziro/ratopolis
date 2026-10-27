@@ -1,21 +1,32 @@
 /**
  * Continuous sounds: the train rumble (dark noise, intensity-smoothed) and the steam chuff
  * (noise bursts on a lookahead scheduler, so tempo stays steady regardless of timer jitter).
+ * v3 (AUD-1): both play on the world bus (the catch sounds dip it); intent and gate are separate — rumbleStart/
+ * chuffStart say what the scene wants, holdLoops(on) parks both while the game is held (the rumble's level goes to
+ * zero, its nodes stay; the chuff skips beats) and brings them back at the scene's current intensity and rate (K2).
+ * AUD-3: the rumble is an effect — «Эффекты» at 0 builds none. AUD-4: a metro train's variant tweaks it (rumbleTweak:
+ * the freight ×1.15, the night mail's sub-bass at 95 Hz, the flooded train's rattle down at 300 Hz).
  */
-import { live, play, type Core } from "./core";
-import { noise } from "./synth";
+import { fxLive, live, play, type Core } from "./core";
+import { noise, tanhCurve } from "./synth";
 
 const clamp01 = (x: number): number => (x < 0 ? 0 : x > 1 ? 1 : Number.isFinite(x) ? x : 0);
+
+/** Held (holdLoops): the rumble is parked at zero and the chuff skips its beats. */
+let lHeld = false;
 
 /* ------------------------------------------------------------------ rumble */
 
 export type RumbleKind = "train" | "royal" | "capsule";
 
-/** level: overall gain at intensity 1; lp: sub-bass cutoff; rattle: tremolo noise band (what small speakers hear). */
+/**
+ * level: overall gain at intensity 1 (v3: −3 dB, so the catch is not squeezed by the compressor); lp: sub-bass
+ * cutoff; rattle: tremolo noise band (what small speakers hear).
+ */
 const KINDS: Record<RumbleKind, { level: number; lp: number; rattleF: number; rattle: number; harm: number }> = {
-  train: { level: 0.62, lp: 80, rattleF: 420, rattle: 1.7, harm: 0.9 },
-  royal: { level: 0.7, lp: 75, rattleF: 360, rattle: 1.9, harm: 1.0 },
-  capsule: { level: 0.32, lp: 130, rattleF: 950, rattle: 2.0, harm: 0.5 },
+  train: { level: 0.44, lp: 80, rattleF: 420, rattle: 1.7, harm: 0.9 },
+  royal: { level: 0.5, lp: 75, rattleF: 360, rattle: 1.9, harm: 1.0 },
+  capsule: { level: 0.26, lp: 130, rattleF: 950, rattle: 2.0, harm: 0.5 },
 };
 
 interface Rumble {
@@ -35,23 +46,34 @@ let rWanted = false;
 let rTarget = 0;
 let rKind: RumbleKind = "train";
 let rKill = 0;
+
+/** v3 (AUD-4): the metro train's variant tweaks (level ×, sub-bass lowpass Hz, rattle band Hz); royal and capsule ignore them. */
+export interface RumbleTweak {
+  level?: number;
+  lp?: number;
+  rattleF?: number;
+}
+let rTweak: RumbleTweak = {};
+
+/** The rumble's character now: the kind, with the metro variant's tweaks on a "train". */
+function kindNow(): { level: number; lp: number; rattleF: number; rattle: number; harm: number } {
+  const k = KINDS[rKind];
+  if (rKind !== "train") return k;
+  const lv = rTweak.level;
+  return {
+    ...k,
+    level: k.level * (lv !== undefined && Number.isFinite(lv) ? Math.max(0.5, Math.min(1.5, lv)) : 1),
+    lp: rTweak.lp ?? k.lp,
+    rattleF: rTweak.rattleF ?? k.rattleF,
+  };
+}
 /** rumbleCut() latched: rumbleSet() stays silent until the next rumbleStart() / rumbleStop(). */
 let rCut = false;
-
-function tanhCurve(drive: number): Float32Array<ArrayBuffer> {
-  const n = 1024;
-  const curve = new Float32Array(new ArrayBuffer(n * 4));
-  for (let i = 0; i < n; i++) {
-    const x = (i / (n - 1)) * 2 - 1;
-    curve[i] = Math.tanh(x * drive) / Math.tanh(drive);
-  }
-  return curve;
-}
 
 function buildRumble(c: Core): Rumble {
   const ctx = c.ctx;
   const t = ctx.currentTime;
-  const k = KINDS[rKind];
+  const k = kindNow();
 
   const brown = ctx.createBufferSource();
   brown.buffer = c.noise.brown;
@@ -62,7 +84,7 @@ function buildRumble(c: Core): Rumble {
 
   const level = ctx.createGain();
   level.gain.value = 0;
-  level.connect(c.bus);
+  level.connect(c.world);
 
   // sub-bass body (felt on headphones)
   const lp = ctx.createBiquadFilter();
@@ -153,7 +175,7 @@ function destroyRumble(): void {
 
 function ensureRumble(): void {
   if (!rWanted) return;
-  const c = live();
+  const c = fxLive();
   if (!c) return;
   if (R && R.c !== c) destroyRumble();
   if (!R) R = buildRumble(c);
@@ -161,10 +183,12 @@ function ensureRumble(): void {
 
 function applyRumble(): void {
   if (!R) return;
-  const k = KINDS[rKind];
+  const k = kindNow();
   const i = rTarget;
   const now = R.c.ctx.currentTime;
-  R.level.gain.setTargetAtTime(k.level * Math.pow(i, 1.3), now, 0.22);
+  // held: the level stays parked (holdLoops); the colour still follows, so the release lands on the right sound.
+  // Stopped or cut: the level is fading out (rumbleKind / rumbleTweak at a scene's end must not swell it back)
+  if (!lHeld && rWanted && !rCut) R.level.gain.setTargetAtTime(k.level * Math.pow(i, 1.3), now, 0.22);
   R.lp.frequency.setTargetAtTime(k.lp * (0.8 + 0.5 * i), now, 0.3);
   R.harm.gain.setTargetAtTime(k.harm * (0.6 + 0.4 * i), now, 0.3);
   R.rattle.gain.setTargetAtTime(k.rattle * (0.25 + 0.75 * i * i), now, 0.25);
@@ -174,6 +198,12 @@ function applyRumble(): void {
 
 export function rumbleKind(kind: RumbleKind): void {
   rKind = kind;
+  applyRumble();
+}
+
+/** v3 (AUD-4): the metro train's variant tweaks ({} = the plain train). */
+export function rumbleTweak(tw: RumbleTweak | undefined): void {
+  rTweak = tw ?? {};
   applyRumble();
 }
 
@@ -239,6 +269,9 @@ export function rumbleStop(): void {
 const LOOKAHEAD = 0.12; // s scheduled ahead
 const TICK_MS = 25;
 
+/** The scene wants the chuff (chuffStart … chuffStop): intent, kept through a hold. */
+let chuffWanted = false;
+/** The beat scheduler runs. */
 let chuffOn = false;
 let chuffRate = 2;
 let chuffNext = 0;
@@ -247,21 +280,23 @@ let chuffTimer = 0;
 
 const clampRate = (r: number): number => (Number.isFinite(r) ? Math.max(0.5, Math.min(12, r)) : 2);
 
-/** One steam exhaust beat: a hissing burst over a soft low puff, accented every 4th beat. */
+/** One steam exhaust beat: a hissing burst over a soft low puff, accented every 4th beat (v3: +4 dB, world bus). */
 export function chuffAt(t: number, beat: number, rate: number): void {
   const accent = beat % 4 === 0 ? 1 : beat % 2 === 0 ? 0.8 : 0.64;
   const len = Math.min(0.24, 0.8 / rate);
   const bright = 650 + 80 * rate;
-  play("chuff", { max: 16 }, { at: t, send: 0.1 }, (v) => {
-    noise(v, { kind: "white", t, a: 0.006, d: len, peak: 0.3 * accent, filter: "bandpass", f: bright * 1.9, to: bright, q: 0.8 });
-    noise(v, { kind: "brown", t, a: 0.005, d: len * 0.7, peak: 0.34 * accent, filter: "lowpass", f: 380 });
+  play("chuff", { max: 16 }, { at: t, bus: "world" }, (v) => {
+    noise(v, { kind: "white", t, a: 0.006, d: len, peak: 0.48 * accent, filter: "bandpass", f: bright * 1.9, to: bright, q: 0.8 });
+    noise(v, { kind: "brown", t, a: 0.005, d: len * 0.7, peak: 0.45 * accent, filter: "lowpass", f: 380 });
   });
 }
 
-function chuffTick(): void {
+/** One scheduler step (every 25 ms; the offline test bench calls it while it steps the clock). */
+export function loopsTick(): void {
   if (!chuffOn) return;
   const c = live();
-  if (!c) {
+  if (!c || lHeld) {
+    // muted, suspended or held: skip the beats, start fresh when it comes back
     chuffNext = 0;
     return;
   }
@@ -273,22 +308,71 @@ function chuffTick(): void {
   }
 }
 
-export function chuffStart(rate: number): void {
-  chuffRate = clampRate(rate);
+function runChuff(): void {
   if (chuffOn) return;
   chuffOn = true;
   chuffBeat = 0;
   chuffNext = 0;
-  if (typeof window !== "undefined") chuffTimer = window.setInterval(chuffTick, TICK_MS);
-  chuffTick();
+  if (typeof window !== "undefined") chuffTimer = window.setInterval(loopsTick, TICK_MS);
+  loopsTick();
 }
 
+/** Start the chuff at `rate` beats/s (or just set the rate if it runs). */
+export function chuffStart(rate: number): void {
+  chuffRate = clampRate(rate);
+  chuffWanted = true;
+  runChuff();
+}
+
+/** Change the rate; a wanted chuff whose scheduler stopped starts again (level-triggered, K2). */
 export function chuffSet(rate: number): void {
   chuffRate = clampRate(rate);
+  if (chuffWanted && !chuffOn) runChuff();
 }
 
 export function chuffStop(): void {
+  chuffWanted = false;
   chuffOn = false;
   if (chuffTimer) clearInterval(chuffTimer);
   chuffTimer = 0;
+}
+
+/* -------------------------------------------------------------------- hold */
+
+/**
+ * Park the loops while the game is held (a ceremony, a halt): the rumble's level falls to zero in ~0.3 s (τ 80 ms)
+ * with its nodes kept, the chuff skips its beats. On release the rumble returns to the scene's current intensity
+ * and the chuff restarts 50 ms later at the last chuffSet rate — whatever stopped or started meanwhile.
+ */
+export function holdLoops(on: boolean): void {
+  if (on === lHeld) return;
+  lHeld = on;
+  if (on) {
+    chuffNext = 0;
+    if (!R) return;
+    const g = R.level.gain;
+    const now = R.c.ctx.currentTime;
+    const cur = g.value;
+    g.cancelScheduledValues(now);
+    g.setValueAtTime(cur, now);
+    g.setTargetAtTime(0, now, 0.08);
+    return;
+  }
+  if (rWanted && !rCut) {
+    ensureRumble();
+    applyRumble();
+  }
+  if (chuffWanted) {
+    runChuff();
+    const c = live();
+    if (c) {
+      chuffNext = c.ctx.currentTime + 0.05;
+      loopsTick();
+    }
+  }
+}
+
+/** Test reports: the chuff is wanted / its scheduler runs. */
+export function chuffState(): { wanted: boolean; on: boolean; rate: number } {
+  return { wanted: chuffWanted, on: chuffOn, rate: chuffRate };
 }

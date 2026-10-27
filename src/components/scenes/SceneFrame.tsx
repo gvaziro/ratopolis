@@ -4,13 +4,17 @@
  * Common frame of every event close-up: header with the event name and the two-scale lines
  * ("👤 Человек видит / 🐀 Крысы видят", typed letter by letter), a 1 s "Наверху" cut-in and the keyframes
  * used by all scene components.
+ * v3: a «пауза» badge while the game is held by a ceremony, a crash or a save issue (SCN-1; a hidden tab needs none);
+ * on short screens (a phone in landscape) a one-row header, so the close-up keeps the height (SCN-5).
  */
 import { useEffect, useState, type ReactNode } from "react";
 import { sfx } from "@/audio/sfx";
 import { EVENT_LINES } from "@/game/data/events";
-import { useGame } from "@/game/store";
+import { isHeld, useGame } from "@/game/store";
 import type { SceneEventId } from "@/game/types";
+import { useShortLayout } from "@/lib/layoutMode";
 import { cx } from "@/components/ui/kit";
+import { setPeekHost } from "./MarketPopup";
 
 /** Keyframes shared by the scene components (prefixed rr- to stay out of everyone's way). */
 const KEYFRAMES = `
@@ -34,6 +38,7 @@ const KEYFRAMES = `
 @keyframes rr-hint{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
 @keyframes rr-fadein{from{opacity:0}to{opacity:1}}
 @keyframes rr-scene-ping{0%{transform:scale(1);opacity:.85}80%,100%{transform:scale(1.9);opacity:0}}
+[data-scene-dialog][data-held] :is([data-hold-pause],[data-hold-pause] *){animation-play-state:paused!important}
 `;
 
 export function SceneStyles() {
@@ -115,9 +120,26 @@ function IntroCutIn({ id }: { id: SceneEventId }) {
   );
 }
 
+/** «⏸ пауза» while a ceremony, a crash or a save issue holds the game (the scene clock stands still meanwhile). */
+function PauseBadge({ reduced }: { reduced: boolean }) {
+  const held = useGame(isHeld);
+  if (!held) return null;
+  return (
+    <span
+      data-decor=""
+      className="rounded border border-gaslight/70 bg-black/40 px-1.5 py-0.5 font-display text-[11px] font-bold uppercase tracking-widest text-gaslight"
+      style={reduced ? undefined : { animation: "rr-blink 1.6s steps(1) infinite" }}
+      role="status"
+    >
+      ⏸ пауза
+    </span>
+  );
+}
+
 /** Header + body of a scene. `right` goes to the header's right edge. */
 export default function SceneFrame({ id, right, children }: { id: SceneEventId; right?: ReactNode; children: ReactNode }) {
   const reduced = useGame((s) => s.game.settings.reducedMotion);
+  const short = useShortLayout();
   const [humanDone, setHumanDone] = useState(false);
   const lines = EVENT_LINES[id];
   // SC-4: this scene's own 👤/🐀 pair from the engine (EN-6 pools and variants), else the v1 pair
@@ -134,29 +156,41 @@ export default function SceneFrame({ id, right, children }: { id: SceneEventId; 
       <SceneStyles />
       <header
         className={cx(
-          "relative z-20 shrink-0 border-b px-3 py-1.5 md:px-4 md:py-2",
+          "relative z-20 shrink-0 border-b px-3",
+          short ? "py-0.5" : "py-1.5 md:px-4 md:py-2",
           royal ? "border-[#d4af37] bg-gradient-to-b from-[#3b2c12] to-panel" : "border-line bg-gradient-to-b from-panel-2 to-panel",
         )}
       >
-        <div className="flex min-h-8 items-center gap-2">
-          <span className="text-xl leading-none md:text-2xl" aria-hidden>
+        <div className={cx("flex items-center gap-2", short ? "min-h-7" : "min-h-8")}>
+          <span className={cx("leading-none", short ? "text-lg" : "text-xl md:text-2xl")} aria-hidden>
             {lines.icon}
           </span>
-          <h2 className={cx("min-w-0 truncate font-display text-lg font-bold tracking-wide md:text-xl", royal ? "text-[#f3d77a]" : "text-brass-light")}>{lines.name}</h2>
-          <div className="ml-auto flex shrink-0 items-center gap-2">{right}</div>
+          <h2 className={cx("min-w-0 truncate font-display font-bold tracking-wide", short ? "text-base" : "text-base sm:text-lg md:text-xl", royal ? "text-[#f3d77a]" : "text-brass-light")}>
+            {lines.name}
+          </h2>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <PauseBadge reduced={reduced} />
+            {right}
+          </div>
         </div>
-        <p className="text-[11px] leading-snug text-parchment-dim md:text-xs">
-          <span className="font-bold">👤 Человек видит: </span>
-          <Typewriter key={"h" + id + human} text={human} delay={reduced ? 0 : 450} instant={reduced} onDone={() => setHumanDone(true)} />
-        </p>
-        <p className="min-h-[1.2em] text-[11px] leading-snug text-parchment md:text-xs">
-          <span className="font-bold text-brass-light">🐀 Крысы видят: </span>
-          {humanDone && <Typewriter key={"r" + id + rat} text={rat} delay={120} instant={reduced} />}
-        </p>
+        {/* a phone in landscape: both lines side by side, one line each, so the close-up keeps the height (same tree
+            either way: turning the phone does not restart the typing) */}
+        <div className={cx("text-[11px] leading-snug", short ? "flex min-w-0 gap-3" : "md:text-xs")}>
+          <p className={cx("text-parchment-dim", short && "line-clamp-1 min-w-0 flex-1")} title={short ? human : undefined}>
+            <span className="font-bold">{short ? "👤 " : "👤 Человек видит: "}</span>
+            <Typewriter key={"h" + id + human} text={human} delay={reduced ? 0 : 450} instant={reduced} onDone={() => setHumanDone(true)} />
+          </p>
+          <p className={cx("min-h-[1.2em] text-parchment", short && "line-clamp-1 min-w-0 flex-1")} title={short ? rat : undefined}>
+            <span className="font-bold text-brass-light">{short ? "🐀 " : "🐀 Крысы видят: "}</span>
+            {humanDone && <Typewriter key={"r" + id + rat} text={rat} delay={120} instant={reduced} />}
+          </p>
+        </div>
       </header>
-      <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div className="relative min-h-0 flex-1 overflow-hidden" data-scene-body="">
         {children}
         {cutIn && <IntroCutIn id={id} />}
+        {/* Benedict's stall, peeked from the header chip, opens here: inside the dialog, under the header */}
+        <div ref={setPeekHost} className="pointer-events-none absolute inset-0 z-40 empty:hidden" />
       </div>
       {royal && <div className="pointer-events-none absolute inset-0 z-30 border-[3px] border-[#d4af37] shadow-[inset_0_0_36px_rgba(212,175,55,.45)]" style={{ animation: "rr-glow 2.4s ease-in-out infinite" }} />}
     </div>

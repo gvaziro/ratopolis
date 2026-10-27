@@ -3,7 +3,8 @@
 /**
  * Building card (GDD 12.3). Subscribes to a compact JSON "view model" so it re-renders only
  * when something it shows actually changes, not on every tick. The next-levels gain (levelGain derives
- * a whole state) is sampled separately, twice a second (PA-1, PA-3).
+ * a whole state) is sampled separately, twice a second (PA-1, PA-3). The icon slot shows the chamber itself
+ * (BuildingThumb, changing at 5/10/25/50), and a buy flies that picture to the chamber (PAN-3).
  */
 import { memo, useEffect, useMemo, useRef, type MouseEvent } from "react";
 import { BUILDINGS } from "@/game/data/buildings";
@@ -14,7 +15,7 @@ import { ZONES } from "@/game/data/zones";
 import { milestoneMult, milestonesReached, resMult, type Derived } from "@/game/engine/derive";
 import { buildingCostFor, levelGain, milestoneInfo, unitValue } from "@/game/engine/economy";
 import { affordFraction, buildingCost, buyCount, entries } from "@/game/engine/formulas";
-import { emitUiFx, onFx } from "@/game/fx";
+import { onFx } from "@/game/fx";
 import { derivedOf, useGame } from "@/game/store";
 import type { BuildingId, BuyMode, GameState, JobId, ResId } from "@/game/types";
 import { useSampled } from "@/game/useSampled";
@@ -22,6 +23,8 @@ import { fmt } from "@/lib/format";
 import { Badge, Bar, BrassButton, Ring, Stamp, cx } from "@/components/ui/kit";
 import { isFresh } from "./alerts";
 import { CostView, HoverTip, WaitView, costItems, floatAt, squash, waitInfo, type CostItem, type WaitInfo } from "./common";
+import { useNarrow } from "./sheetSlot";
+import { BuildingThumb, flyThumb } from "./Thumb";
 
 interface CardModel {
   lv: number;
@@ -212,11 +215,25 @@ function gainKey(s: GameState, id: BuildingId, mode: BuyMode): string {
   return line || star ? `${line}\n${star}` : "";
 }
 
+/** «+0.62 🍞/с за +1 ур.»; phones drop the tail (the button already says «+1») and mark the gain with ▲ instead. */
+function GainText({ text }: { text: string }) {
+  const tail = / за \+\d+ ур\.$/.exec(text);
+  return (
+    <span className="text-verdigris">
+      {tail && <span className="md:hidden">▲</span>}
+      {tail ? text.slice(0, tail.index) : text}
+      {tail && <span className="max-md:hidden">{tail[0]}</span>}
+    </span>
+  );
+}
+
 function BuildingCard({ id, best }: { id: BuildingId; best?: boolean }) {
   const json = useGame((s) => JSON.stringify(cardModel(s.game, derivedOf(s.game), id, s.buyMode)));
   const m = useMemo(() => JSON.parse(json) as CardModel, [json]);
   const [gain, star] = useSampled((s) => gainKey(s.game, id, s.buyMode), 2, Object.is).split("\n");
   const calm = useGame((s) => s.game.settings.reducedMotion);
+  // phones: a 44 px ring (the 40 px button keeps its size) so three cards fit the half sheet (PAN-3)
+  const narrow = useNarrow();
   const def = BUILDINGS[id];
   const pal = ZONES[def.zone].palette;
   const cardRef = useRef<HTMLElement>(null);
@@ -255,8 +272,10 @@ function BuildingCard({ id, best }: { id: BuildingId; best?: boolean }) {
     squash(btnRef.current, calm);
     squash(iconRef.current, calm);
     floatAt(btnRef.current, after - before > 1 ? `+${after - before} ур.` : `ур. ${after}`, "#e8c983");
-    const r = btnRef.current?.getBoundingClientRect();
-    if (r) emitUiFx({ k: "fly", from: { x: r.left + r.width / 2, y: r.top + r.height / 2 }, target: `building:${id}`, icon: def.icon });
+    // the chamber's picture lifts off the card and flies to its niche (CO-7 handshake inside flyThumb)
+    const icon = iconRef.current;
+    const r = (icon ?? btnRef.current)?.getBoundingClientRect();
+    if (r) flyThumb(icon?.querySelector("svg.cv-thumb") ?? null, { x: r.left + r.width / 2, y: r.top + r.height / 2 }, `building:${id}`, def.icon);
   };
 
   const single = m.out.length === 1 ? m.out[0] : null;
@@ -268,11 +287,11 @@ function BuildingCard({ id, best }: { id: BuildingId; best?: boolean }) {
       ref={cardRef}
       data-target={`b_${id}`}
       className={cx(
-        "relative scroll-my-16 rounded-lg border bg-gradient-to-b py-1 pl-1.5 pr-2 shadow-[inset_0_1px_0_rgba(232,201,131,.06),0_2px_8px_rgba(0,0,0,.3)] transition-colors duration-300 md:p-2 md:pr-2.5",
+        "relative scroll-my-16 rounded-lg border bg-gradient-to-b py-0.5 pl-1.5 pr-1.5 shadow-[inset_0_1px_0_rgba(232,201,131,.06),0_2px_8px_rgba(0,0,0,.3)] transition-colors duration-300 md:p-2 md:pr-2.5",
         m.ok ? "border-brass-dark from-panel-3 to-panel" : "border-line from-panel-2 to-panel",
       )}
     >
-      <div className="flex items-start gap-2 md:gap-2.5">
+      <div className="flex items-center gap-2 md:items-start md:gap-2.5">
         <div className="flex shrink-0 flex-col items-center">
           <HoverTip
             tip={
@@ -290,17 +309,21 @@ function BuildingCard({ id, best }: { id: BuildingId; best?: boolean }) {
           >
             <span
               ref={iconRef}
-              className="relative grid h-10 w-10 shrink-0 cursor-help place-items-center rounded-md border border-black/50 text-[22px] shadow-[inset_0_2px_6px_rgba(0,0,0,.65)] md:h-12 md:w-12 md:text-[26px]"
+              className="relative block h-10 w-12 shrink-0 cursor-help rounded-md border border-black/50 shadow-[inset_0_2px_6px_rgba(0,0,0,.65)] md:h-12 md:w-14"
               style={{ background: `radial-gradient(circle at 50% 30%, ${pal.glow}40, ${pal.bg} 72%)` }}
             >
-              <span className={cx(m.lv === 0 && "opacity-50 grayscale")}>{def.icon}</span>
+              <BuildingThumb id={id} lvl={m.lv} className={cx("absolute inset-0.5 h-[calc(100%-4px)] w-[calc(100%-4px)]", m.lv === 0 && "opacity-50 grayscale")} />
+              {/* phones: the milestone progress shrinks to a gauge along the picture's foot, beside the level (text in the tooltip) */}
+              {m.ms && (
+                <span className="absolute bottom-0.5 left-1 right-6 md:hidden">
+                  <Bar value={m.ms.frac} color="var(--gaslight)" className="h-1" />
+                </span>
+              )}
               <span className="absolute -bottom-1.5 -right-1.5 min-w-6 rounded-full border border-brass-dark bg-soot px-1 text-center font-mono text-[11px] font-bold leading-5 text-brass-light tabular shadow">
                 {m.lv}
               </span>
             </span>
           </HoverTip>
-          {/* phones: the milestone progress shrinks to a gauge under the icon (the text is in the icon's tooltip) */}
-          {m.ms && <Bar value={m.ms.frac} color="var(--gaslight)" className="mt-2.5 h-1 w-10 md:hidden" />}
         </div>
 
         <div className="min-w-0 flex-1">
@@ -323,55 +346,58 @@ function BuildingCard({ id, best }: { id: BuildingId; best?: boolean }) {
             </p>
           )}
 
-          {/* phones: output, the current effect and the next-level gain share one wrapping line */}
-          <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 md:mt-0 md:block">
-            {single ? (
-              <p className="font-mono text-[11px] leading-snug tabular text-verdigris-light md:mt-0.5">
-                +{single.v} {RESOURCES[single.r].icon}/с<span className="max-md:hidden"> · всего {single.pct}%</span>
-              </p>
-            ) : (
-              m.out.length > 1 && (
-                <p className="flex flex-wrap gap-x-2 font-mono text-[11px] leading-snug tabular text-verdigris-light md:mt-0.5">
-                  {m.out.map((o) => (
-                    <span key={o.r} className="whitespace-nowrap">
-                      +{o.v} {RESOURCES[o.r].icon}/с <span className="text-parchment-dim max-md:hidden">({o.pct}%)</span>
-                    </span>
-                  ))}
+          {/* phones: the price, the output, the current effect and the next-level gain share one wrapping line
+              (the rows below dissolve into it with display: contents, the price first); desktop: one row each */}
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 md:mt-0 md:block">
+            <div className="contents md:block">
+              {single ? (
+                <p className="font-mono text-[11px] leading-snug tabular text-verdigris-light md:mt-0.5">
+                  +{single.v} {RESOURCES[single.r].icon}/с<span className="max-md:hidden"> · всего {single.pct}%</span>
                 </p>
-              )
-            )}
-            {m.now && <p className="text-[11px] leading-snug text-brass md:mt-0.5">{m.now}</p>}
-            {(gain || star) && (
-              <p className="font-mono text-[11px] leading-snug tabular md:mt-0.5">
-                {gain && <span className="text-verdigris">{gain}</span>}
-                {star && (
-                  <span className="ml-1.5 whitespace-nowrap font-bold text-gaslight" title="Веха: выход постройки удвоится">
-                    {star}
-                  </span>
-                )}
-              </p>
-            )}
-          </div>
-
-          {m.ms && (
-            <div className="mt-1 flex items-center gap-2 max-md:hidden">
-              <Bar value={m.ms.frac} color="var(--gaslight)" className="h-1 w-14 shrink-0" />
-              <span className="min-w-0 text-[10px] leading-tight text-parchment-dim">
-                до вехи: ещё {m.ms.left} ур. {m.ms.tail}
-              </span>
+              ) : (
+                m.out.length > 1 && (
+                  <p className="flex flex-wrap gap-x-2 font-mono text-[11px] leading-snug tabular text-verdigris-light md:mt-0.5">
+                    {m.out.map((o) => (
+                      <span key={o.r} className="whitespace-nowrap">
+                        +{o.v} {RESOURCES[o.r].icon}/с <span className="text-parchment-dim max-md:hidden">({o.pct}%)</span>
+                      </span>
+                    ))}
+                  </p>
+                )
+              )}
+              {m.now && <p className="text-[11px] leading-snug text-brass md:mt-0.5">{m.now}</p>}
+              {(gain || star) && (
+                <p className="font-mono text-[11px] leading-snug tabular md:mt-0.5">
+                  {gain && <GainText text={gain} />}
+                  {star && (
+                    <span className="ml-1.5 whitespace-nowrap font-bold text-gaslight" title="Веха: выход постройки удвоится">
+                      {star}
+                    </span>
+                  )}
+                </p>
+              )}
             </div>
-          )}
 
-          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 md:mt-1">
-            {m.maxed ? <Stamp color="var(--brass-light)">макс.</Stamp> : <CostView items={m.cost} />}
-            <WaitView w={m.wait} />
+            {m.ms && (
+              <div className="mt-1 flex items-center gap-2 max-md:hidden">
+                <Bar value={m.ms.frac} color="var(--gaslight)" className="h-1 w-14 shrink-0" />
+                <span className="min-w-0 text-[10px] leading-tight text-parchment-dim">
+                  до вехи: ещё {m.ms.left} ур. {m.ms.tail}
+                </span>
+              </div>
+            )}
+
+            <div className="contents max-md:*:order-first md:mt-1 md:flex md:flex-wrap md:items-center md:gap-x-2 md:gap-y-0.5">
+              {m.maxed ? <Stamp color="var(--brass-light)">макс.</Stamp> : <CostView items={m.cost} />}
+              <WaitView w={m.wait} />
+            </div>
           </div>
         </div>
 
         {!m.maxed && (
           <span ref={btnRef} className="inline-flex shrink-0 self-center">
             <span className={cx("inline-flex", m.ok && "rr-breathe")}>
-              <Ring value={m.frac} size={52} stroke={3} color={m.ok ? "var(--gaslight)" : "var(--brass-dark)"}>
+              <Ring value={m.frac} size={narrow ? 44 : 52} stroke={3} color={m.ok ? "var(--gaslight)" : "var(--brass-dark)"}>
                 <BrassButton
                   size="sm"
                   className="h-10 w-10 rounded-full! p-0! font-mono text-[11px]"

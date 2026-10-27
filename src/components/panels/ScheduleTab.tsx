@@ -123,7 +123,7 @@ function Board() {
                   <span className={cx("rr-board-glow block font-mono text-base leading-none tabular", r.live || r.soon ? "text-gaslight" : "text-brass-light")}>{r.left}</span>
                   <span
                     className={cx(
-                      "block text-[9px] font-bold uppercase tracking-widest",
+                      "block whitespace-nowrap text-[10px] font-bold uppercase tracking-wider",
                       r.live ? "rr-blink text-danger-light" : r.soon ? "rr-blink text-gaslight" : "text-parchment-dim",
                     )}
                   >
@@ -240,7 +240,7 @@ function Crew() {
 
       <table className="mt-2 w-full border-separate border-spacing-0 overflow-hidden rounded-md border border-line text-[11px]">
         <thead>
-          <tr className="bg-black/30 text-[9px] uppercase tracking-wider text-parchment-dim">
+          <tr className="bg-black/30 text-[10px] uppercase tracking-wide text-parchment-dim">
             <th className="px-2 py-1 text-left font-bold">Позиция</th>
             <th className="px-1 py-1 text-right font-bold">Автосбор</th>
             <th className="px-1 py-1 text-right font-bold">Авария</th>

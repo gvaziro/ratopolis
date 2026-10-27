@@ -131,10 +131,19 @@ export function jobUnlocked(s: GameState, j: JobId): boolean {
   return check(s, JOBS[j].unlock);
 }
 
-/** Choose a job for a newborn rat according to the assignment mode, the Elder rule and free slots. */
-export function newbornJob(s: GameState, d: Derived, crumbNet: number): JobId {
+/**
+ * Choose a job for a newborn rat according to the assignment mode, the Elder rule and free slots. `auto`: the colony's
+ * own pick (potential.autoFocus, v3 ENG-1), used instead of s.focus while the player has never picked a focus
+ * (!flags.focus_manual) and the newborns follow the star (focus mode; potential.autoFocusOn); called only then (the
+ * economy passes it lazily).
+ */
+export function newbornJob(s: GameState, d: Derived, crumbNet: number, auto?: () => JobId): JobId {
   const fallback: JobId = jobUnlocked(s, "forager") ? "forager" : "idle";
   if (crumbNet < 0) return fallback; // the Elder: feed the colony first
+  if (auto && !s.flags.focus_manual && s.assignMode === "focus") {
+    const j = auto();
+    return j !== "idle" && jobUnlocked(s, j) && hasFreeSlot(s, d, j) ? j : fallback;
+  }
   if (s.assignMode === "focus" || !s.upgrades.rat_relay) {
     const f = s.focus;
     if (jobUnlocked(s, f) && hasFreeSlot(s, d, f)) return f;
@@ -147,7 +156,7 @@ export function newbornJob(s: GameState, d: Derived, crumbNet: number): JobId {
   return ratioPick(s);
 }
 
-export function ratioPick(s: GameState): JobId {
+function ratioPick(s: GameState): JobId {
   const open = (["forager", "pickpocket", "scavenger"] as const).filter((j) => jobUnlocked(s, j));
   if (open.length === 0) return "idle";
   const totalW = open.reduce((a, j) => a + Math.max(0, s.ratios[j]), 0) || 1;

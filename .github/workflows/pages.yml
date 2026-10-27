@@ -1,0 +1,73 @@
+# GitHub Pages (REP-3): the static export of main at https://gvaziro.github.io/ratopolis/.
+# Opt-in: both jobs are skipped (the run is green, nothing fails) until the repository variable DEPLOY_PAGES is "1"
+# (Settings → Secrets and variables → Actions → Variables) and Pages uses "GitHub Actions" as its source
+# (Settings → Pages). Optional variables: PAGES_BASE_PATH (default /ratopolis), PAGES_SITE_URL (default below).
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# one deploy at a time; a newer push waits instead of cancelling a deploy halfway
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  build:
+    name: Static export
+    if: vars.DEPLOY_PAGES == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      STATIC_EXPORT: "1"
+      BASE_PATH: ${{ vars.PAGES_BASE_PATH || '/ratopolis' }}
+      NEXT_PUBLIC_SITE_URL: ${{ vars.PAGES_SITE_URL || 'https://gvaziro.github.io/ratopolis' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Restore Next.js build cache
+        uses: actions/cache@v4
+        with:
+          path: .next/cache
+          key: nextjs-pages-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ hashFiles('src/**', 'public/**', 'next.config.ts', 'tsconfig.json') }}
+          restore-keys: |
+            nextjs-pages-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-
+
+      - run: npm run build:static
+
+      - name: Check the export's links
+        run: node .github/scripts/check-export.mjs out "$BASE_PATH"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    name: Deploy
+    needs: build
+    if: vars.DEPLOY_PAGES == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

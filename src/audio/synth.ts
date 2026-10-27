@@ -126,6 +126,23 @@ export function panner(v: Voice, pan: number): AudioNode {
   return p;
 }
 
+const curves = new Map<number, Float32Array<ArrayBuffer>>();
+
+/** A tanh saturation curve for a WaveShaper (cached per drive: shapers share it, nobody writes to it). */
+export function tanhCurve(drive: number): Float32Array<ArrayBuffer> {
+  let curve = curves.get(drive);
+  if (!curve) {
+    const n = 1024;
+    curve = new Float32Array(new ArrayBuffer(n * 4));
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * 2 - 1;
+      curve[i] = Math.tanh(x * drive) / Math.tanh(drive);
+    }
+    curves.set(drive, curve);
+  }
+  return curve;
+}
+
 /** [frequency ratio, gain, decay s] */
 export type BellPart = readonly [number, number, number];
 

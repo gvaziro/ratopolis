@@ -83,6 +83,63 @@ export function artLevel(id: BuildingId, level: number): number {
   return t;
 }
 
+/* ------------------------------------------------------------ chamber interiors (COL-3) */
+
+/** The y of a niche's top edge at local x (the flat apex, or down the rounded corner of NICHE). */
+export function apexY(x: number): number {
+  const ax = Math.abs(x);
+  if (ax <= 48) return -148;
+  const t = Math.sqrt(Math.min(1, (88 - Math.min(88, ax)) / 40));
+  return -148 + 40 * (1 - t) * (1 - t);
+}
+
+/**
+ * Where a chamber's lamp (ZoneLamp, drawn behind the art) hangs: local x at this visual stage `l` (artLevel), chosen so
+ * the art's own tall parts (chutes, pipes, the warehouse's big pipe, the clock face, the bookcase…) don't hide it.
+ */
+export function lampX(id: BuildingId, l: number): number {
+  switch (id) {
+    case "trash_chute":
+      return l < 10 ? 36 : 0;
+    case "pantry":
+      return l >= 10 ? 44 : 0;
+    case "pickpocket_school":
+      return l >= 10 ? 34 : 0;
+    case "nest":
+      return l >= 50 ? 22 : 0;
+    case "water_wheel":
+      return l >= 10 ? -30 : 0;
+    case "sewer_warehouse":
+      return l >= 10 ? -74 : 0;
+    case "nursery":
+      return l >= 10 ? -38 : 0;
+    case "library":
+      return l >= 10 ? 52 : 0;
+    case "cellar_vault":
+      return l >= 10 ? 36 : 0;
+    case "coal_chute":
+      return l >= 10 ? -14 : l < 5 ? 10 : 0;
+    case "boiler":
+    case "steam_press":
+      return l >= 10 ? -40 : 0;
+    case "clocktower":
+      return l >= 5 ? -26 : 0;
+    case "express_depot":
+      return l >= 2 ? 12 : 0;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * COL-4: how much harder a bulk buy of `k` levels lands — the bounce ×(1 + min(.6, .4·log10 k)) and 12 + 4·log2 k dust.
+ * k ≤ 1 is exactly the +1 buy (×1, 12 dust).
+ */
+export function bulkImpact(k: number): { bounce: number; dust: number } {
+  if (!(k > 1)) return { bounce: 1, dust: 12 };
+  return { bounce: 1 + Math.min(0.6, 0.4 * Math.log10(k)), dust: Math.round(12 + 4 * Math.log2(k)) };
+}
+
 export function openZoneCount(s: GameState): number {
   let n = 0;
   for (const z of ZONE_ORDER) if (s.zones[z]) n++;

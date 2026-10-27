@@ -6,6 +6,7 @@ import { createInitialState } from "./engine/state";
 import { step, TICK } from "./engine/step";
 import { onFx } from "./fx";
 import { useGame } from "./store";
+import { loadFixture, metroState, triggerEvent } from "./engine/testkit";
 import type { EngineCtx, Fx, GameState } from "./types";
 
 afterEach(() => {
@@ -54,5 +55,73 @@ describe("store", () => {
     useGame.getState().scene({ a: "skip" });
     expect(useGame.getState().game.scene?.phase).toBe("haul");
     expect(useGame.getState().lastInputAt).toBe(0);
+  });
+});
+
+describe("store: plain clone and structural sharing (v3 ENG-6)", () => {
+  /** Hand the store a state to tick (no save, no lock: node has neither). */
+  function adopt(s: GameState): void {
+    useGame.setState({ game: s, ready: true, crashed: false, crashError: null, saveIssue: null });
+  }
+
+  it("advance() publishes a new state that keeps the untouched parts and never touches the old one", () => {
+    const s = loadFixture("v3-run1-150min");
+    const snapshot = serialize(s);
+    adopt(s);
+    useGame.getState().advance(1, true);
+    const next = useGame.getState().game;
+    expect(next).not.toBe(s);
+    expect(next.time).toBeCloseTo(s.time + TICK, 9);
+    for (const k of ["buildings", "upgrades", "zones", "settings", "haulLog"] as const) expect(next[k], k).toBe(s[k]);
+    expect(serialize(s)).toBe(snapshot);
+    // an action that changes nothing republishes the same object
+    useGame.getState().setTrainPref(next.trainPrefs.position);
+    expect(useGame.getState().game).toBe(next);
+  });
+
+  it("a waiting metro scene keeps its identity through advance() on the ticks where it did not change", () => {
+    const s = metroState(5, { quiet: true });
+    triggerEvent(s, "metro_train");
+    adopt(s);
+    let quiet = 0;
+    let kept = 0;
+    for (let i = 0; i < 120; i++) {
+      const prev = useGame.getState().game.scene;
+      useGame.getState().advance(1, false);
+      const sc = useGame.getState().game.scene;
+      if (prev && sc && (sc.phase === "rumble" || sc.phase === "piles") && JSON.stringify(prev) === JSON.stringify(sc)) {
+        quiet++;
+        if (sc === prev) kept++;
+      }
+    }
+    expect(quiet).toBeGreaterThan(10);
+    expect(kept).toBe(quiet);
+  });
+
+  it("advance(1) on the late colony costs well under v2's structuredClone + step (loose bench; 0.45–0.6 measured)", () => {
+    const ctx: EngineCtx = { fx: [] };
+    let v2 = loadFixture("v3-run1-150min");
+    const v2Advance = () => {
+      const s = structuredClone(v2);
+      step(s, TICK, { active: true }, ctx);
+      ctx.fx.length = 0;
+      v2 = s;
+    };
+    adopt(loadFixture("v3-run1-150min"));
+    const v3Advance = () => useGame.getState().advance(1, true);
+    const time = (fn: () => void, n: number) => {
+      const t0 = performance.now();
+      for (let i = 0; i < n; i++) fn();
+      return performance.now() - t0;
+    };
+    time(v2Advance, 100);
+    time(v3Advance, 100);
+    let a = 0;
+    let b = 0;
+    for (let round = 0; round < 3; round++) {
+      a += time(v2Advance, 100);
+      b += time(v3Advance, 100);
+    }
+    expect(b / a).toBeLessThan(0.8);
   });
 });

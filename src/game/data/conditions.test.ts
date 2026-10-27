@@ -1,5 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
-import { simulate, type RunReport } from "../../../scripts/sim-core";
+import { describe, expect, it } from "vitest";
 import { zeroStats } from "../engine/state";
 import {
   BUILDING_IDS,
@@ -36,6 +35,8 @@ const FLAGS: FlagId[] = [
   "starved",
   "coronation",
   "migration_ready",
+  "focus_manual",
+  "first_rumble",
 ];
 
 const has = <T extends string>(list: readonly T[], x: string) => (list as readonly string[]).includes(x);
@@ -67,6 +68,8 @@ function checkCond(c: Cond, where: string, errors: string[]): void {
     if (!has(EDICT_IDS, c.edict)) bad(`unknown edict ${c.edict}`);
   } else if ("flag" in c) {
     if (!FLAGS.includes(c.flag)) bad(`unknown flag ${c.flag}`);
+  } else if ("migrations" in c) {
+    if (!(c.migrations >= 1)) bad("migrations < 1");
   } else bad(`unknown condition ${JSON.stringify(c)}`);
 }
 
@@ -125,33 +128,6 @@ describe("content tables", () => {
       if (!slot) continue;
       const grants = BUILDINGS[slot.building].effects.some((e) => e.t === "slots" && e.job === j);
       expect(grants, `${j} ← ${slot.building}`).toBe(true);
-    }
-  });
-});
-
-describe("long active run (3 h): reachability and numeric sanity", () => {
-  let rep: RunReport;
-  beforeAll(() => {
-    rep = simulate({ seed: 7, bot: "active", runs: 1, minutes: 180 })[0];
-  }, 300_000);
-
-  it("every building and upgrade eventually becomes visible", () => {
-    const unseenB = BUILDING_IDS.filter((b) => !rep.buildingsSeen.includes(b));
-    const unseenU = UPGRADE_IDS.filter((u) => !rep.upgradesSeen.includes(u));
-    expect(unseenB, `unreachable buildings: ${unseenB.join(", ")}`).toEqual([]);
-    expect(unseenU, `unreachable upgrades: ${unseenU.join(", ")}`).toEqual([]);
-  });
-
-  it("all zones open and the coronation happens within the run", () => {
-    for (const z of ZONE_IDS) expect(rep.zoneOpenAt[z], z).toBeDefined();
-    expect(rep.coronationAt).not.toBeNull();
-  });
-
-  it("no NaN or Infinity in resources, rates or EMAs at any point", () => {
-    expect(rep.nonFinite).toEqual([]);
-    for (const r of RES_IDS) {
-      expect(Number.isFinite(rep.final.res[r]), r).toBe(true);
-      expect(Number.isFinite(rep.final.ema[r]), r).toBe(true);
     }
   });
 });

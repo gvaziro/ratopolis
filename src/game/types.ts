@@ -181,6 +181,9 @@ export const ACHIEVEMENT_IDS = [
   "cat_nightmare",
   "royal_retinue",
   "full_consist",
+  // v3 (ENG-10): «Кунсткамера Короля»
+  "first_curio",
+  "curio_full",
 ] as const;
 export type AchievementId = (typeof ACHIEVEMENT_IDS)[number];
 
@@ -197,7 +200,7 @@ export const SEAL_IDS = ["railway", "silence", "dynasty"] as const;
 export type SealId = (typeof SEAL_IDS)[number];
 
 /** Metro train variants (EN-6). "normal" is the plain train. */
-export const TRAIN_VARIANT_IDS = ["normal", "rush_hour", "edinburgh_mail", "freight", "flooded"] as const;
+export const TRAIN_VARIANT_IDS = ["normal", "rush_hour", "edinburgh_mail", "freight", "flooded", "circus", "fog"] as const;
 export type TrainVariantId = (typeof TRAIN_VARIANT_IDS)[number];
 
 /** Royal commissions after the coronation (EN-12). */
@@ -214,8 +217,67 @@ export const COMMISSION_IDS = [
   "replenish",
   "wagon",
   "quick_hand",
+  // v3 (ENG-3): offered instead of «replenish» (which keeps its id and definition for old saves)
+  "clean_three",
 ] as const;
 export type CommissionId = (typeof COMMISSION_IDS)[number];
+
+/** London districts (v3 ENG-11, data/districts.ts). The first six are the v1/v2 migration sequence. */
+export const DISTRICT_IDS = [
+  "whitechapel",
+  "southwark",
+  "lambeth",
+  "bloomsbury",
+  "mayfair",
+  "westminster",
+  "city",
+  "covent_garden",
+  "kings_cross",
+  "docklands",
+  "chelsea",
+  "greenwich",
+] as const;
+export type DistrictId = (typeof DISTRICT_IDS)[number];
+
+/** «Кунсткамера Короля» (v3 ENG-10, data/curios.ts): 24 curios in 6 sets of 4, grouped by owner. */
+export const CURIO_IDS = [
+  // Леди Пемберли
+  "lace_glove",
+  "lady_fan",
+  "murzifer_bell",
+  "teapot_lid",
+  // Мистер Уиггинс
+  "monocle",
+  "onion_watch",
+  "walking_cane",
+  "card_case",
+  // Лорд Эшби
+  "crest_snuffbox",
+  "sapphire_cufflink",
+  "signet_ring",
+  "first_class_ticket",
+  // Полковник Хэтчетт
+  "meerschaum_pipe",
+  "colonel_order",
+  "cavalry_spur",
+  "hip_flask",
+  // Часовщик Грант
+  "escapement_fork",
+  "chronometer_spring",
+  "tower_key",
+  "watchmaker_loupe",
+  // Город
+  "cat_fur_tuft",
+  "broken_pipe",
+  "edinburgh_sack",
+  "cheddar_seal",
+] as const;
+export type CurioId = (typeof CURIO_IDS)[number];
+/** Who lost the curio: one set of four per owner. */
+export type CurioOwner = "pemberley" | "wiggins" | "ashby" | "hatchett" | "grant" | "city";
+
+/** Steam priority valve (v3 ENG-4): who gets the steam first when the stokers fall short. */
+export type SteamPriority = "works" | "power";
 
 /** Colony records (EN-11): best run time (s) to open a zone or to be crowned. */
 export type RecordKey = "sewers" | "cellars" | "metro" | "terminal" | "coronation";
@@ -266,7 +328,10 @@ export type FlagId =
   | "first_pocketwatch"
   | "starved"
   | "coronation"
-  | "migration_ready";
+  | "migration_ready"
+  /* v3 */
+  | "focus_manual" // the player picked the newborn focus by hand (ENG-1): the auto focus stops
+  | "first_rumble"; // «Гул из глубины» played (ENG-9): metroTeaser() names the Metro
 
 export type Cond =
   | { always: true }
@@ -279,6 +344,7 @@ export type Cond =
   | { upgrade: UpgradeId }
   | { edict: EdictId }
   | { flag: FlagId }
+  | { migrations: number } // v3 (ENG-3): meta.migrations >= n
   | { all: Cond[] }
   | { any: Cond[] };
 
@@ -367,6 +433,8 @@ export interface UpgradeDef {
   kind?: "speed" | "yield";
   unlock: Cond;
   flavor: string;
+  /** v3 (ENG-3): what a locked card says while its unlock still waits on a Great Migration (express_plan). */
+  lockedFlavor?: string;
 }
 
 export interface ZoneDef {
@@ -415,6 +483,10 @@ export interface AchievementDef {
 export interface LinePair {
   human: string;
   rat: string;
+  /** v3 (ENG-9): the drop table this line gives the carriage / capsule (weights; replaces the car's drops). */
+  drops?: Partial<Record<ResId, number>>;
+  /** v3 (ENG-9): one extra item of `res` worth S seconds of income (placed by a hash of the scene seq). */
+  gift?: { res: ResId; S: number };
 }
 
 /** Train variant row (EN-6, data/events.ts TRAIN_VARIANTS). */
@@ -424,8 +496,11 @@ export interface TrainVariantDef {
   icon: string;
   /** Chance per metro train once the gate holds (0..1); "normal" takes the rest. */
   weight: number;
-  /** "rushHour": human clock 08:00–09:30; "flooded": a downpour ended with an open valve < 300 s ago. */
-  gate: "always" | "rushHour" | "flooded";
+  /**
+   * "rushHour": human clock 08:00–09:30; "flooded": a downpour ended with an open valve < 300 s ago;
+   * "fog" (v3): forced while «Гороховый суп» lies over London (fogActive).
+   */
+  gate: "always" | "rushHour" | "flooded" | "fog";
   perCarMul: number;
   itemLifeMul: number;
   /** Seconds added to itemLife (after itemLifeMul). */
@@ -444,6 +519,17 @@ export interface TrainVariantDef {
   /** Body tint for the train painter (null = no tint). */
   tint: string | null;
   lines: LinePair[];
+  /* v3 (all optional; absent = neutral) */
+  /** Crash risk multiplier for the crew position (ENG-8 crashChance): freight 2, flooded 1.5, edinburgh_mail 0.5. */
+  crashMul?: number;
+  /** "bounce" physics (ENG-9 circus): rebounds off the platform before an item settles (absent = the painter's 1) … */
+  bounces?: number;
+  /** … the share of speed kept on each rebound (0..1) … */
+  restitution?: number;
+  /** … and the launch speed multiplier (absent = 1). */
+  launchMul?: number;
+  /** «Гороховый суп» (ENG-9): draw the fog layer over the pass; lantern chance ×2. */
+  fog?: boolean;
 }
 
 /** Numeric knobs of a London district trait (EN-9). Missing = neutral. */
@@ -457,6 +543,14 @@ export interface DistrictMods {
   ratcatcherThreshold?: number;
   expressIntervalMult?: number;
   suspicionMult?: number;
+  /** v3 (ENG-4): boiler max level +n (Гончарни +2). */
+  boilerMaxDelta?: number;
+  /** v3 (ENG-8): suspicion above which human vigilance eats train loot (absent = 50; Биг-Бен 40). */
+  vigilanceFrom?: number;
+  /** v3 (ENG-11): the «Сытость» multiplier itself (absent = 1.25; Боро-маркет 1.5). */
+  satietyMult?: number;
+  /** v3 (ENG-11): seconds between metro trains (absent = 240; Гончарни 300). */
+  metroInterval?: number;
   /** Production multipliers per resource. */
   res?: Partial<Record<ResId, number>>;
 }
@@ -498,6 +592,8 @@ export interface CommissionState {
 /** One finished run in the colony chronicle (EN-11, meta.history). */
 export interface RunHistoryEntry {
   district: number;
+  /** v3 (ENG-11): the district of that run; absent in v2 entries (there `district` indexes the old sequence). */
+  districtId?: DistrictId;
   seconds: number;
   eRun: number;
   crowns: number;
@@ -545,6 +641,8 @@ export interface Buffs {
   soggyUntil: number; // downpour fail: T1 x0.8
   frenzyUntil: number; // bustle "Аврал"
   frenzyCooldownUntil: number;
+  /** v3 (ENG-9): «Гороховый суп» lies over London until this run time (fogActive). */
+  fogUntil: number;
 }
 
 export interface Bustle {
@@ -563,6 +661,10 @@ export interface CatchItem {
   t: number; // spawn time offset (s) from phase start
   /** v2 (EN-5): absent from this pass (sparks at the 'wall' position): never rendered, never counted. */
   skip?: boolean;
+  /** v3 (ENG-10): a curio for «Кунсткамера Короля» (value 0, weight 0: rating-neutral; a catch adds it to meta.curios). */
+  curio?: CurioId;
+  /** v3 (ENG-10): seconds this item stays catchable beyond scene.itemLife (a curio: +1.5 s); absent = 0. */
+  lifeAdd?: number;
 }
 
 export interface SceneCar {
@@ -614,6 +716,11 @@ export interface HaulSummary {
   suspicionParts?: { pass: number; lantern: number; total: number };
   /** Hook jackpot size in seconds of market-value income (EN-1). */
   jackpotSeconds?: number;
+  /* v3 */
+  /** Share of the item values human vigilance took (ENG-8 vigilance(): 0..0.5); absent = none. */
+  vigilance?: number;
+  /** The curio caught in this pass (ENG-10). */
+  curio?: CurioId;
 }
 
 export interface Scene {
@@ -669,6 +776,17 @@ export interface Scene {
   lineIdx?: number;
   /** Suspicion the lantern greed actually added in the catch phase (EN-5 haul breakdown). */
   lanternSusp?: number;
+  /* v3 (optional) */
+  /**
+   * The first carriage is a catch tutorial (ENG-9): a 2 s 'warn' phase («Сейчас посыплется!») before 'catch',
+   * longer item life, hand catches ×2. `crash` (above) is also set when the crew position crashed (ENG-8).
+   */
+  tutorial?: boolean;
+  /**
+   * Share of the item values human vigilance took when the train was built (ENG-8: 1 − vigilance(S), 0..0.5);
+   * absent = none. The haul card gets it as haul.vigilance.
+   */
+  vigilance?: number;
 }
 
 export interface Purse {
@@ -682,6 +800,13 @@ export interface Shiny {
   y: number;
   res: ResId;
   until: number;
+  /* v3 (ENG-9, optional) */
+  /** "carriage": rain through the grate from a carriage passing overhead (after the Metro); absent = a plain shiny. */
+  kind?: "carriage";
+  /** Amount granted on click (absent: 30 × eventValue); an expired carriage shiny credits 25% of it. */
+  amt?: number;
+  /** v3 (ENG-10): a curio for «Кунсткамера Короля» in the grate rain (amt 0: a click adds it to meta.curios, nothing else). */
+  curio?: CurioId;
 }
 export interface MarketDeal {
   give: ResId;
@@ -718,6 +843,8 @@ export interface Timers {
   nextGeneration: number;
   /** Next filler headline (EN-10). */
   filler: number;
+  /** v3 (ENG-9): next «Гороховый суп» over London (Infinity before the Metro; scheduled once it is open). */
+  fog: number;
 }
 
 export type TextScale = 1 | 1.15 | 1.3;
@@ -738,6 +865,11 @@ export interface Settings {
   textScale: TextScale;
   /** reducedMotion was seeded from the OS prefers-reduced-motion on a fresh save. */
   reducedMotionFromOS: boolean;
+  /* v3 (ENG-12) */
+  /** Effects bus 0..1 (default 1); `volume` stays the master. */
+  sfxVolume: number;
+  /** Generative district music 0..1 (default 0.35, AUD-3). */
+  music: number;
 }
 
 export type HaulRating = HaulSummary["rating"];
@@ -748,7 +880,8 @@ export interface Meta {
   edicts: Partial<Record<EdictId, boolean>>;
   achievements: Partial<Record<AchievementId, number>>; // run time-stamp (lifetime seconds) when earned
   migrations: number;
-  district: number; // index into DISTRICTS
+  /** Index of the current run in `visited` (v3: = visited.length − 1); the v1/v2 UI reads it with districtName(). */
+  district: number;
   trophies: string[];
   bestRating: HaulSummary["rating"];
   /** wagons: Rat Express wagons built over all runs (medal «Хвост за горизонтом»). */
@@ -776,6 +909,13 @@ export interface Meta {
   history: RunHistoryEntry[];
   /** Best run times (s) per record key (EN-11). */
   records: Partial<Record<RecordKey, number>>;
+  /* v3 */
+  /** The current district (ENG-11), = visited[district]; read it through districtInfo(meta). */
+  districtId: DistrictId;
+  /** Districts of every run so far in order, the current one last (a second lap repeats ids). */
+  visited: DistrictId[];
+  /** «Кунсткамера Короля» (ENG-10): curios owned, in the order caught; survives migrations. */
+  curios: CurioId[];
 }
 
 export interface GameState {
@@ -855,6 +995,26 @@ export interface GameState {
   coronatedAt: number;
   /** Best haul rating of this run (the chronicle and the migration summary; haulLog keeps only the last 10). */
   runBestRating: HaulSummary["rating"];
+  /* v3 */
+  /** Steam priority valve (ENG-4): "works" = smelters and smiths first (the v2 order), "power" = presses and clocks first. */
+  steamPriority: SteamPriority;
+  /** A carriage passing over the grate after the Metro (ENG-9): the sky mini-scene and the hooves; null when none. */
+  carriagePass: { seq: number; until: number } | null;
+  /** Dev only (store.devTrigger with a variant): the next metro train takes this variant, then the field is removed. */
+  forceVariant?: TrainVariantId;
+  /** The elder's hint hysteresis (ENG-1, hints.trackHint): the hint shown since `since`; a stale one is `muted` until `mutedUntil`. */
+  hintMemo: HintMemo;
+}
+
+/**
+ * Hysteresis of the elder's hint (v3 ENG-1): `id` has been the hint since `since` (run time); one that stays longer than
+ * HINT_STALE_SEC without its action being taken is muted for HINT_MUTE_SEC (nextHint falls through to the next rule).
+ */
+export interface HintMemo {
+  id: string;
+  since: number;
+  muted: string;
+  mutedUntil: number;
 }
 
 /* -------------------------------------------------------- engine I/O */
@@ -887,18 +1047,25 @@ export type Fx =
   | { k: "hunger"; on: boolean }
   | { k: "news"; text: string }
   /* v2 */
-  | { k: "scout"; zone: ZoneId; res: ResId; amount: number; step: 1 | 2 | 3 }
+  | { k: "scout"; zone: ZoneId; res: ResId; amount: number; /** v3 (ENG-3): 4 = the 90% step. */ step: 1 | 2 | 3 | 4 }
   | {
       k: "migration";
       crowns: number;
-      /** New district index (districtName / districtTrait). */
+      /** New district index (districtName / districtTrait: the old sequence only). */
       district: number;
+      /** v3 (ENG-11): the new district (districtById / DISTRICTS); prefer it over the index. */
+      districtId?: DistrictId;
       /** Human weekday of the new run, e.g. «среда». */
       weekday: string;
       summary: { seconds: number; eRun: number; trains: number; bestRating: HaulRating; rats: number };
     }
   | { k: "record"; what: RecordKey; time: number; prev: number }
-  | { k: "commission"; id: CommissionId; done: boolean };
+  | { k: "commission"; id: CommissionId; done: boolean }
+  /* v3 */
+  /** «Гул из глубины» (ENG-9): the Thunder God passes under the burrow before the colony knows the Metro (once). */
+  | { k: "deepRumble" }
+  /** A curio for «Кунсткамера Короля» was caught (ENG-10). */
+  | { k: "curio"; id: CurioId };
 
 export interface TickInput {
   /** Tab visible and the player interacted within the last 60 s (gates harmful events, suspicion growth). */
@@ -925,5 +1092,13 @@ export type SceneAction =
   | { a: "catch"; result: CatchResult }
   | { a: "piles"; fractions: number[] }
   | { a: "choice"; option: "hide" | "fight" | "pay" }
-  | { a: "taps"; cleared: number; /** v2: ms from the first to the last valve closed (dry_paws). */ fastMs?: number } // valves closed / paw hits / notes popped
+  | {
+      a: "taps";
+      /** Valves closed / paw hits (cat: 1 = beaten) / notes popped. */
+      cleared: number;
+      /** v2: ms from the first to the last valve closed (dry_paws). */
+      fastMs?: number;
+      /** v3 (ENG-9, cat): lunges countered inside CAT_COUNTER_WINDOW; each counts as 3 paw hits, >= 3 pays ×1.5. */
+      perfect?: number;
+    }
   | { a: "dismiss" }; // close the haul card

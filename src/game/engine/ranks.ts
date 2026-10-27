@@ -23,13 +23,30 @@ export function sealOn(s: Pick<GameState, "meta">, id: SealId): boolean {
   return s.meta.seal === id && s.meta.sealsOwned.includes(id);
 }
 
-/** Rank values of the ranked edicts (rank I, II, III), GDD 10.3 v2. */
+/**
+ * Rank values of the ranked edicts (rank I, II, III), GDD 10.3 v2. v3 (ENG-8): eternal_night_shift no longer raises the
+ * offline efficiency past rank I (it stops at 100%); its ranks add hours instead (offlineHours). Ranks II/III of
+ * ancestral_paws and golden_whiskers also reach the 📜/💍 bottleneck (clickBlueprints, purseTrinkets).
+ */
 export const RANKED = {
   royal_litter: { rats: [10, 25, 60], nests: [5, 10, 20], crumbs: [50, 500, 5000] },
   ancestral_paws: [3, 6, 12],
   golden_whiskers: { freq: [2, 3, 4], effect: [1.5, 2, 2.5] },
-  eternal_night_shift: [0.25, 0.35, 0.45],
+  eternal_night_shift: [0.25, 0.25, 0.25],
   felt_soles: [0.5, 0.35, 0.25],
   timetable_in_head: [2, 3, 4],
   lucky_tail: [2, 2.5, 3],
 } as const;
+
+/** v3 (ENG-8) rank extras: what a manual click adds in seconds of potential 📜/s (ancestral_paws II/III: 0.5% / 1%). */
+export const CLICK_BLUEPRINTS = [0, 0.005, 0.01] as const;
+/** v3 (ENG-8): the chance a purse also holds pocket watches, and how many (golden_whiskers II/III: 20% → 3, 30% → 6). */
+export const PURSE_TRINKETS = { chance: [0, 0.2, 0.3], amount: [0, 3, 6] } as const;
+/**
+ * Offline time limit (ENG-8): 2 h + 2 h «Ночная смена» + 4 h «Вечная ночная смена» + 2 h for each of its ranks II/III
+ * (up to 12 h at rank III). In hours.
+ */
+export function offlineHours(s: Pick<GameState, "meta" | "upgrades">): number {
+  const r = edictRank(s, "eternal_night_shift");
+  return 2 + (s.upgrades.night_shift ? 2 : 0) + (r >= 1 ? 4 : 0) + 2 * Math.max(0, r - 1);
+}

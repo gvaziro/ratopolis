@@ -9,6 +9,8 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cx } from "@/components/ui/kit";
 import { BUILDINGS } from "@/game/data/buildings";
+import { JOBS } from "@/game/data/jobs";
+import { steamBudget } from "@/game/engine/economy";
 import { steamBreakdown } from "@/game/engine/hints";
 import { derivedOf, useGame, type TabId } from "@/game/store";
 import { useSampled } from "@/game/useSampled";
@@ -33,18 +35,80 @@ const FIX: Record<"boiler" | "miners" | "stokers", { text: string; tab: TabId; t
   stokers: { text: "+ кочегаров — у котла есть свободные места", tab: "jobs", target: "j_stoker" },
 };
 
+interface Budget {
+  supply: number;
+  press: number;
+  clock: number;
+  conv: number;
+}
+
+const SPLIT: { key: "press" | "clock" | "conv"; icon: string; label: string; color: string }[] = [
+  { key: "press", icon: BUILDINGS.steam_press.icon, label: "пресс", color: "#c4453a" },
+  { key: "clock", icon: BUILDINGS.clocktower.icon, label: "часы", color: "#d4af37" },
+  { key: "conv", icon: `${JOBS.smelter.icon}${JOBS.smith.icon}`, label: "плавильни и кузни", color: "#e09a63" },
+];
+
+/**
+ * COL-2: where the steam goes at full speed (engine steamBudget): the demand of the press, the clocks and the
+ * smelters / smiths as one stacked bar against what the stokers could give (the tick on the bar).
+ */
+function BudgetSplit({ b, priority }: { b: Budget; priority: string }) {
+  const demand = b.press + b.clock + b.conv;
+  if (!(demand > 0)) return null;
+  const supply = Number.isFinite(b.supply) ? Math.max(0, b.supply) : 0;
+  const top = Math.max(demand, supply, 1e-9);
+  const short = demand - supply;
+  return (
+    <div className="mt-1.5 border-t border-line/60 pt-1">
+      <p className="text-[11px] text-parchment-dim">
+        На полном ходу нужно <span className="font-mono text-danger-light tabular">{fmt(demand)}/с</span>, кочегары дадут{" "}
+        <span className="font-mono text-good tabular">{fmt(supply)}/с</span>
+      </p>
+      <div className="relative mt-0.5 h-2 w-full overflow-hidden rounded bg-soot" aria-hidden>
+        <div className="flex h-full" style={{ width: `${(demand / top) * 100}%` }}>
+          {SPLIT.map((p) => (b[p.key] > 0 ? <div key={p.key} style={{ width: `${(b[p.key] / demand) * 100}%`, background: p.color }} /> : null))}
+        </div>
+        <div className="absolute inset-y-0 w-0.5 bg-[#8fbf5a]" style={{ left: `calc(${Math.min(100, (supply / top) * 100)}% - 1px)` }} />
+      </div>
+      <ul className="mt-0.5 flex flex-wrap gap-x-2 text-[10px] text-parchment-dim">
+        {SPLIT.map((p) =>
+          b[p.key] > 0 ? (
+            <li key={p.key} className="flex items-center gap-0.5">
+              <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: p.color }} />
+              {p.icon} {p.label} <span className="font-mono tabular">{fmt(b[p.key])}</span>
+            </li>
+          ) : null,
+        )}
+      </ul>
+      <p className={cx("mt-0.5 text-[10px]", short > 1e-9 ? "text-danger-light" : "text-good")}>
+        {short > 1e-9
+          ? `Не хватает ${fmt(short)}/с — первыми пар получают ${priority === "power" ? "пресс и часы" : "плавильни и кузни"}`
+          : "Кочегары справятся со всеми разом"}
+      </p>
+    </div>
+  );
+}
+
 /** The breakdown, mounted only while the tip is open (sampled twice a second). */
 function SteamTip({ onDone }: { onDone: () => void }) {
   // a JSON key (Infinity → -1) so the tip re-renders only when a shown number changes
   const key = useSampled(
     (s) => {
-      const x = steamBreakdown(s.game, derivedOf(s.game));
-      return JSON.stringify({ ...x, slots: Number.isFinite(x.slots) ? x.slots : -1, buffer: Number.isFinite(x.buffer) ? x.buffer : -1 });
+      const d = derivedOf(s.game);
+      const x = steamBreakdown(s.game, d);
+      const bud = steamBudget(s.game, d);
+      return JSON.stringify({
+        ...x,
+        slots: Number.isFinite(x.slots) ? x.slots : -1,
+        buffer: Number.isFinite(x.buffer) ? x.buffer : -1,
+        budget: { supply: bud.supply, press: bud.press, clock: bud.clock, conv: bud.conv },
+        priority: s.game.steamPriority,
+      });
     },
     2,
     Object.is,
   );
-  const b = JSON.parse(key) as ReturnType<typeof steamBreakdown>;
+  const b = JSON.parse(key) as ReturnType<typeof steamBreakdown> & { budget: Budget; priority: string };
   const slots = b.slots < 0 ? "∞" : fmtInt(b.slots);
   const fix = b.fix ? FIX[b.fix] : null;
   const starving = b.steamEff < 0.5 && b.consumers.length > 0;
@@ -102,6 +166,7 @@ function SteamTip({ onDone }: { onDone: () => void }) {
           <p className="mt-1 text-parchment-dim">Пар пока никто не расходует.</p>
         )}
         <p className={cx("mt-1", starving ? "font-bold text-danger-light" : "text-parchment-dim")}>Эффективность пресса и часов: {Math.round(b.steamEff * 100)}%</p>
+        <BudgetSplit b={b.budget} priority={b.priority} />
       </div>
       {fix && (
         <button
@@ -225,7 +290,8 @@ export const SteamGauge = memo(function SteamGauge() {
               const a = A0 + ((A1 - A0) * i) / 10;
               return <line key={i} x1="0" y1="-29" x2="0" y2={i % 5 === 0 ? -21 : -25} stroke="#2a1a0c" strokeWidth={i % 5 === 0 ? 1.6 : 0.9} transform={`rotate(${a})`} />;
             })}
-            <text y="13" fontSize="7" textAnchor="middle" fill="#5c4520" className="font-display" fontWeight="700">
+            {/* mobile-8: too small to read on the 44 px phone dial */}
+            <text y="13" fontSize="7" textAnchor="middle" fill="#5c4520" className="font-display max-md:hidden" fontWeight="700">
               ПАР
             </text>
             <g ref={needle} transform={`rotate(${A0})`}>

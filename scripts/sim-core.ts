@@ -5,13 +5,15 @@
  * Spec: docs/GDD.md 15.14.
  */
 import { BUILDINGS } from "../src/game/data/buildings";
-import { CREW_POSITIONS, TRAIN_CARS } from "../src/game/data/events";
+import { CREW_POSITIONS, FOG_TOAST, GRATE_RAIN_TOAST, TRAIN_CARS } from "../src/game/data/events";
 import { CONVERTERS, JOBS } from "../src/game/data/jobs";
-import { EDICTS, EXPRESS_BASE, SEALS } from "../src/game/data/meta";
+import { EDICTS, EDICT_ORDER, EXPRESS_BASE, SEALS } from "../src/game/data/meta";
 import { edictRank } from "../src/game/engine/ranks";
 import { RESOURCES } from "../src/game/data/resources";
 import { UPGRADES } from "../src/game/data/upgrades";
 import { ZONES, ZONE_ORDER } from "../src/game/data/zones";
+import { DISTRICTS } from "../src/game/data/districts";
+import { CURIO_CHANCE, type CurioScene } from "../src/game/data/curios";
 import {
   assignJob,
   buildingVisible,
@@ -29,19 +31,25 @@ import {
   migrate,
   setAssignMode,
   setFocus,
+  setSteamPriority,
   toggleSatiety,
   upgradeVisible,
 } from "../src/game/engine/actions";
 import { check } from "../src/game/engine/conditions";
 import { derive, eventValue, resMult, stunnedRats, type Derived } from "../src/game/engine/derive";
-import { clickPurse, clickShiny, isTrainScene, marketDeal, metroCarCount, sceneAction, trainActive, trainDropRes } from "../src/game/engine/events";
+import { steamBudget } from "../src/game/engine/economy";
+import { buildNowPick, expressBottleneck } from "../src/game/engine/goals";
+import { applyHintAction, trackHint } from "../src/game/engine/hints";
+import { clickPurse, clickShiny, isTrainScene, marketDeal, metroCarCount, sceneAction, trainActive, trainDropRes, vigilance } from "../src/game/engine/events";
 import {
+  atMaxLevel,
   buildingCost,
   canAfford,
   canMigrate,
   crownsForRun,
   entries,
   expeditionCost,
+  isComplete,
   remaining,
 } from "../src/game/engine/formulas";
 import { simulateOffline } from "../src/game/engine/offline";
@@ -52,6 +60,7 @@ import {
   BUILDING_IDS,
   JOB_IDS,
   RES_IDS,
+  SEAL_IDS,
   UPGRADE_IDS,
   type AchievementId,
   type Amounts,
@@ -59,6 +68,8 @@ import {
   type Cond,
   type CatchResult,
   type CommissionId,
+  type DistrictId,
+  type DistrictMods,
   type EdictId,
   type EngineCtx,
   type GameState,
@@ -66,6 +77,8 @@ import {
   type ResId,
   type ResMap,
   type SceneEventId,
+  type SealId,
+  type SteamPriority,
   type TrainVariantId,
   type UpgradeId,
   type ZoneId,
@@ -166,8 +179,18 @@ export function flows(s: GameState, d: Derived, jobs: Record<JobId, number>, rat
     const out = d.buildingOut[id];
     for (const r in out) net[r as ResId] += (out[r as ResId] ?? 0) * mult[r as ResId];
   }
+  // v3 (ENG-4): the valve on "power" serves the press and the clocks before the steam-burning converters
+  const power = s.steamPriority === "power";
+  let steamDone = false;
+  const steamPhase = () => {
+    steamDone = true;
+    if (d.steamNeed <= 0) return;
+    const avail = Math.max(0, net.steam) + s.res.steam / 60;
+    net.steam -= Math.min(avail, d.steamNeed);
+  };
   for (const j of CONVERTERS) {
     const n = jobs[j];
+    if (power && !steamDone && (JOBS[j].consumes.steam ?? 0) > 0) steamPhase();
     if (n <= 0) continue;
     const rate = n * d.jobSpeed[j] * wf;
     let e = 1;
@@ -183,19 +206,16 @@ export function flows(s: GameState, d: Derived, jobs: Record<JobId, number>, rat
     for (const [r, v] of cons) net[r] -= rate * v * e;
     for (const [r, v] of prod) net[r] += rate * v * d.jobYield[j] * mult[r] * e;
   }
-  if (d.steamNeed > 0) {
-    const avail = Math.max(0, net.steam) + s.res.steam / 60;
-    net.steam -= Math.min(avail, d.steamNeed);
-  }
+  if (!steamDone) steamPhase();
   net.crumbs -= 0.04 * rats;
   if (d.satietyActive) net.cheese -= 0.005 * rats;
   return net;
 }
 
-/** Steam efficiency estimate for steam consumers (press/clocktower) under a plan. */
+/** Steam efficiency estimate for steam consumers (press/clocktower) under a plan (on "power" they eat first, ENG-4). */
 function steamEffFor(s: GameState, d: Derived, jobs: Record<JobId, number>, rats: number): number {
   if (d.steamNeed <= 0) return 1;
-  const f = flows(s, { ...d, steamNeed: 0 }, jobs, rats);
+  const f = flows(s, { ...d, steamNeed: 0 }, s.steamPriority === "power" ? { ...jobs, smelter: 0, smith: 0 } : jobs, rats);
   return Math.max(0, Math.min(1, (Math.max(0, f.steam) + s.res.steam / 60) / d.steamNeed));
 }
 
@@ -212,11 +232,12 @@ const AVG_CAR_WEIGHT: [keyof typeof TRAIN_CARS, number][] = [
 /** Expected loot of one car, per resource, added to `out` × scale (drops of unrevealed resources swap exactly like fillCar). */
 function carLoot(s: GameState, d: Derived, kind: keyof typeof TRAIN_CARS, scale: number, out: ResMap, opts: { drops?: Partial<Record<ResId, number>>; mult?: number; pieces?: number } = {}): void {
   const def = TRAIN_CARS[kind];
-  const lucky = s.meta.edicts.lucky_tail ? 2 : 1;
+  // v3 (ENG-8): item values shrink with human vigilance above d.vigilanceFrom 👁
+  const lucky = (s.meta.edicts.lucky_tail ? 2 : 1) * vigilance(s.suspicion, d.vigilanceFrom);
   const total = Object.values(opts.drops ?? def.drops).reduce((a, p) => a + (p ?? 0), 0) || 1;
   for (const [r0, p] of Object.entries(opts.drops ?? def.drops) as [ResId, number][]) {
     const r = trainDropRes(s, r0);
-    const per = r === "trinkets" ? (opts.pieces ?? 1) * lucky : def.S * eventValue(s, d, r) * (opts.mult ?? 1);
+    const per = r === "trinkets" ? (opts.pieces ?? 1) * lucky : def.S * eventValue(s, d, r) * (opts.mult ?? 1) * vigilance(s.suspicion, d.vigilanceFrom);
     out[r] += (p / total) * def.items * per * scale;
   }
 }
@@ -456,7 +477,42 @@ export function planJobs(s: GameState, d: Derived, rats: number, w: ResMap, defi
 
 /* ================================================================ bot */
 
-export type BotKind = "active" | "passive";
+/**
+ * active: buys by ROI every 5 s, clicks 4/s then 1/s, catches 75%. passive: checks in once a minute, events resolve by
+ * themselves. newcomer (v3 ENG-2): a player who follows the game's own guidance — every 5 s it does what the elder's
+ * hint says («Сделать», exactly as store.applyHint) and buys «Выгодно сейчас» (goals.buildNowPick), clicks 3/s for
+ * 10 min then 1/s, catches 50% of a train; it never touches the star, the ratios or «Автовзнос».
+ */
+export type BotKind = "active" | "passive" | "newcomer";
+
+/** never-migrate (ENG-2 --policy): the bot never moves on before the coronation (Bot.shouldMigrate → false). */
+export type SimPolicy = "scripted" | "never-migrate";
+
+/**
+ * The Great Seal the bot buys and keeps (ENG-8 ablation, --seal): railway (the default, as v2), one forced seal, or
+ * "auto" — the run goal decides: Печать Династии once the colony has migrated 4+ times (its +10% per migration reaches
+ * 📜/💍, the late bottleneck), else Railway.
+ */
+export type SimSeal = SealId | "auto";
+
+/** What the newcomer bot measures (ENG-2 «Новичок» table). */
+export interface NewcomerStats {
+  /** Longest stretch (s) the same hint id stood at the 5-s check-ins, its id and when it ended. */
+  hintStreak: number;
+  hintStreakId: string;
+  hintStreakAt: number;
+  /** Longest stretch (s) with nothing to do: no hint action that did anything and no affordable «Выгодно сейчас». */
+  idleGap: number;
+  idleGapAt: number;
+  /** Building purchases in order: run time, building, and whether the hint or «Выгодно сейчас» bought it. */
+  buys: { t: number; id: BuildingId; via: "hint" | "pick" }[];
+  /** How often each hint id was carried out. */
+  hintsApplied: Record<string, number>;
+}
+
+function newcomerStats(): NewcomerStats {
+  return { hintStreak: 0, hintStreakId: "", hintStreakAt: 0, idleGap: 0, idleGapAt: 0, buys: [], hintsApplied: {} };
+}
 
 export interface BotStats {
   storageStall: number; // current consecutive seconds the top wish is locked by a cap
@@ -482,7 +538,7 @@ interface Candidate {
 }
 
 /** Commissions in the order the active bot can finish them (EN-12). */
-const COMMISSION_PREF: CommissionId[] = ["three_gold", "purse_season", "royal_mail", "whiskers_twice", "dry_paws2", "pipe_splinters", "replenish", "bullseye", "lamplighter", "quick_hand", "frenzy5", "wagon"];
+const COMMISSION_PREF: CommissionId[] = ["three_gold", "clean_three", "purse_season", "royal_mail", "whiskers_twice", "dry_paws2", "pipe_splinters", "bullseye", "lamplighter", "quick_hand", "frenzy5", "wagon", "replenish"];
 
 /** Priority order for edicts (cheap first, per GDD 15.14). */
 export const EDICT_PLAN: EdictId[] = [
@@ -523,10 +579,24 @@ export class Bot {
   private visibleCount = 0;
   /** The building the bot skipped a purchase to save for at its last decision. */
   private waitedFor: BuildingId | null = null;
+  readonly policy: SimPolicy;
+  /** Share of a train's items the bot catches (75%; the newcomer 50%). */
+  readonly catchRate: number;
+  /** Newcomer bookkeeping: the hint id at the last check-in and since when, the last check-in with something to do. */
+  newcomer: NewcomerStats = newcomerStats();
+  private ncHint = "";
+  private ncHintSince = 0;
+  private ncBusyAt = 0;
 
-  constructor(kind: BotKind, seed: number) {
+  /** The Great Seal plan (ENG-8 --seal). */
+  readonly seal: SimSeal;
+
+  constructor(kind: BotKind, seed: number, opts: { policy?: SimPolicy; seal?: SimSeal } = {}) {
     this.kind = kind;
     this.rnd = { rng: (seed ^ 0x5bd1e995) >>> 0 };
+    this.policy = opts.policy ?? "scripted";
+    this.seal = opts.seal ?? "railway";
+    this.catchRate = kind === "newcomer" ? 0.5 : 0.75;
   }
 
   /** Reset per-run bookkeeping after a migration. */
@@ -540,25 +610,75 @@ export class Bot {
     this.stats = { storageStall: 0, maxStorageStall: 0, maxStorageStallAt: 0, lastGoalAt: 0, maxGoalGap: 0, maxGoalGapAt: 0, purchases: 0 };
     this.visibleCount = 0;
     this.waitedFor = null;
+    this.newcomer = newcomerStats();
+    this.ncHint = "";
+    this.ncHintSince = 0;
+    this.ncBusyAt = 0;
   }
 
   /** Whether the player counts as "active" for the scheduler (harmful events, suspicion). */
   isActive(s: GameState): boolean {
-    return this.kind === "active" || s.time < 180;
+    return this.kind !== "passive" || s.time < 180;
   }
 
   /** Called once per tick after step(); `d` is what step() derived this tick (saves a second derive). */
   tick(s: GameState, ctx: EngineCtx, d: Derived = derive(s)): void {
+    // the ROI bots pick the newborn focus themselves: the colony's auto focus (ENG-1) stays off for them
+    if (this.kind !== "newcomer" && !s.flags.focus_manual) s.flags.focus_manual = true;
     this.clicks(s, d, ctx);
-    if (this.kind === "active") {
+    if (this.kind !== "passive") {
       this.handleScene(s, d, ctx);
       this.handleBackground(s, d, ctx);
       this.handleCommissions(s, ctx);
     }
-    const interval = this.kind === "active" ? 5 : 60;
+    const interval = this.kind === "passive" ? 60 : 5;
     if (s.time >= this.nextDecision) {
       this.nextDecision = s.time + interval;
-      this.decide(s, ctx);
+      if (this.kind === "newcomer") this.decideNewcomer(s, ctx);
+      else this.decide(s, ctx);
+    }
+  }
+
+  /* ---------------------------------------------------------- the newcomer (ENG-2) */
+
+  /**
+   * A newcomer's check-in: the elder's hint (trackHint, so its hysteresis runs as in the store) carried out exactly
+   * like «Сделать» (hints.applyHintAction), then «Выгодно сейчас» (goals.buildNowPick) bought when affordable.
+   */
+  private decideNewcomer(s: GameState, ctx: EngineCtx): void {
+    const st = this.newcomer;
+    let d = derive(s);
+    this.trackGoals(s);
+    const h = trackHint(s, d);
+    const id = h?.id ?? "";
+    if (id !== this.ncHint) {
+      this.ncHint = id;
+      this.ncHintSince = s.time;
+    } else if (id && s.time - this.ncHintSince > st.hintStreak) {
+      st.hintStreak = s.time - this.ncHintSince;
+      st.hintStreakId = id;
+      st.hintStreakAt = s.time;
+    }
+    let busy = false;
+    if (h?.action && applyHintAction(s, d, h, ctx)) {
+      busy = true;
+      st.hintsApplied[h.id] = (st.hintsApplied[h.id] ?? 0) + 1;
+      if (h.action.kind === "buyBuilding") {
+        st.buys.push({ t: s.time, id: h.action.id, via: "hint" });
+        this.note(s);
+      } else if (h.action.kind === "buyUpgrade") this.note(s);
+      d = derive(s);
+    }
+    const pick = buildNowPick(s, d);
+    if (pick && buyBuilding(s, d, pick.id, 1, ctx) > 0) {
+      busy = true;
+      st.buys.push({ t: s.time, id: pick.id, via: "pick" });
+      this.note(s);
+    }
+    if (busy) this.ncBusyAt = s.time;
+    else if (s.time - this.ncBusyAt > st.idleGap) {
+      st.idleGap = s.time - this.ncBusyAt;
+      st.idleGapAt = s.time;
     }
   }
 
@@ -567,6 +687,7 @@ export class Bot {
   private clicks(s: GameState, d: Derived, ctx: EngineCtx): void {
     let cps = 0;
     if (this.kind === "active") cps = s.time < 600 ? 4 : 1;
+    else if (this.kind === "newcomer") cps = s.time < 600 ? 3 : 1;
     else cps = s.time < 180 ? 2 : 0;
     if (cps <= 0) return;
     this.clickAcc += cps * TICK;
@@ -576,7 +697,7 @@ export class Bot {
     }
   }
 
-  /* ---------------------------------------------------------- scenes (active only) */
+  /* ---------------------------------------------------------- scenes (active and newcomer) */
 
   private handleScene(s: GameState, d: Derived, ctx: EngineCtx): void {
     const sc = s.scene;
@@ -632,7 +753,7 @@ export class Bot {
     }
   }
 
-  /** Catch 75% of the items with an average combo multiplier of ×1.2; nets/clockwork take what is left. */
+  /** Catch catchRate (75%, the newcomer 50%) of the items with an average combo multiplier of ×1.2; nets/clockwork take what is left. */
   private catchResult(s: GameState): CatchResult {
     const sc = s.scene!;
     const caught: CatchResult["caught"] = [];
@@ -644,7 +765,7 @@ export class Bot {
         if (rand(this.rnd) < 0.1) sparksHit++;
         continue;
       }
-      if (rand(this.rnd) < 0.75) {
+      if (rand(this.rnd) < this.catchRate) {
         caught.push({ id: it.id, combo: 10, lantern: sc.lantern && rand(this.rnd) < 0.15 });
         taken.add(it.id);
       }
@@ -683,7 +804,9 @@ export class Bot {
     for (const sh of s.shinies) {
       if (this.seenShiny.has(sh.id)) continue;
       this.seenShiny.add(sh.id);
-      if (rand(this.rnd) < 0.5) clickShiny(s, d, sh.id, ctx);
+      // ENG-9: the grate rain after the Metro is caught like the carriage close-up it replaces (catchRate); the rest
+      // is swept up at 25% as it expires
+      if (rand(this.rnd) < (sh.kind === "carriage" ? this.catchRate : 0.5)) clickShiny(s, d, sh.id, ctx);
     }
     if (this.seenShiny.size > 500) this.seenShiny = new Set([...this.seenShiny].slice(-50));
     if (s.market && this.marketSeen !== s.market.until) {
@@ -737,8 +860,9 @@ export class Bot {
       const rem = remaining(expeditionCost(s, z), s.projects[z] ?? {});
       return { kind: "zone", zone: z, rem, rats: ZONES[z].expedition?.rats ?? 0 };
     }
-    // on the terminal, before the express plan: the clocktower and the plan itself are the goal
-    if (s.zones.terminal && !s.upgrades.express_plan) {
+    // on the terminal, before the express plan: the clocktower and the plan itself are the goal (v3 ENG-3: only
+    // once the colony has migrated — the King hands the plan to no first-run colony)
+    if (s.zones.terminal && !s.upgrades.express_plan && s.meta.migrations >= 1) {
       const rem: Amounts = { ...UPGRADES.express_plan.cost };
       if (s.buildings.clocktower === 0) for (const [r, v] of entries(buildingCost("clocktower", 0))) rem[r] = (rem[r] ?? 0) + v;
       return { kind: "plan", rem, rats: 0 };
@@ -790,6 +914,9 @@ export class Bot {
     // edicts (between runs the bot buys them right after migrating)
     if (s.upgrades.cheese_diet && !s.satiety && s.res.cheese > 0.005 * s.rats * 120) toggleSatiety(s);
     if (s.upgrades.tube_orders && s.assignMode !== "smart") setAssignMode(s, "smart");
+    // v3 (ENG-4): the steam valve
+    const valve = this.steamWant(s, d);
+    if (s.steamPriority !== valve) setSteamPriority(s, valve);
 
     const proj = this.project(s);
     // weights from the current plan
@@ -857,6 +984,24 @@ export class Bot {
     }
   }
 
+  /**
+   * The steam valve (ENG-4, a simple rule): "power" while the Rat Express waits on a resource the global multiplier
+   * (presses, clocks) speeds up; "works" when it waits on 🔔/🛤️ (the steam converters' own output), on 📜/💍 (no
+   * multiplier reaches them) or there is no express yet.
+   */
+  steamWant(s: GameState, d: Derived): SteamPriority {
+    if (!s.upgrades.express_plan || d.steamNeed <= 0) return "works";
+    const b = expressBottleneck(s, d);
+    if (!b) return "works";
+    return RESOURCES[b.res].excludeGlobal || b.res === "brass" || b.res === "rails" ? "works" : "power";
+  }
+
+  /** The seal this run plays under (SimSeal): forced, Railway, or by the run goal ("auto"). */
+  sealFor(s: GameState): SealId {
+    if (this.seal !== "auto") return this.seal;
+    return s.meta.migrations >= 4 ? "dynasty" : "railway";
+  }
+
   private conflicts(cost: Amounts, rem: Amounts, s: GameState): boolean {
     for (const [r, v] of entries(cost)) if ((rem[r] ?? 0) > 0 && v > 0 && s.res[r] < (rem[r] ?? 0) + v) return true;
     return false;
@@ -909,7 +1054,7 @@ export class Bot {
     s.steamEff = saveEff0;
     const cands: Candidate[] = [];
     const rates = base.f;
-    const open = (id: BuildingId) => buildingVisible(s, id) && (BUILDINGS[id].maxLevel === undefined || s.buildings[id] < BUILDINGS[id].maxLevel!);
+    const open = (id: BuildingId) => buildingVisible(s, id) && !atMaxLevel(s, id);
     const evalAdds = (adds: BuildingId[]): { dv: number; cost: Amounts; rates2: ResMap } => {
       const cost: Amounts = {};
       for (const a of adds) for (const [r, v] of entries(buildingCost(a, s.buildings[a]))) cost[r] = (cost[r] ?? 0) + v;
@@ -1029,7 +1174,7 @@ export class Bot {
       if (c) prio.push(c);
     }
     if (proj)
-      for (const id of this.enablers(s, proj.rem, rates)) {
+      for (const id of this.enablers(s, d, proj.rem, rates)) {
         const c = cands.find((x) => x.id === id);
         if (c && !prio.includes(c)) prio.push(c);
       }
@@ -1078,11 +1223,16 @@ export class Bot {
   }
 
   /** Buildings that start production of a project resource nobody makes yet (workshop → gears, library → blueprints…). */
-  private enablers(s: GameState, rem: Amounts, rates: ResMap): BuildingId[] {
+  private enablers(s: GameState, d: Derived, rem: Amounts, rates: ResMap): BuildingId[] {
     const out: BuildingId[] = [];
     for (const [r, v] of entries(rem)) {
       if (v <= s.res[r] || rates[r] > 1e-6) continue;
       for (const id of ENABLERS[r] ?? []) if (s.buildings[id] === 0 && buildingVisible(s, id) && !out.includes(id)) out.push(id);
+      // v3 (ENG-11): the foundry or the forge stands, but its chain has no steam left (ENG-4: presses and clocks took
+      // the stokers' budget) and the planner staffs nobody — another boiler level frees stokers for it. Without this the
+      // bot sat on a 40-minute 🔔 stall with 2 empty smelter slots in about one run-3 replay in five (scripts/sim-traits.ts)
+      const conv: JobId | null = r === "brass" ? "smelter" : r === "rails" ? "smith" : null;
+      if (conv && s.jobs[conv] === 0 && d.slots[conv] > 0 && s.jobs.stoker >= d.slots.stoker && !atMaxLevel(s, "boiler") && buildingVisible(s, "boiler") && !out.includes("boiler")) out.push("boiler");
     }
     return out;
   }
@@ -1112,7 +1262,7 @@ export class Bot {
     for (const id of BUILDING_IDS) {
       if (!buildingVisible(s, id)) continue;
       const def = BUILDINGS[id];
-      if (def.maxLevel !== undefined && s.buildings[id] >= def.maxLevel) continue;
+      if (atMaxLevel(s, id)) continue;
       if (!def.effects.some((e) => e.t === "cap" || e.t === "capMult")) continue;
       s.buildings[id]++;
       const gain = derive(s).caps[r] - d.caps[r];
@@ -1183,8 +1333,12 @@ export class Bot {
 
   /* ---------------------------------------------------------- prestige */
 
-  /** Migrate when the GDD says so: run 1 at ~72–82 min (≥ 20 crowns), run 2 at ~85 min unless the coronation is near. */
+  /**
+   * Migrate when the GDD says so: run 1 at ~72–82 min (≥ 20 crowns), run 2 at ~85 min unless the coronation is near.
+   * Never with the never-migrate policy, and never for the newcomer (it plays one run).
+   */
   shouldMigrate(s: GameState, run: number): boolean {
+    if (this.policy === "never-migrate" || this.kind === "newcomer") return false;
     if (!canMigrate(s) || s.coronatedThisRun) return false;
     const crowns = crownsForRun(s);
     const min = s.time / 60;
@@ -1204,9 +1358,16 @@ export class Bot {
       if (s.meta.edicts[e]) continue;
       if (s.meta.crowns >= EDICTS[e].cost && buyEdict(s, e, ctx)) out.push(e);
     }
+    // a forced seal (ENG-8 ablation) comes before the edicts: the seal is what the run measures
+    const seal = this.sealFor(s);
+    if (this.seal !== "railway" && this.seal !== "auto") {
+      if (!s.meta.sealsOwned.includes(seal) && s.meta.crowns >= SEALS[seal].cost && buySeal(s, seal, ctx)) out.push(seal);
+      else if (s.meta.sealsOwned.includes(seal) && s.meta.seal !== seal && buySeal(s, seal, ctx)) out.push(seal);
+    }
     if (EDICT_PLAN.every((e) => s.meta.edicts[e])) {
-      if (!s.meta.sealsOwned.includes("railway") && s.meta.crowns >= SEALS.railway.cost && buySeal(s, "railway", ctx)) out.push("railway");
-      if (s.meta.sealsOwned.includes("railway")) {
+      if (!s.meta.sealsOwned.includes(seal) && s.meta.crowns >= SEALS[seal].cost && buySeal(s, seal, ctx)) out.push(seal);
+      else if (s.meta.sealsOwned.includes(seal) && s.meta.seal !== seal && buySeal(s, seal, ctx)) out.push(seal);
+      if (s.meta.sealsOwned.includes(seal)) {
         for (;;) {
           let best: EdictId | null = null;
           let bestCost = Infinity;
@@ -1246,6 +1407,7 @@ export interface Checkpoint {
   zones: number;
   crumbsPerSec: number; // gross passive
   coinsPerSec: number; // all coins gained per second over the last minute (incl. clicks and events)
+  /** Gross passive 🪙/s, the mean over the last 120 s (v3 ENG-2; was the EMA30 sample, which a job shuffle swung). */
   coinsPassive: number;
   eRun: number;
   trainShare: number; // share of market-value income from metro/royal trains over the last 10 min
@@ -1312,6 +1474,57 @@ export interface RunReport {
   migrated: boolean;
   final: GameState;
   offlineCheck?: OfflineCheck;
+  /* v3 (ENG-2) */
+  /** Per expedition and express stage: when each cost resource was in hand (paid + stock ≥ need); last = the binding one. */
+  binding: Binding[];
+  /** Once a minute: the stokers' supply, what presses, clocks and converters want, steamEff, boilers, the buffer. */
+  steamLog: SteamSample[];
+  /** Seconds of the run with steam consumers short of steam (steamEff < 0.9). */
+  steamShortSec: number;
+  /** Longest stretch (s) of hunger (s.hungry). */
+  maxHungry: number;
+  /** Foragers / rats at minutes 10, 26 and 45. */
+  foragerShare: Partial<Record<number, number>>;
+  /** The newcomer bot's own numbers (null for the other bots). */
+  newcomer: NewcomerStats | null;
+  /** Curios found, wagons built (express stages past 10) this run. */
+  curiosGained: number;
+  /** v3 (ENG-10): curios of «Кунсткамера Короля» owned at the end of the run (all runs so far). */
+  curiosOwned: number;
+  wagons: number;
+  /** Crowns left after the spending that follows the migration (the last run: its stock plus this run's crowns). */
+  crownsLeft: number;
+  /** Crown sinks not bought yet after that spending: edicts, edict ranks, seals. */
+  sinksLeft: number;
+  /* v3 (ENG-5, ENG-9) */
+  /** Metro trains and Royal Expresses that started with no «К путям!» (trainSoon) in the 31 s before (ENG-5: 0). */
+  unwarnedTrains: number;
+  /** Carriages that rained through the grate after the Metro (no close-up), and «Гороховый суп» windows. */
+  rainPasses: number;
+  fogs: number;
+}
+
+/** ENG-2 binding report of one project: run time it became the goal, when it was complete, per-resource readiness. */
+export interface Binding {
+  /** «Канализация», «этап 8», «вагон 2». */
+  label: string;
+  kind: "zone" | "express";
+  start: number;
+  /** Run time the project was complete (null: unfinished when the run ended). */
+  end: number | null;
+  doneAt: Partial<Record<ResId, number>>;
+  /** The resource that came last (binding) and the one before it. */
+  last: ResId | null;
+  prev: ResId | null;
+}
+
+export interface SteamSample {
+  min: number;
+  supply: number;
+  need: number;
+  eff: number;
+  boiler: number;
+  stock: number;
 }
 
 export interface OfflineCheck {
@@ -1338,6 +1551,27 @@ export interface SimOptions {
   /** Minutes the last run keeps playing after its coronation (EN-12 commissions; default 0.5). */
   postCoronationMinutes?: number;
   onProgress?: (msg: string) => void;
+  /** The bot's own RNG seed (ENG-2 --replicates: seed ^ k·0x9e37); the game's seed stays opts.seed. Default opts.seed. */
+  botSeed?: number;
+  /** never-migrate: the bot stays in run 1 (ENG-2 --policy). */
+  policy?: SimPolicy;
+  /** The Great Seal the bot plays (ENG-8 --seal; default railway). */
+  seal?: SimSeal;
+  /** ENG-2 --long: from run 3 on, 20 min of play after the coronation, then the migration. */
+  long?: boolean;
+  /**
+   * v3 (ENG-11 trait ablation, --district id[@run]): run `run` (default 3) plays in district `id` whatever the route —
+   * the bot migrates as usual, then the run's district is replaced (forceDistrict), visited or not.
+   */
+  district?: { id: DistrictId; run: number };
+}
+
+/** Make the current run's district `id` (sim only: the ENG-11 ablation forces a trait on a run, even a visited one). */
+export function forceDistrict(s: GameState, id: DistrictId): void {
+  const v = s.meta.visited;
+  if (!v.length) v.push(id);
+  else v[v.length - 1] = id;
+  s.meta.districtId = id;
 }
 
 const VALUE_NO_NULL: ResMap = (() => {
@@ -1365,7 +1599,7 @@ export function nonFiniteFields(s: GameState): string[] {
 
 /** Run a bot for `opts.runs` runs (migrating between them). Deterministic for a given seed. */
 export function simulate(opts: SimOptions): RunReport[] {
-  const bot = new Bot(opts.bot, opts.seed);
+  const bot = new Bot(opts.bot, opts.botSeed ?? opts.seed, { policy: opts.policy, seal: opts.seal });
   let s = createInitialState(opts.seed, 0);
   const reports: RunReport[] = [];
   let edictsBought: EdictId[] = [];
@@ -1373,20 +1607,28 @@ export function simulate(opts: SimOptions): RunReport[] {
     bot.newRun();
     const rep = runOne(s, bot, run, opts, edictsBought);
     reports.push(rep);
+    rep.crownsLeft = rep.final.meta.crowns + rep.crownsGained;
+    rep.sinksLeft = crownSinksLeft(rep.final);
     if (!rep.migrated || run === opts.runs) break;
     const ctx: EngineCtx = { fx: [] };
     const next = migrate(rep.final, 0, ctx);
     if (!next) break;
     s = next;
+    if (opts.district && opts.district.run === run + 1) forceDistrict(s, opts.district.id);
     const before = s.meta.crowns;
     edictsBought = bot.buyEdicts(s, ctx) as EdictId[];
     rep.crownsSpent = before - s.meta.crowns;
+    rep.crownsLeft = s.meta.crowns;
+    rep.sinksLeft = crownSinksLeft(s);
   }
   return reports;
 }
 
-function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBought: EdictId[]): RunReport {
+/** One run of `bot` from state `s0` (simulate's loop body; scripts/sim-traits.ts replays run 3 from a snapshot). */
+export function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBought: EdictId[]): RunReport {
   let s = s0;
+  // the ROI bots pick the newborn focus themselves every decision: the colony's auto focus (ENG-1) stays off for them
+  if (bot.kind !== "newcomer") s.flags.focus_manual = true;
   const ctx: EngineCtx = { fx: [] };
   const limit = opts.minutes * 60;
   const cpMin = new Set([...(opts.checkpointMinutes ?? []), ...Array.from({ length: Math.ceil(opts.minutes / 10) + 1 }, (_, i) => i * 10)]);
@@ -1432,7 +1674,35 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
     crownsSpent: 0,
     migrated: false,
     final: s,
+    binding: [],
+    steamLog: [],
+    steamShortSec: 0,
+    maxHungry: 0,
+    foragerShare: {},
+    newcomer: null,
+    curiosGained: 0,
+    curiosOwned: 0,
+    wagons: 0,
+    crownsLeft: 0,
+    sinksLeft: 0,
+    unwarnedTrains: 0,
+    rainPasses: 0,
+    fogs: 0,
   };
+  const curios0 = s.meta.curios.length;
+  let trainSoonAt = -Infinity;
+  let bind: (Binding & { need: Amounts; key: string }) | null = null;
+  const closeBind = (b: Binding & { need: Amounts }, at: number) => {
+    b.end ??= at;
+    for (const [r] of entries(b.need)) b.doneAt[r] ??= b.end;
+    const order = entries(b.need)
+      .map(([r]) => r)
+      .sort((x, y) => (b.doneAt[y] ?? 0) - (b.doneAt[x] ?? 0));
+    b.last = order[0] ?? null;
+    b.prev = order[1] ?? null;
+  };
+  const histGrossCoins: number[] = []; // per-second gross passive 🪙/s (the checkpoint's 120-s mean)
+  let hungry = 0;
   const seenB = new Set<BuildingId>();
   const seenU = new Set<UpgradeId>();
   // per-second history for windowed rates
@@ -1460,11 +1730,18 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
           trainC += fx.haul?.gained.coins ?? 0;
         }
         eventV += v;
-      } else if (fx.k === "sceneStart" && fx.id === "metro_train" && s.scene) {
-        const v = s.scene.variant ?? "normal";
-        rep.variants[v] = (rep.variants[v] ?? 0) + 1;
-        if (s.scene.announce) rep.cheeseCars++;
-      } else if (fx.k === "medal") rep.medals.push(fx.id);
+      } else if (fx.k === "sceneStart" && (fx.id === "metro_train" || fx.id === "royal_express")) {
+        // ENG-5: every train comes after its «К путям!» (31 s: the 30 s warning and a tick)
+        if (s.time - trainSoonAt > 31) rep.unwarnedTrains++;
+        if (fx.id === "metro_train" && s.scene) {
+          const v = s.scene.variant ?? "normal";
+          rep.variants[v] = (rep.variants[v] ?? 0) + 1;
+          if (s.scene.announce) rep.cheeseCars++;
+        }
+      } else if (fx.k === "trainSoon") trainSoonAt = s.time;
+      else if (fx.k === "toast" && fx.text === GRATE_RAIN_TOAST.text) rep.rainPasses++;
+      else if (fx.k === "toast" && fx.text === FOG_TOAST.text) rep.fogs++;
+      else if (fx.k === "medal") rep.medals.push(fx.id);
       else if (fx.k === "commission") {
         if (fx.done) rep.commissionsDone++;
         rep.commissionLog.push(`${fmtMin(s.time)} ${fx.done ? "✓" : "→"} ${fx.id}`);
@@ -1486,6 +1763,7 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
     histTrain.push(trainV);
     histEvent.push(eventV);
     histTrainCoins.push(trainC);
+    histGrossCoins.push(s.gross.coins);
     for (const z of ZONE_ORDER) if (s.zones[z] && rep.zoneOpenAt[z] === undefined) rep.zoneOpenAt[z] = s.zoneOpenedAt[z] ?? s.time;
     if (rep.firstCapsuleAt === null && s.flags.first_capsule) rep.firstCapsuleAt = s.time;
     if (rep.firstTrainAt === null && s.flags.first_train) rep.firstTrainAt = s.time;
@@ -1515,6 +1793,26 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
       housingStall = 0;
       housingBlock = 0;
     }
+    // ENG-2: binding report, steam shortage, forager share, the steam line
+    const pk = projectNow(s);
+    if (bind && (!pk || pk.key !== bind.key)) {
+      closeBind(bind, s.time);
+      rep.binding.push(stripBind(bind));
+      bind = null;
+    }
+    if (pk && !bind) bind = { key: pk.key, label: pk.label, kind: pk.kind, start: s.time, end: null, doneAt: {}, last: null, prev: null, need: pk.need };
+    if (bind && pk && bind.end === null) {
+      for (const [r, v] of entries(pk.need)) if (bind.doneAt[r] === undefined && (pk.paid[r] ?? 0) + Math.max(0, s.res[r]) >= v - 1e-6) bind.doneAt[r] = s.time;
+      if (isComplete(pk.need, pk.paid)) bind.end = s.time;
+    }
+    if (dStep.steamNeed > 0 && s.steamEff < 0.9) rep.steamShortSec++;
+    hungry = s.hungry ? hungry + 1 : 0;
+    if (hungry > rep.maxHungry) rep.maxHungry = hungry;
+    if (sec === 600 || sec === 1560 || sec === 2700) rep.foragerShare[sec / 60] = s.jobs.forager / Math.max(1, s.rats);
+    if (sec % 60 === 0) {
+      const sb = steamBudget(s, dStep);
+      rep.steamLog.push({ min: sec / 60, supply: sb.supply, need: sb.press + sb.clock + sb.conv, eff: s.steamEff, boiler: s.buildings.boiler, stock: s.res.steam });
+    }
     if (sec % 10 === 0) {
       for (const id of BUILDING_IDS) if (buildingVisible(s, id)) seenB.add(id);
       for (const u of UPGRADE_IDS) if (upgradeVisible(s, u)) seenU.add(u);
@@ -1523,7 +1821,7 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
         if (bad.length) rep.nonFinite = bad.map((b) => `${fmtMin(s.time)} ${b}`);
       }
     }
-    if (sec % 60 === 0 && cpMin.has(sec / 60)) rep.checkpoints.push(checkpoint(s, run, histEver, histCoins, histTrain, histEvent, histTrainCoins));
+    if (sec % 60 === 0 && cpMin.has(sec / 60)) rep.checkpoints.push(checkpoint(s, run, histEver, histCoins, histTrain, histEvent, histTrainCoins, histGrossCoins));
     if (run === 1 && opts.offlineAtMinute !== undefined && sec === opts.offlineAtMinute * 60) rep.offlineCheck = offlineCheck(s);
     if (sec % 600 === 0) opts.onProgress?.(`${bot.kind} run ${run}: ${fmtMin(s.time)} rats ${s.rats} eRun ${s.eRun.toExponential(2)}`);
 
@@ -1532,7 +1830,8 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
       rep.migrated = true;
       break;
     }
-    const after = run < opts.runs ? 30 : (opts.postCoronationMinutes ?? 0.5) * 60;
+    // --long: from run 3 on, 20 minutes of the King's commissions after every coronation, then the migration
+    const after = opts.long && run >= 3 ? 1200 : run < opts.runs ? 30 : (opts.postCoronationMinutes ?? 0.5) * 60;
     if (s.coronatedThisRun && run >= 2 && s.time - (rep.coronationAt ?? s.time) > after) {
       // after a later-run coronation the colony moves on (run 3 replays the express from the kept stages)
       if (run < opts.runs) rep.migrated = true;
@@ -1540,6 +1839,14 @@ function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, edictsBo
     }
   }
   rep.seconds = s.time;
+  if (bind) {
+    if (bind.end !== null) closeBind(bind, bind.end);
+    rep.binding.push(stripBind(bind));
+  }
+  rep.newcomer = bot.kind === "newcomer" ? bot.newcomer : null;
+  rep.curiosGained = s.meta.curios.length - curios0;
+  rep.curiosOwned = s.meta.curios.length;
+  rep.wagons = s.express.wagons;
   rep.crownsGained = crownsForRun(s);
   rep.crownsEverAfter = s.meta.crownsEver + (rep.migrated ? rep.crownsGained : 0);
   rep.maxStorageStall = bot.stats.maxStorageStall;
@@ -1564,7 +1871,36 @@ function priceNear(s: GameState, z: ZoneId): boolean {
   return true;
 }
 
-function checkpoint(s: GameState, run: number, ever: number[], coins: number[], train: number[], event: number[], trainCoins: number[]): Checkpoint {
+/** The project the colony works on now, for the binding report: the offered expedition, else the express stage. */
+function projectNow(s: GameState): { key: string; label: string; kind: "zone" | "express"; need: Amounts; paid: Amounts } | null {
+  const z = currentExpedition(s);
+  if (z && !s.zones[z]) return { key: `z:${z}`, label: ZONES[z].name, kind: "zone", need: expeditionCost(s, z), paid: s.projects[z] ?? {} };
+  if (!s.upgrades.express_plan) return null;
+  const n = s.express.stage + s.express.wagons + 1;
+  return { key: `x:${n}`, label: n > 10 ? `вагон ${n - 10}` : `этап ${n}`, kind: "express", need: expressCost(s), paid: s.express.progress };
+}
+
+function stripBind(b: Binding & { need: Amounts; key: string }): Binding {
+  return { label: b.label, kind: b.kind, start: b.start, end: b.end, doneAt: b.doneAt, last: b.end === null ? null : b.last, prev: b.end === null ? null : b.prev };
+}
+
+function mean(xs: number[]): number {
+  return xs.length ? xs.reduce((a, x) => a + x, 0) / xs.length : 0;
+}
+
+/** Crown sinks still to buy: edicts not signed, edict ranks not taken, seals not owned (ENG-2 «Долгая игра»). */
+export function crownSinksLeft(s: GameState): number {
+  let n = 0;
+  for (const e of EDICT_ORDER) {
+    const ranks = EDICTS[e].ranks?.length ?? 0;
+    const r = edictRank(s, e);
+    n += r < 1 ? 1 + ranks : Math.max(0, ranks - (r - 1));
+  }
+  for (const id of SEAL_IDS) if (!s.meta.sealsOwned.includes(id)) n++;
+  return n;
+}
+
+function checkpoint(s: GameState, run: number, ever: number[], coins: number[], train: number[], event: number[], trainCoins: number[], grossCoins: number[]): Checkpoint {
   const d = derive(s);
   const n = ever.length - 1;
   const back = (arr: number[], k: number) => arr[n] - arr[Math.max(0, n - k)];
@@ -1578,7 +1914,7 @@ function checkpoint(s: GameState, run: number, ever: number[], coins: number[], 
     zones: ZONE_ORDER.filter((z) => s.zones[z]).length,
     crumbsPerSec: s.ema.crumbs,
     coinsPerSec: back(coins, 60) / span(60),
-    coinsPassive: s.ema.coins,
+    coinsPassive: mean(grossCoins.slice(-120)),
     eRun: s.eRun,
     trainShare: tot10 > 0 ? back(train, 600) / tot10 : 0,
     trainCoinShare: back(coins, 600) > 0 ? back(trainCoins, 600) / back(coins, 600) : 0,
@@ -1634,6 +1970,10 @@ type Overrides = {
   upgrades?: Record<string, { cost?: Amounts }>;
   express?: Amounts;
   cars?: Record<string, { S?: number; items?: number }>;
+  /** v3 (ENG-11 tuning): replace a district trait's mods. */
+  districts?: Partial<Record<DistrictId, DistrictMods>>;
+  /** v3 (ENG-10 tuning): curio drop chances per scene. */
+  curios?: Partial<Record<CurioScene, number>>;
 };
 
 /**
@@ -1671,6 +2011,12 @@ export function applyOverrides(json: string | Overrides | undefined): void {
     if (!def) throw new Error(`override: unknown upgrade ${id}`);
     if (v.cost) def.cost = v.cost;
   }
+  for (const [id, mods] of Object.entries(o.districts ?? {})) {
+    const def = DISTRICTS[id as DistrictId];
+    if (!def || !mods) throw new Error(`override: unknown district ${id}`);
+    def.trait = { ...def.trait, mods };
+  }
+  Object.assign(CURIO_CHANCE, o.curios ?? {});
 }
 
 /** The data tables as they were before balance tuning (for `npm run sim -- --pre-tuning`, the "before" column). */

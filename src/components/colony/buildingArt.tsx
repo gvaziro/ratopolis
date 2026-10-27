@@ -6,7 +6,9 @@
  * Local coordinates: origin = chamber floor centre, art fits x ∈ [-80, 80], y ∈ [-130, 0].
  */
 import type { ReactNode } from "react";
-import type { BuildingId } from "@/game/types";
+import { BUILDINGS } from "@/game/data/buildings";
+import type { BuildingId, ZoneId } from "@/game/types";
+import { lampX } from "./geometry";
 import {
   BarrelEnd,
   Barrel,
@@ -24,6 +26,7 @@ import {
   Glow,
   Lantern,
   Matchbox,
+  NICHE,
   Peg,
   Pennant,
   Pipe,
@@ -129,7 +132,7 @@ function Slate({ x, y, w, h, text }: { x: number; y: number; w: number; h: numbe
   return (
     <g>
       <rect x={x} y={y - h} width={w} height={h} rx="2" fill="#2f3a36" stroke="#a8743f" strokeWidth="3" />
-      <text x={x + w / 2} y={y - h / 2 + 3} fontSize="9" textAnchor="middle" fill="#eadcc0" className="font-display" fontWeight="700">
+      <text x={x + w / 2} y={y - h / 2 + 3} fontSize="9" textAnchor="middle" fill="#eadcc0" className="font-display cv-fine" fontWeight="700">
         {text}
       </text>
       <path d={`M${x + 6} ${y - 6}l10 -2`} stroke="#eadcc0" strokeWidth=".8" />
@@ -259,6 +262,28 @@ function Signal({ x, y, color = "#c4453a" }: { x: number; y: number; color?: str
       <circle cx={x} cy={y - 46} r="3.4" fill={color} />
       <circle cx={x} cy={y - 36} r="3.4" fill="#2a3a2a" />
       <Glow x={x} y={y - 46} r={12} kind="red" className="cv-glow" />
+    </g>
+  );
+}
+
+/** COL-3: the rail forge's chimney hood and flue (its tall element from tier 1). */
+function ForgeHood() {
+  return (
+    <g>
+      <rect x="-66" y="-145" width="14" height="23" fill="#2c2a30" stroke={INK} strokeWidth=".8" />
+      <path d="M-86 -96L-70 -124H-48L-32 -96Z" fill="#3a3640" stroke={INK} strokeWidth=".9" />
+      <path d="M-85 -97H-33" stroke="#8d949a" strokeWidth="2" />
+    </g>
+  );
+}
+
+/** COL-3: the clock tower's long-case: a walnut box with a dark glass front for the pendulum. (x, y) = top-left. */
+function PendulumCase({ x, y, w, h }: { x: number; y: number; w: number; h: number }) {
+  return (
+    <g>
+      <path d={`M${x - 2} ${y}l${w / 2 + 2} -8 ${w / 2 + 2} 8z`} fill="#5a3a22" stroke={INK} strokeWidth=".8" />
+      <rect x={x} y={y} width={w} height={h} rx="2" fill="#3a2414" stroke={INK} strokeWidth=".9" />
+      <rect x={x + 4} y={y + 6} width={w - 8} height={h - 12} fill="#1d140c" stroke="url(#cv-brass)" strokeWidth="1" />
     </g>
   );
 }
@@ -578,7 +603,6 @@ const ART: Record<BuildingId, (l: number) => ReactNode> = {
         <Gear x={30} y={-72} r={9} teeth={8} spin="ccw" />
         <Gear x={-36} y={-96} r={18} teeth={12} spin="slow" />
         <path d="M40 -40l-6 -4M42 -38l-8 2" stroke="#ffb03a" strokeWidth="1.2" className="cv-glow" />
-        <Lantern x={6} y={-140} />
       </>
     );
   },
@@ -642,6 +666,11 @@ const ART: Record<BuildingId, (l: number) => ReactNode> = {
 
   capsule_tap: (l) => (
     <>
+      {/* COL-3: the tall element — a glass tube up to the apex with a capsule on its way */}
+      <rect x="57" y="-146" width="14" height="134" rx="6" fill="rgba(200,230,240,.16)" stroke="#9cc7cf" strokeWidth=".9" />
+      <path d="M60.5 -138V-22" stroke="#fff" strokeWidth="1.2" opacity=".35" />
+      <rect x="54" y="-14" width="20" height="14" rx="2" fill="url(#cv-brass)" stroke={INK} strokeWidth=".8" />
+      <Capsule x={64} y={-64} rot={90} />
       <Pipe x1={-40} y1={-150} x2={-40} y2={-70} r={7} />
       <Pipe x1={-40} y1={-70} x2={20} y2={-70} r={7} />
       <SpokeWheel x={-40} y={-104} r={9} spokes={4} />
@@ -690,7 +719,6 @@ const ART: Record<BuildingId, (l: number) => ReactNode> = {
         <circle cx="-48" cy="-40" r="5" fill="#c99a30" />
         <circle cx="22" cy="-50" r="4" fill="#c99a30" />
         <circle cx="30" cy="-20" r="6" fill="#c99a30" />
-        <Lantern x={-14} y={-146} />
         <CheeseWedge x={46} y={0} s={0.9} />
       </>
     ),
@@ -819,7 +847,6 @@ const ART: Record<BuildingId, (l: number) => ReactNode> = {
         {chute(30)}
         <CoalPile x={-30} y={0} w={64} />
         <CoalPile x={40} y={0} w={54} />
-        <Lantern x={0} y={-146} kind="warm" />
         <path d="M66 0l-10 -40" stroke="#a8743f" strokeWidth="2.4" />
         <path d="M52 -42l8 -8 6 6z" fill="#8d949a" />
       </>
@@ -869,16 +896,29 @@ const ART: Record<BuildingId, (l: number) => ReactNode> = {
         <ellipse cx={x} cy={-46} rx="10" ry="3" fill="#ffd34d" className="cv-glow" />
       </>
     );
+    // COL-3: the tall element — a ladle-crucible hung on a chain from the apex
+    const hanging = (
+      <>
+        <path d="M46 -147V-97" stroke="#3a2a1a" strokeWidth="1.6" strokeDasharray="2.4 1.2" />
+        <path d="M35 -97h22l-3 13q-8 5 -16 0z" fill="#3b3f42" stroke={INK} strokeWidth=".8" />
+        <ellipse cx="46" cy="-96" rx="9.5" ry="2.2" fill="#ffb03a" />
+      </>
+    );
     return l < 5 ? (
-      crucible(0)
+      <>
+        {hanging}
+        {crucible(0)}
+      </>
     ) : l < 10 ? (
       <>
+        {hanging}
         {crucible(-20)}
         <path d="M70 -30q-10 -30 -30 -24l-8 10q16 2 18 16z" fill="#8a5a2a" stroke={INK} strokeWidth="1" />
         <path d="M58 -48l6 -10M64 -44l8 -8M68 -38l9 -5" stroke="#8a5a2a" strokeWidth="5" strokeLinecap="round" />
       </>
     ) : (
       <>
+        {hanging}
         {crucible(-34)}
         <rect x="18" y="-8" width="56" height="8" fill="#3b3f42" stroke={INK} strokeWidth=".7" />
         <Ingot x={22} y={-8} />
@@ -892,11 +932,13 @@ const ART: Record<BuildingId, (l: number) => ReactNode> = {
   rail_forge: (l) =>
     l < 5 ? (
       <>
+        <ForgeHood />
         <ClothesIron x={-6} y={0} s={1.2} />
         <Hammer x={50} y={0} rot={-70} />
       </>
     ) : l < 10 ? (
       <>
+        <ForgeHood />
         <Glow x={-50} y={-20} r={40} kind="red" className="cv-glow" />
         <ClothesIron x={-14} y={0} s={1.1} />
         <RailStack x={14} y={0} n={4} />
@@ -904,6 +946,7 @@ const ART: Record<BuildingId, (l: number) => ReactNode> = {
       </>
     ) : (
       <>
+        <ForgeHood />
         <Glow x={-54} y={-26} r={50} kind="red" className="cv-glow" />
         <rect x="-78" y="-56" width="30" height="56" rx="4" fill="#2c2a30" stroke={INK} strokeWidth="1" />
         <rect x="-72" y="-30" width="18" height="16" rx="3" fill="#ff7a3a" className="cv-glow" />
@@ -916,6 +959,10 @@ const ART: Record<BuildingId, (l: number) => ReactNode> = {
 
   platform_post: (l) => (
     <>
+      {/* COL-3: the tall element — sorting pigeonholes with a few letters waiting */}
+      <rect x="22" y="-128" width="54" height="60" fill="#5a3a22" stroke={INK} strokeWidth=".9" />
+      <path d="M22 -113h54M22 -98h54M22 -83h54M35.5 -128v60M49 -128v60M62.5 -128v60" stroke="#2a1a0e" strokeWidth="1.2" />
+      <path d="M26 -124h6v5h-6zM53 -109h6v5h-6zM39.5 -94h6v5h-6zM66 -79h6v5h-6zM26 -79h6v5h-6z" fill="#efe2c4" />
       <rect x="-60" y="-70" width="44" height="70" fill="#7a2a24" stroke={INK} strokeWidth="1" />
       <path d="M-66 -70h56l-6 -10h-44z" fill="#4a1a16" stroke={INK} strokeWidth="1" />
       <rect x="-52" y="-58" width="28" height="18" fill="#ffd98a" stroke={INK} strokeWidth=".8" />
@@ -923,7 +970,6 @@ const ART: Record<BuildingId, (l: number) => ReactNode> = {
       <Pennant x={-16} y={-80} h={30} />
       {l >= 3 && (
         <>
-          <Lantern x={10} y={-150} />
           <rect x="4" y="-14" width="56" height="4" fill="#a8743f" />
           <path d="M8 -10v10M56 -10v10" stroke="#3b3f42" strokeWidth="2" />
         </>
@@ -932,7 +978,6 @@ const ART: Record<BuildingId, (l: number) => ReactNode> = {
         <>
           <path d="M50 0l14 -40M78 0l-14 -40M64 0v-40" stroke="#a8743f" strokeWidth="1.6" />
           <rect x="46" y="-52" width="36" height="8" rx="4" fill="url(#cv-brass)" stroke={INK} strokeWidth=".8" transform="rotate(-20 64 -48)" />
-          <Bunting x1={-72} y1={-118} x2={72} y2={-118} n={8} />
         </>
       )}
     </>
@@ -1014,6 +1059,7 @@ const ART: Record<BuildingId, (l: number) => ReactNode> = {
   clocktower: (l) =>
     l < 5 ? (
       <>
+        <PendulumCase x={42} y={-128} w={36} h={96} />
         <Gear x={-10} y={-50} r={40} teeth={18} spin="slow" />
         <Gear x={44} y={-24} r={20} teeth={11} spin="ccw" />
         <g transform="translate(60 -120)">
@@ -1025,6 +1071,7 @@ const ART: Record<BuildingId, (l: number) => ReactNode> = {
       </>
     ) : (
       <>
+        <PendulumCase x={51} y={-133} w={30} h={60} />
         <Gear x={-46} y={-38} r={34} teeth={16} spin="slow" />
         <Gear x={8} y={-24} r={20} teeth={11} spin="ccw" />
         {l >= 10 && <Gear x={-58} y={-104} r={18} teeth={10} spin="cw" />}
@@ -1053,6 +1100,12 @@ const ART: Record<BuildingId, (l: number) => ReactNode> = {
 
   express_depot: (l) => (
     <>
+      {/* COL-3: the tall element — a signal gantry over the royal road */}
+      <rect x="72" y="-124" width="4" height="124" fill="url(#cv-iron)" />
+      <rect x="34" y="-127" width="42" height="4" fill="url(#cv-iron)" />
+      <rect x="38" y="-123" width="12" height="21" rx="2" fill="#1d1a1f" stroke="#8d949a" strokeWidth=".8" />
+      <path d="M44 -116h.1" stroke="#c4453a" strokeWidth="5.6" strokeLinecap="round" />
+      <path d="M44 -108h.1" stroke="#8fbf5a" strokeWidth="5.6" strokeLinecap="round" />
       <Track x1={-78} x2={78} y={0} />
       <rect x="-78" y="-3" width="156" height="3" fill="#d4af37" />
       <g transform="translate(58 0)">
@@ -1081,20 +1134,132 @@ const ART: Record<BuildingId, (l: number) => ReactNode> = {
   ),
 };
 
-/** The building illustration plus tier-25/50 decorations. */
-export function BuildingArt({ id, lvl }: { id: BuildingId; lvl: number }) {
+/* ------------------------------------------------------------ the lamp and the tier-25/50 dressing (COL-3) */
+
+/** A static candle stub (no flicker: the chamber's only loop is its lamp). (x, y) = bottom-centre. */
+function StillCandle({ x, y }: { x: number; y: number }) {
+  return (
+    <g>
+      <Glow x={x} y={y - 12} r={18} kind="warm" opacity={0.55} />
+      <rect x={x - 3} y={y - 8} width="6" height="8" fill="#efe2c4" stroke={INK} strokeWidth=".5" />
+      <path d={`M${x} ${y - 17}q3.6 5 0 8.4q-3.6 -3.4 0 -8.4z`} fill="#ffcf6a" stroke="#f08a2a" strokeWidth=".5" />
+    </g>
+  );
+}
+
+/**
+ * Tier 25: each zone dresses its chambers its own way — two small upper-half pieces (left, right) instead of the old
+ * one-size bunting. Burrow: a framed «Почётная грамота» and a second candle; sewers: a pressure gauge and a valve on
+ * copper pipe; cellars: a shelf of jars and a string of drying cheese; metro: an enamel «ЦЕХЪ» sign and a dial;
+ * terminal: a gilt mirror and a velvet rope. Each piece is drawn about its own centre.
+ */
+const ZONE_TIER_PROPS: Record<ZoneId, [ReactNode, ReactNode]> = {
+  burrow: [
+    <g key="a">
+      <rect x="-19" y="-14" width="38" height="28" fill="url(#cv-wood)" stroke={INK} strokeWidth=".8" />
+      <rect x="-16" y="-11" width="32" height="22" fill="#efe2c4" />
+      <text y="-2.5" fontSize="5.6" textAnchor="middle" fill="#5c3320" className="font-display cv-fine" fontWeight="700">
+        <tspan x="0">Почётная</tspan>
+        <tspan x="0" dy="6.4">грамота</tspan>
+      </text>
+      <circle cx="10" cy="9" r="3.2" fill="#c4453a" stroke={INK} strokeWidth=".4" />
+    </g>,
+    <g key="b">
+      <path d="M-8 6h16l-3 4h-10zM0 10v6" fill="url(#cv-brass)" stroke="#5c4520" strokeWidth=".8" />
+      <StillCandle x={0} y={6} />
+    </g>,
+  ],
+  sewers: [
+    <g key="a">
+      <path d="M0 22V-12" stroke="#5c3320" strokeWidth="8" />
+      <path d="M0 22V-12" stroke="#b8693d" strokeWidth="6" />
+      <circle cy="-2" r="9.5" fill="#efe2c4" stroke="url(#cv-brass)" strokeWidth="2.6" />
+      <path d="M0 -2l5.5 -4.5M-6 2h1.5M6 2h-1.5M0 -9v1.5" stroke="#c4453a" strokeWidth="1.2" />
+    </g>,
+    <g key="b">
+      <path d="M-16 0H16" stroke="#5c3320" strokeWidth="8" />
+      <path d="M-16 0H16" stroke="#b8693d" strokeWidth="6" />
+      <circle cy="-9" r="7" fill="none" stroke="#c4453a" strokeWidth="2.2" />
+      <path d="M0 -16V-2M-7 -9H7M0 -2V0" stroke="#8a2a24" strokeWidth="1.3" />
+    </g>,
+  ],
+  cellars: [
+    <g key="a">
+      <rect x="-20" y="8" width="40" height="4" fill="#a8743f" stroke={INK} strokeWidth=".7" />
+      <path d="M-17 8v-12h9v12zM-4 8v-15h9v15zM9 8v-10h8v10z" fill="rgba(210,160,90,.55)" stroke="#e8d5a3" strokeWidth=".7" />
+      <path d="M-17 -4h9M-4 -7h9M9 -2h8" stroke="#7a2a24" strokeWidth="2" />
+    </g>,
+    <g key="b">
+      {/* small cheeses drying on a string, each in its own twine sling */}
+      <path d="M-21 -12Q0 -6 21 -12M-12 -9.6v5M0 -8.5v6M12 -9.6v4" stroke="#d9c9a4" strokeWidth=".8" fill="none" />
+      <path d="M-17 0a5 5 0 1 0 10 0a5 5 0 1 0 -10 0zM-6 2.5a6 6 0 1 0 12 0a6 6 0 1 0 -12 0zM8 0a4.4 4.4 0 1 0 8.8 0a4.4 4.4 0 1 0 -8.8 0z" fill="#ffd34d" stroke="#b07a1e" strokeWidth="1.1" />
+      <path d="M-13 1.5h.1M2 4h.1M-2 0h.1M13 1h.1" stroke="#c99a30" strokeWidth="1.8" strokeLinecap="round" />
+    </g>,
+  ],
+  metro: [
+    <g key="a">
+      <rect x="-21" y="-9" width="42" height="18" rx="2" fill="#1f3550" stroke="#eadcc0" strokeWidth="1.4" />
+      <text y="3.4" fontSize="9" textAnchor="middle" fill="#eadcc0" className="font-display cv-fine" fontWeight="700" letterSpacing=".6">
+        ЦЕХЪ
+      </text>
+    </g>,
+    <g key="b">
+      <circle r="10" fill="#efe2c4" stroke="#3b3f42" strokeWidth="2.4" />
+      <path d="M-7 3.5l1.6 -.8M-7.6 -2l1.7 .3M-4.4 -6.6l1.1 1.3M0 -7.8v1.6M4.4 -6.6l-1.1 1.3M7.6 -2l-1.7 .3" stroke={INK} strokeWidth=".9" />
+      <path d="M0 0l4.6 -4.2" stroke="#c4453a" strokeWidth="1.3" strokeLinecap="round" />
+    </g>,
+  ],
+  terminal: [
+    <g key="a">
+      <ellipse rx="12" ry="16" fill="#b9cbd2" stroke="url(#cv-brass)" strokeWidth="3.2" />
+      <path d="M-5 -9q-3 6 0 13" stroke="#fff" strokeWidth="1.6" fill="none" opacity=".6" />
+    </g>,
+    <g key="b">
+      <path d="M-20 -8Q0 8 20 -8" stroke="#7a1a24" strokeWidth="3.4" fill="none" strokeLinecap="round" />
+      <path d="M-20 -8v.1M20 -8v.1" stroke="url(#cv-brass)" strokeWidth="5" strokeLinecap="round" />
+      <path d="M0 0v6" stroke="#d4af37" strokeWidth="2" />
+    </g>,
+  ],
+};
+
+/** Tier 50: a gilded niche rim and a brass nameplate with the building's name under the apex (the star stays). */
+function Tier50({ id }: { id: BuildingId }) {
+  const name = BUILDINGS[id].name;
+  const w = name.length * 3.5 + 12;
+  return (
+    <g>
+      <path d={NICHE} fill="none" stroke="url(#cv-brass)" strokeWidth="4" />
+      <rect x={-w / 2} y="-144" width={w} height="10" rx="2" fill="url(#cv-brass)" stroke="#5c4520" strokeWidth=".7" />
+      <text y="-136.6" fontSize="6.4" textAnchor="middle" fill="#2a1a0c" className="font-display cv-fine" fontWeight="700">
+        {name}
+      </text>
+      <StarPlaque x={-w / 2 - 6} y={-136} />
+    </g>
+  );
+}
+
+/**
+ * The building illustration plus the tier-25/50 dressing (COL-3). The two tier-25 pieces stand in the upper corners
+ * and drop below the lamp when it hangs over one of them; both are drawn behind the art. `festive` (the coronation
+ * of this run, a frenzy) hangs the old bunting on every chamber from tier 25.
+ */
+export function BuildingArt({ id, lvl, festive = false }: { id: BuildingId; lvl: number; festive?: boolean }) {
+  const lamp = lampX(id, lvl);
+  const props = lvl >= 25 ? ZONE_TIER_PROPS[BUILDINGS[id].zone] : null;
+  const yA = Math.abs(-60 - lamp) < 30 ? -84 : -118;
+  const yB = Math.abs(60 - lamp) < 30 ? -84 : -118;
   return (
     <g>
       {lvl >= 50 && <Glow x={0} y={-60} r={90} kind="gold" opacity={0.5} />}
-      {ART[id](lvl)}
-      {lvl >= 25 && <Bunting x1={-80} y1={-128} x2={80} y2={-128} n={9} sag={10} />}
-      {lvl >= 50 && (
+      {props && (
         <>
-          <Bunting x1={-74} y1={-112} x2={74} y2={-112} n={7} sag={8} />
-          <StarPlaque x={0} y={-134} />
-          <Pennant x={-78} y={0} h={44} color="#d4af37" />
+          <g transform={`translate(-60 ${yA})`}>{props[0]}</g>
+          <g transform={`translate(60 ${yB})`}>{props[1]}</g>
         </>
       )}
+      {ART[id](lvl)}
+      {lvl >= 50 && <Tier50 id={id} />}
+      {festive && lvl >= 25 && <Bunting x1={-80} y1={-128} x2={80} y2={-128} n={9} sag={10} />}
     </g>
   );
 }

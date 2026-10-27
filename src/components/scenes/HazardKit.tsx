@@ -4,6 +4,8 @@
  * Shared bits of the hazard close-ups (Ливень, Кот, Крысолов) and their overlays: countdown medallion,
  * big two-line choice buttons, keyframes (prefixed rh-), stake calculators mirroring the engine formulas,
  * a tap-rate limiter and screen-space flourishes that survive the scene unmounting.
+ * v3: the tap limiter counts on the scene clock (SCN-1); a choice button can be the phase's keyboard landing spot
+ * (`focusFirst` → data-autofocus, SCN-5).
  */
 import type { ReactNode } from "react";
 import { BrassButton, cx, Ring } from "@/components/ui/kit";
@@ -12,6 +14,7 @@ import { eventValue } from "@/game/engine/derive";
 import { derivedOf, useGame } from "@/game/store";
 import type { GameState } from "@/game/types";
 import { fmtTime } from "@/lib/format";
+import { sceneNow } from "./sceneClock";
 
 /* ------------------------------------------------------------ keyframes */
 
@@ -97,6 +100,7 @@ export function ChoiceButton({
   onClick,
   className,
   hotkey,
+  focusFirst,
 }: {
   icon: ReactNode;
   title: ReactNode;
@@ -106,9 +110,18 @@ export function ChoiceButton({
   onClick: () => void;
   className?: string;
   hotkey?: string;
+  /** SceneHost puts a keyboard player's focus here when the phase opens. */
+  focusFirst?: boolean;
 }) {
   return (
-    <BrassButton tone={tone} size="lg" onClick={onClick} className={cx("flex min-h-14 w-full items-center gap-3 px-3! text-left", className)} aria-keyshortcuts={hotkey}>
+    <BrassButton
+      tone={tone}
+      size="lg"
+      onClick={onClick}
+      className={cx("flex min-h-14 w-full items-center gap-3 px-3! text-left", className)}
+      aria-keyshortcuts={hotkey}
+      data-autofocus={focusFirst ? "" : undefined}
+    >
       <span className="text-3xl leading-none drop-shadow-[0_2px_2px_rgba(0,0,0,.5)]" aria-hidden>
         {icon}
       </span>
@@ -167,7 +180,7 @@ export function piperStakes(s: GameState): PiperStakes {
 export function makeTapLimiter(perSec = 15): () => boolean {
   const stamps: number[] = [];
   return () => {
-    const now = performance.now();
+    const now = sceneNow();
     while (stamps.length && now - stamps[0] > 1000) stamps.shift();
     if (stamps.length >= perSec) return false;
     stamps.push(now);

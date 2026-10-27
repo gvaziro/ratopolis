@@ -11,11 +11,11 @@ import KingPortrait from "@/components/panels/KingPortrait";
 import { HazardStyles } from "@/components/scenes/HazardKit";
 import { BrassButton, Rivets } from "@/components/ui/kit";
 import { RATING_TABLE } from "@/game/data/events";
-import { districtLoc, districtName, districtTrait } from "@/game/data/zones";
+import { districtAt, districtInfoOf } from "@/game/data/districts";
 import { sfxCue } from "@/game/fx";
 import { useGame } from "@/game/store";
 import type { Fx } from "@/game/types";
-import { fmt, fmtInt, fmtTime, plural } from "@/lib/format";
+import { fmt, fmtDuration, fmtInt, plural } from "@/lib/format";
 
 type MigrationFx = Extract<Fx, { k: "migration" }>;
 
@@ -70,7 +70,9 @@ export default function Ceremony({ data, onClose }: { data: MigrationFx; onClose
 
   const sum = data.summary;
   const rating = RATING_TABLE.find((r) => r.id === sum.bestRating);
-  const trait = districtTrait(data.district);
+  // v3 (ENG-11): the district the colony chose on the London map, not the old fixed sequence by index
+  const [district] = useState(() => (data.districtId ? districtInfoOf(data.districtId, districtAt(useGame.getState().game.meta, data.district).lap) : districtAt(useGame.getState().game.meta, data.district)));
+  const trait = district.trait;
   const anim = (css: string) => (reduced ? undefined : { animation: css });
 
   return (
@@ -85,7 +87,7 @@ export default function Ceremony({ data, onClose }: { data: MigrationFx; onClose
             <span>{data.weekday}, 05:00</span>
           </div>
           <h2 className="mt-1 text-center font-display text-xl font-black uppercase leading-tight tracking-wide sm:text-2xl">Экстренный выпуск: Великое Зловоние!</h2>
-          <p className="mt-1 text-center font-serif text-xs italic">Колония снимается с места и уходит в {districtName(data.district)}</p>
+          <p className="mt-1 text-center font-serif text-xs italic">Колония снимается с места и уходит в {district.name}</p>
           {/* rats with bundles marching into the pipe */}
           <div className="relative mt-2 h-10 overflow-hidden rounded-sm bg-[#d8c8a4]">
             <div className="absolute inset-y-0 right-0 w-10 rounded-l-full border-l-4 border-[#5a4a32] bg-[#3a2e22]" />
@@ -118,14 +120,14 @@ export default function Ceremony({ data, onClose }: { data: MigrationFx; onClose
           </div>
           <p className="mt-3 rounded border border-line/60 bg-soot/50 px-2 py-1.5 text-xs leading-snug text-parchment">
             За забег: {fmt(sum.eRun)} 🪙 · {fmtInt(sum.trains)} {plural(sum.trains, "поезд", "поезда", "поездов")} · лучший улов {rating?.icon ? `${rating.icon} ${rating.name}` : "—"} · {fmtInt(sum.rats)}{" "}
-            {plural(sum.rats, "хвост", "хвоста", "хвостов")} · {fmtTime(Math.round(sum.seconds))}
+            {plural(sum.rats, "хвост", "хвоста", "хвостов")} · {fmtDuration(Math.round(sum.seconds))}
           </p>
           <p className="mt-2 text-xs text-parchment-dim">
             {trait.icon} {trait.name}: {trait.perk} · {trait.quirk}
           </p>
           {(counted || reduced) && (
             <BrassButton data-settle size="lg" className="mt-3 min-h-12 w-full" onClick={onClose} style={anim("rh-reveal .3s ease-out both")}>
-              Обустроиться {districtLoc(data.district)}
+              Обустроиться {district.loc}
             </BrassButton>
           )}
         </div>

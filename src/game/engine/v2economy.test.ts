@@ -31,67 +31,78 @@ describe("scouting payouts (EN-4)", () => {
     return s;
   }
 
-  it("contributing from 0 to 100% pays exactly 3 times, each 60 s of the then-scarcest resource, never again after a reload", () => {
+  it("contributing from 0 to 100% pays exactly 4 times (v3: value-weighted share, steps 25/50/75/90%), each 60 s of the then-scarcest resource, never again after a reload", () => {
     let s = sewersState();
-    const cost = expeditionCost(s, "sewers"); // 🍞 4500, 🪙 1500, ➰ 600
+    const cost = expeditionCost(s, "sewers"); // 🍞 4500 (×0.1 = 450), 🪙 1500 (1500), ➰ 600 (×2 = 1200): 3150 in all
     const ctx: EngineCtx = { fx: [] };
     const d = derive(s);
     const pay = (r: ResId) => SCOUT_SECONDS * eventValue(s, d, r);
 
-    // 🍞 in full: 1/3 ≥ 25% → step 1. 🪙 and ➰ are both at 0: 🪙 needs more seconds of income (1500/0.5 > 600/0.3)
+    // 🍞 in full is only 450/3150 = 14% of the value: no payout (v2 counted it as 1/3)
     s.res.crumbs = cost.crumbs!;
     expect(contributeExpedition(s, "sewers", "crumbs", ctx)).toBe(true);
-    expect(expeditionFraction(s, "sewers")).toBeCloseTo(1 / 3, 12);
+    expect(expeditionFraction(s, "sewers")).toBeCloseTo(450 / 3150, 12);
+    expect(scouts(ctx)).toHaveLength(0);
+
+    // ➰ in full: 1650/3150 = 52% → steps 1 and 2 at once; 🪙 is the only resource still missing
+    s.res.wire = cost.wire!;
+    contributeExpedition(s, "sewers", "wire", ctx);
+    expect(expeditionFraction(s, "sewers")).toBeCloseTo(1650 / 3150, 12);
     let fx = scouts(ctx);
-    expect(fx.map((f) => [f.step, f.res])).toEqual([[1, "coins"]]);
+    expect(fx.map((f) => [f.step, f.res])).toEqual([
+      [1, "coins"],
+      [2, "coins"],
+    ]);
     expect(fx[0].amount).toBeCloseTo(pay("coins"), 9);
     expect(fx[0].amount).toBeCloseTo(30, 9);
-    expect(s.res.coins).toBeCloseTo(30, 9); // over the cap is fine (ignoreCap)
-    expect(s.scouted.sewers).toBe(1);
+    expect(s.res.coins).toBeCloseTo(60, 9); // over the cap is fine (ignoreCap)
+    expect(s.scouted.sewers).toBe(2);
     const newsLine = ctx.fx.find((f): f is Extract<Fx, { k: "news" }> => f.k === "news" && f.text.startsWith("Разведчики"));
     expect(newsLine?.text).toBe("Разведчики вернулись из Канализации: +30 🪙 и кусок карты");
 
-    // a reload remembers the paid step; contributing nothing new pays nothing
+    // a reload remembers the paid steps; contributing nothing new pays nothing
     s = reload(s);
-    expect(s.scouted.sewers).toBe(1);
+    expect(s.scouted.sewers).toBe(2);
     ctx.fx.length = 0;
     contributeExpedition(s, "sewers", null, ctx, 0);
     autoContribute(s, derive(s), ctx);
     expect(scouts(ctx)).toHaveLength(0);
 
-    // 🪙 in full: 2/3 → step 2, the only resource left is ➰
-    s.res.coins = cost.coins!;
+    // half of the 🪙: (450 + 1200 + 750)/3150 = 76% → step 3
+    s.res.coins = 750;
     contributeExpedition(s, "sewers", "coins", ctx);
     fx = scouts(ctx);
-    expect(fx.map((f) => [f.step, f.res])).toEqual([[2, "wire"]]);
-    expect(fx[0].amount).toBeCloseTo(pay("wire"), 9);
+    expect(fx.map((f) => [f.step, f.res])).toEqual([[3, "coins"]]);
+    expect(fx[0].amount).toBeCloseTo(pay("coins"), 9);
 
-    // half of the ➰: (1 + 1 + 0.5)/3 = 83% → step 3, still ➰ (the scarcest)
+    // 🪙 to 90%: 3000/3150 = 95% → the v3 step 4 with its own line
     ctx.fx.length = 0;
-    s.res.wire = cost.wire! / 2;
-    contributeExpedition(s, "sewers", "wire", ctx);
+    s.res.coins = 600;
+    contributeExpedition(s, "sewers", "coins", ctx);
     fx = scouts(ctx);
-    expect(fx.map((f) => [f.step, f.res])).toEqual([[3, "wire"]]);
-    expect(fx[0].amount).toBeCloseTo(pay("wire"), 9);
-    expect(s.scouted.sewers).toBe(3);
+    expect(fx.map((f) => [f.step, f.res])).toEqual([[4, "coins"]]);
+    expect(fx[0].amount).toBeCloseTo(pay("coins"), 9);
+    expect(s.scouted.sewers).toBe(4);
+    const near = ctx.fx.find((f): f is Extract<Fx, { k: "news" }> => f.k === "news" && f.text.startsWith("Разведчики"));
+    expect(near?.text).toBe("Разведчики: до цели рукой подать! Вернулись из Канализации с +30 🪙 и последним куском карты");
 
-    // the rest, a reload and more: no fourth payout
+    // the rest, a reload and more: no fifth payout
     ctx.fx.length = 0;
-    s.res.wire = cost.wire!;
-    contributeExpedition(s, "sewers", "wire", ctx);
+    s.res.coins = cost.coins!;
+    contributeExpedition(s, "sewers", "coins", ctx);
     s = reload(s);
     contributeExpedition(s, "sewers", null, ctx, 0);
     expect(scouts(ctx)).toHaveLength(0);
     expect(expeditionFraction(s, "sewers")).toBeCloseTo(1, 12);
   });
 
-  it("one big contribution that crosses all three steps pays all three", () => {
+  it("one big contribution that crosses all four steps pays all four", () => {
     const s = sewersState();
     const cost = expeditionCost(s, "sewers");
     for (const [r, v] of Object.entries(cost)) s.res[r as ResId] = v;
     const ctx: EngineCtx = { fx: [] };
     contributeExpedition(s, "sewers", null, ctx);
-    expect(scouts(ctx).map((f) => f.step)).toEqual([1, 2, 3]);
+    expect(scouts(ctx).map((f) => f.step)).toEqual([1, 2, 3, 4]);
     for (const f of scouts(ctx)) expect(f.amount).toBeGreaterThan(0);
   });
 
@@ -102,11 +113,11 @@ describe("scouting payouts (EN-4)", () => {
     s.revealed.exp_sewers = true;
     const d = derive(s);
     const cost = expeditionCost(s, "sewers");
-    s.projects.sewers = { crumbs: cost.crumbs! / 2 }; // 1/6 of the way: no payout yet
+    s.projects.sewers = { crumbs: cost.crumbs! / 2 }; // 225/3150 = 7% of the way: no payout yet
     const ctx: EngineCtx = { fx: [] };
     autoContribute(s, d, ctx);
     expect(scouts(ctx)).toHaveLength(0);
-    // an overloaded store gives its overflow to the project: (0.5 + 1000/1500)/3 = 39% → step 1
+    // an overloaded store gives its overflow to the project: (225 + 1000)/3150 = 39% → step 1
     s.res.coins = d.caps.coins + 1000;
     autoContribute(s, d, ctx);
     expect(s.projects.sewers.coins).toBeCloseTo(1000, 9);

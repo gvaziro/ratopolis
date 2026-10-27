@@ -6,13 +6,22 @@
  * plus (metro / express) the live rating gauge with its medal notches and the «Вагон чист!» beats.
  * Keyboard: ←/→ walk a paw along the catch line, holding Space is a pointer held down at the paw.
  * Everything per-frame stays in closures and refs — no React state updates while it runs.
+ * v3 SCN-1: runs on the scene clock — while the game is held (ceremony, crash, save issue, hidden tab) the items hang
+ * where they are, input is ignored and the canvas only repaints. SCN-5: «две лапы» — only the two oldest armed
+ * pointers catch (a third finger gets a dim ring and, once, the hint); Space opens the paw even while the hook's bar is
+ * up (the bar throws on the same press); the canvas takes the keyboard focus in the catch phase.
+ * SCN-2: a crashed pass («Тележки перевернулись») takes no paw for its first 1.2 s; the circus juggles its loot (up to
+ * 3 rebounds); in «Гороховый суп» the loot is dim unless a paw, the lantern or a fresh landing lights it; a curio
+ * («Кунсткамера Короля») is a parchment tag in a gold ring. SCN-3: the gauge's medal notches are drawn discs.
+ * The pure rules live in catchRules.ts.
  */
 import { useEffect, useRef, type RefObject } from "react";
 import { sfx } from "@/audio/sfx";
+import { CURIOS } from "@/game/data/curios";
 import { LANTERN_MULT, POSITION_FEEL, RATING_TABLE, TRAIN_VARIANTS } from "@/game/data/events";
 import { RESOURCES } from "@/game/data/resources";
 import { catchProgress } from "@/game/engine/events";
-import { sfxCue } from "@/game/fx";
+import { sfxCue, sfxCue3 } from "@/game/fx";
 import { derivedOf, useGame } from "@/game/store";
 import type { CatchItem, CatchResult, ResId, Scene } from "@/game/types";
 import { fmt, fmtPct } from "@/lib/format";
@@ -31,11 +40,17 @@ import {
   lerp,
   noteKeyboard,
   keyboardUsed,
+  onSceneHold,
+  sceneHeld,
+  sceneNow,
   shake,
   trainGeom,
   type FallGeom,
   type TrainGeom,
 } from "./sceneUtils";
+import { catchingPaws, catchKey, isTypingTarget, MAX_PAWS } from "./sceneInput";
+import { acceptsPointerDown, bounceRule, CRASH_LOCK_S, fogAlpha, rebound } from "./catchRules";
+import { drawMedalDisc, isMedalTier } from "./medalArt";
 
 /**
  * Props of the `catch` primitive.
@@ -48,19 +63,19 @@ export interface CatchCanvasProps {
   /** train: items drop from car undersides moving right→left; fall: through the grate from the top; float: drift right→left on water. */
   mode: "train" | "fall" | "float";
   onDone: (result: CatchResult) => void;
-  /** Called with the combo step on every catch (scenes may add their own juice). */
-  onCatch?: (combo: number) => void;
+  /** Called with the combo step on every paw catch and where it happened (canvas px; scenes add their own juice). */
+  onCatch?: (combo: number, x: number, y: number) => void;
   className?: string;
 }
 
 /** Imperative channel between a scene and its canvas (hook outcome, slow-mo, particle bursts). */
 export interface CatchControl {
   hook: CatchResult["hook"];
-  /** performance.now() until which the canvas runs at half speed. */
+  /** sceneNow() until which the canvas runs at half speed. */
   slowUntil: number;
   /** Set by the canvas while mounted. `norm` = coordinates are fractions of the canvas size. */
   burst: ((x: number, y: number, color: string, n: number, norm?: boolean) => void) | null;
-  /** While the hook's timing bar is up, Space throws the hook instead of closing the keyboard paw. */
+  /** The hook's timing bar is up (Space opens the keyboard paw and throws the hook on the same press). */
   hookOpen: boolean;
 }
 
@@ -120,6 +135,8 @@ interface Body {
   /** First ground contact happened (sparks: 'ties' grab check runs once, on that frame). */
   touched: boolean;
   justLanded: boolean;
+  /** Age at the first ground contact (−1 before): a landing glints through the fog. */
+  landAge: number;
 }
 
 interface Part {
@@ -174,7 +191,12 @@ interface Track {
   trail: { x: number; y: number; at: number }[];
   /** The keyboard paw also sweeps this many px straight up from its point. */
   reach: number;
+  /** Press order («две лапы»: the two oldest armed pointers catch). */
+  seq: number;
 }
+
+/** «У крысы две лапы» is said once per page visit. */
+let twoPawsSaid = false;
 
 export default function CatchCanvas(props: CatchCanvasProps) {
   return <CatchCanvasCore {...props} />;
@@ -220,7 +242,13 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
     const gauge = mode === "train" && !capsule;
     const lanternSusp = game0.zones.cellars ? 5 * (derivedOf(game0).suspicionMult ?? 1) : 0;
     // SC-4: the train variant's physics — rail bounce, bobbing on the flood water, fluttering letters
-    const physics = mode === "train" && sc.variant ? TRAIN_VARIANTS[sc.variant].physics : "bounce";
+    const variantDef = mode === "train" && sc.variant ? (TRAIN_VARIANTS[sc.variant] ?? null) : null;
+    const physics = variantDef?.physics ?? "bounce";
+    // SCN-2: how loot and sparks rebound (the circus juggles), the crash lockout and the fog
+    const itemRule = bounceRule(mode, variantDef, false);
+    const sparkRule = bounceRule(mode, variantDef, true);
+    const crash = mode === "train" && !capsule && !!sc.crash;
+    const fog = mode === "train" && !!variantDef?.fog;
 
     let W = 0;
     let H = 0;
@@ -229,7 +257,7 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
     let fg: FallGeom = fallGeom(1, 1);
     let t = Math.max(0, game0.time - phaseStart);
 
-    const bodies: Body[] = sc.items.map((it) => ({ it, st: 0, x: 0, y: 0, vx: 0, vy: 0, rot: 0, vr: 0, age: 0, bounces: 0, landed: false, inCone: false, r: 16, touched: false, justLanded: false }));
+    const bodies: Body[] = sc.items.map((it) => ({ it, st: 0, x: 0, y: 0, vx: 0, vy: 0, rot: 0, vr: 0, age: 0, bounces: 0, landed: false, inCone: false, r: 16, touched: false, justLanded: false, landAge: -1 }));
     let remaining = bodies.length;
     const caughtIds = new Set<number>();
     const lostIds = new Set<number>();
@@ -284,10 +312,18 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
     let bumpCd = 0;
     let popCd = 0;
     const pointers = new Map<number, Track>();
+    let pressSeq = 0;
+    // the pointers that catch right now (≤ MAX_PAWS); refreshed on every press, arming, release and frame
+    let paws = new Set<number>();
+    const refreshPaws = () => {
+      paws = catchingPaws(pointers, MAX_PAWS);
+    };
+    let heldPainted = false;
     const taps: number[] = [];
     let hover: { x: number; y: number } | null = null;
-    // keyboard paw: x along the catch line (set on the first layout), direction keys held, time on the current heading
-    const paw = { x: -1, dirL: false, dirR: false, heldFor: 0, dir: 0 };
+    // keyboard paw: x along the catch line (set on the first layout), direction keys held, time on the current heading;
+    // `want`: Space is held but the paw could not open yet (the crash lockout) — it opens as soon as it may
+    const paw = { x: -1, dirL: false, dirR: false, heldFor: 0, dir: 0, want: false };
     let kbd = keyboardUsed();
 
     /* ---------------- sprites */
@@ -371,6 +407,90 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       return c;
     }
 
+    /** SCN-2: a curio — a parchment luggage tag on a string with the thing drawn on it (the gold ring is live). */
+    function curioSprite(icon: string, size: number): HTMLCanvasElement {
+      const key = `curio|${icon}|${size}|${dpr}`;
+      const hit = sprites.get(key);
+      if (hit) return hit;
+      const full = size * 2;
+      const c = document.createElement("canvas");
+      c.width = c.height = Math.ceil(full * dpr);
+      const g = c.getContext("2d");
+      if (g) {
+        g.scale(dpr, dpr);
+        const m = full / 2;
+        const tw = size * 1.12;
+        const th = size * 1.3;
+        g.translate(m, m);
+        g.rotate(-0.12);
+        // the tag: clipped top corners, an eyelet and its string
+        g.beginPath();
+        g.moveTo(-tw / 2 + tw * 0.22, -th / 2);
+        g.lineTo(tw / 2 - tw * 0.22, -th / 2);
+        g.lineTo(tw / 2, -th / 2 + tw * 0.22);
+        g.lineTo(tw / 2, th / 2);
+        g.lineTo(-tw / 2, th / 2);
+        g.lineTo(-tw / 2, -th / 2 + tw * 0.22);
+        g.closePath();
+        const pg = g.createLinearGradient(0, -th / 2, 0, th / 2);
+        pg.addColorStop(0, "#f6ecd2");
+        pg.addColorStop(1, "#d9c49a");
+        g.fillStyle = pg;
+        g.shadowColor = "rgba(0,0,0,.55)";
+        g.shadowBlur = 4;
+        g.shadowOffsetY = 2;
+        g.fill();
+        g.shadowColor = "transparent";
+        g.strokeStyle = "#8a6a32";
+        g.lineWidth = 1.2;
+        g.stroke();
+        g.beginPath();
+        g.arc(0, -th / 2 + size * 0.17, size * 0.08, 0, Math.PI * 2);
+        g.fillStyle = "#8a6a32";
+        g.fill();
+        g.strokeStyle = "#c9a25a";
+        g.lineWidth = 1.5;
+        g.beginPath();
+        g.moveTo(0, -th / 2 + size * 0.17);
+        g.quadraticCurveTo(size * 0.32, -th / 2 - size * 0.18, size * 0.1, -m + 2);
+        g.stroke();
+        g.font = `${Math.round(size * 0.62)}px ${EMOJI_FONT}`;
+        g.textAlign = "center";
+        g.textBaseline = "middle";
+        g.fillText(icon, 0, size * 0.14);
+      }
+      sprites.set(key, c);
+      return c;
+    }
+
+    /** SCN-2: one bank of pea-soup fog (a soft yellow-grey blob), drawn a few times drifting over the pass. */
+    function fogSprite(): HTMLCanvasElement {
+      const bw = Math.round(Math.max(240, W * 0.7));
+      const bh = Math.round(Math.max(120, H * 0.42));
+      const key = `fog|${bw}|${bh}`;
+      const hit = sprites.get(key);
+      if (hit) return hit;
+      const c = document.createElement("canvas");
+      c.width = Math.ceil(bw / 2);
+      c.height = Math.ceil(bh / 2);
+      const g = c.getContext("2d");
+      if (g) {
+        g.scale(c.width / bw, c.height / bh);
+        for (let k = 0; k < 5; k++) {
+          const x = bw * (0.2 + 0.6 * hash01(k, 41));
+          const y = bh * (0.3 + 0.4 * hash01(k, 43));
+          const r = Math.min(bw, bh) * (0.32 + 0.2 * hash01(k, 47));
+          const gr = g.createRadialGradient(x, y, 0, x, y, r);
+          gr.addColorStop(0, "rgba(214,206,158,.42)");
+          gr.addColorStop(1, "rgba(214,206,158,0)");
+          g.fillStyle = gr;
+          g.fillRect(0, 0, bw, bh);
+        }
+      }
+      sprites.set(key, c);
+      return c;
+    }
+
     /* ---------------- fx helpers */
     function addPart(p: Part) {
       if (parts.length < MAX_PARTICLES) parts.push(p);
@@ -409,7 +529,8 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
     function ghostOf(b: Body, net: boolean) {
       if (b.it.spark) return;
       const size = itemSize();
-      const img = resSprite(b.it.res, size, false);
+      const cur = b.it.curio ? CURIOS[b.it.curio] : undefined;
+      const img = cur ? curioSprite(cur.icon, size) : resSprite(b.it.res, size, false);
       ghosts.push({ img, x: b.x, y: b.y, rot: b.rot, age: 0, full: size * 2, net });
     }
 
@@ -441,7 +562,8 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
         b.y = tg.dropY;
         const vs = clamp(W / 900, 0.55, 1);
         b.vx = -0.3 * tg.speed * vs * (0.8 + 0.4 * r2) * (it.spark ? 1.25 : 1);
-        b.vy = -(2 + 3 * r3) * H * 0.06 * (it.spark ? 1.3 : 1);
+        // SCN-2: the circus flings its loot 25% harder (launchMul)
+        b.vy = -(2 + 3 * r3) * H * 0.06 * (it.spark ? 1.3 : itemRule.launch);
         b.vr = (r2 - 0.5) * 7;
       } else if (mode === "fall") {
         const sx = carriageShadowX(it.t, W) + (r1 - 0.5) * W * 0.32;
@@ -503,9 +625,12 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
         if (!b.touched) {
           b.touched = true;
           b.justLanded = true;
+          b.landAge = b.age;
         }
-        if (b.bounces < 1 && b.vy > H * 0.15) {
-          b.vy = -b.vy * (mode === "train" ? 0.42 : 0.34);
+        // one rebound (the circus: up to three, restitution .72 — catchRules.rebound)
+        const up = rebound(b.vy, b.bounces, b.it.spark ? sparkRule : itemRule, H * 0.15);
+        if (up !== null) {
+          b.vy = up;
           b.vx *= 0.85;
           b.vr *= -0.6;
           b.bounces++;
@@ -591,18 +716,27 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       progDirty = true;
       const lantern = lanternOn && b.inCone;
       caught.push({ id: b.it.id, combo, lantern });
-      const v = b.it.value * (1 + 0.02 * Math.min(combo, 25)) * (lantern ? LANTERN_MULT : 1);
-      const col = RESOURCES[b.it.res].color;
-      addFloat(`+${fmt(v)}${lantern ? " 🏮" : ""}`, b.x, b.y - 16, col, combo >= 10 ? 20 : 17);
+      const curio = b.it.curio ? CURIOS[b.it.curio] : undefined;
+      if (curio) {
+        // SCN-2: a curio for «Кунсткамера Короля» (worth nothing on the scales, everything in the showcase)
+        addFloat(`🏛 «${curio.name}»`, b.x, b.y - 24, "#ffd86b", W < 520 ? 14 : 16, 1.8, 54);
+        burst(b.x, b.y, "#ffd86b", 18);
+        burst(b.x, b.y, "#fff6dc", 8);
+        sfxCue3("curio");
+      } else {
+        const v = b.it.value * (1 + 0.02 * Math.min(combo, 25)) * (lantern ? LANTERN_MULT : 1);
+        const col = RESOURCES[b.it.res].color;
+        addFloat(`+${fmt(v)}${lantern ? " 🏮" : ""}`, b.x, b.y - 16, col, combo >= 10 ? 20 : 17);
+        burst(b.x, b.y, col, 9);
+      }
       if (lantern && lanternSusp > 0) {
         lanternTotal += lanternSusp;
         addFloat(`+${fmt(lanternSusp)} 👁`, b.x + 22, b.y - 40, "#c39bff", 14, 0.95);
       }
-      burst(b.x, b.y, col, 9);
       ghostOf(b, false);
       sfx.blip(combo);
       buzz(8);
-      propsRef.current.onCatch?.(combo);
+      propsRef.current.onCatch?.(combo, b.x, b.y);
       if (combo === 10 || combo === 25 || (combo > 25 && combo % 25 === 0)) {
         banner(`КОМБО ×${combo}!`, combo >= 25 ? "добыча +50% — предел!" : `добыча +${2 * combo}%`, combo >= 25 ? "#ff9a4a" : "#f5d76e", 1.3);
         shake(combo >= 25 ? 5 : 3, 380);
@@ -632,7 +766,11 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       caughtIds.add(b.it.id);
       progDirty = true;
       const col = RESOURCES[b.it.res].color;
-      addFloat(`+${fmt(b.it.value)} ${how === "net" ? "🕸" : "⚙"}`, b.x, b.y - 12, hexA(col, 0.9), 14);
+      const cur = b.it.curio ? CURIOS[b.it.curio] : undefined;
+      if (cur) {
+        addFloat(`🏛 «${cur.name}» ${how === "net" ? "🕸" : "⚙"}`, b.x, b.y - 18, "#ffd86b", 14, 1.6, 48);
+        sfxCue3("curio");
+      } else addFloat(`+${fmt(b.it.value)} ${how === "net" ? "🕸" : "⚙"}`, b.x, b.y - 12, hexA(col, 0.9), 14);
       ghostOf(b, true);
       if (popCd <= 0) {
         if (how === "net") sfx.pop();
@@ -700,8 +838,9 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
     // the crew position scales every paw (POSITION_FEEL.hitR: 'ties' 1.3×, 'wall' 0.85×)
     const hitR = (type: string) => (type === "touch" ? 40 : type === "key" ? PAW_R : 28) * hitK;
 
-    /** Sweep a paw from one point to the next (the keyboard paw also reaches straight up). */
-    function sweep(tr: Track, x0: number, y0: number, x1: number, y1: number) {
+    /** Sweep a paw from one point to the next (the keyboard paw also reaches straight up). Only the two paws catch. */
+    function sweep(id: number, tr: Track, x0: number, y0: number, x1: number, y1: number) {
+      if (!paws.has(id)) return;
       const R = hitR(tr.type);
       tryCollect(x0, y0, x1, y1, R);
       if (tr.reach > 0) tryCollect(x1, y1 - tr.reach, x1, y1, R);
@@ -715,22 +854,32 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
 
     function pointerDown(id: number, type: string, x: number, y: number) {
       if (finished) return;
-      const now = performance.now();
+      // SCN-2: after a crash the crew is still on its back — no paw catches for the first CRASH_LOCK_S of the pass
+      if (!acceptsPointerDown(t, crash)) return;
+      const now = sceneNow();
       while (taps.length && now - taps[0] > 1000) taps.shift();
       const allowed = taps.length < TAP_LIMIT;
       if (allowed) taps.push(now);
-      const tr: Track = { x, y, type, armed: allowed, downX: x, downY: y, trail: [{ x, y, at: now }], reach: type === "key" ? PAW_REACH : 0 };
+      const tr: Track = { x, y, type, armed: allowed, downX: x, downY: y, trail: [{ x, y, at: now }], reach: type === "key" ? PAW_REACH : 0, seq: ++pressSeq };
       pointers.set(id, tr);
-      if (allowed) sweep(tr, x, y, x, y);
+      refreshPaws();
+      if (allowed) sweep(id, tr, x, y, x, y);
+    }
+
+    function pointerUp(id: number) {
+      if (pointers.delete(id)) refreshPaws();
     }
 
     function pointerMove(id: number, pts: { x: number; y: number }[]) {
       const tr = pointers.get(id);
       if (!tr) return;
-      const now = performance.now();
+      const now = sceneNow();
       for (const p of pts) {
-        if (!tr.armed && Math.hypot(p.x - tr.downX, p.y - tr.downY) > 6) tr.armed = true;
-        if (tr.armed && !finished) sweep(tr, tr.x, tr.y, p.x, p.y);
+        if (!tr.armed && Math.hypot(p.x - tr.downX, p.y - tr.downY) > 6) {
+          tr.armed = true;
+          refreshPaws();
+        }
+        if (tr.armed && !finished) sweep(id, tr, tr.x, tr.y, p.x, p.y);
         tr.x = p.x;
         tr.y = p.y;
         tr.trail.push({ x: p.x, y: p.y, at: now });
@@ -741,6 +890,8 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
     const onDown = (e: PointerEvent) => {
       if (e.pointerType === "mouse" && e.button !== 0) return;
       e.preventDefault();
+      // SCN-1: no catching while the game is held
+      if (sceneHeld()) return;
       kbd = false;
       noteKeyboard(false);
       try {
@@ -753,6 +904,7 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
     };
 
     const onMove = (e: PointerEvent) => {
+      if (sceneHeld()) return;
       const r = canvas.getBoundingClientRect();
       if (!pointers.has(e.pointerId)) {
         if (e.pointerType === "mouse") hover = toLocal(r, e.clientX, e.clientY);
@@ -766,7 +918,7 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
     };
 
     const onUp = (e: PointerEvent) => {
-      pointers.delete(e.pointerId);
+      pointerUp(e.pointerId);
     };
     const onLeave = (e: PointerEvent) => {
       if (e.pointerType === "mouse") hover = null;
@@ -774,38 +926,42 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
     const onCtx = (e: Event) => e.preventDefault();
     const onBlur = () => {
       pointers.clear();
-      paw.dirL = paw.dirR = false;
+      refreshPaws();
+      paw.dirL = paw.dirR = paw.want = false;
     };
+    // a hold lets go of every paw: fingers and keys pressed under a ceremony are not part of the catch
+    const offHold = onSceneHold((h) => {
+      if (h) onBlur();
+      heldPainted = false;
+    });
 
     /** The paw sits on the line where the loot comes to rest. */
     const pawY = () => (mode === "train" ? tg.railY - itemSize() * 0.45 : mode === "fall" ? fg.floorY - itemSize() * 0.45 : floatGeom(W, H).waterY);
 
-    const typing = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement | null;
-      return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
-    };
+    const keyOf = (e: KeyboardEvent) => catchKey(e.code === "Space" ? " " : e.key);
     const onKeyDown = (e: KeyboardEvent) => {
-      if (finished || typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
-      const space = e.code === "Space" || e.key === " ";
-      // while the hook's timing bar is up, Space is the throw (TimingBar listens on window, after us)
-      if (space && ctl()?.hookOpen) return;
-      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-        e.preventDefault();
-        if (e.key === "ArrowLeft") paw.dirL = true;
-        else paw.dirR = true;
-      } else if (space) {
-        e.preventDefault();
-        if (!e.repeat && !pointers.has(KEY_ID)) pointerDown(KEY_ID, "key", paw.x, pawY());
-      } else return;
+      if (finished || isTypingTarget(e.target as Element | null) || e.ctrlKey || e.metaKey || e.altKey) return;
+      const k = keyOf(e);
+      // held: the key is not ours (Space / Enter on a save-issue button over the scene still clicks it)
+      if (!k || sceneHeld()) return;
+      e.preventDefault();
+      if (k === "left") paw.dirL = true;
+      else if (k === "right") paw.dirR = true;
+      // Space opens the paw even while the hook's bar is up: TimingBar (on window, after us) throws on the same press
+      else if (!e.repeat && !pointers.has(KEY_ID)) {
+        paw.want = true;
+        pointerDown(KEY_ID, "key", paw.x, pawY());
+      }
       kbd = true;
       noteKeyboard(true);
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      if (e.key === "ArrowLeft") paw.dirL = false;
-      else if (e.key === "ArrowRight") paw.dirR = false;
-      else if (e.code === "Space" || e.key === " ") {
-        if (!pointers.has(KEY_ID)) return;
-        pointers.delete(KEY_ID);
+      const k = keyOf(e);
+      if (k === "left") paw.dirL = false;
+      else if (k === "right") paw.dirR = false;
+      else if (k === "paw" && (pointers.has(KEY_ID) || paw.want)) {
+        paw.want = false;
+        pointerUp(KEY_ID);
       } else return;
       e.preventDefault();
     };
@@ -837,6 +993,7 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       }
       if (paw.x < 0) paw.x = w / 2;
       if (nd !== dpr) sprites.clear();
+      heldPainted = false;
       W = w;
       H = h;
       dpr = nd;
@@ -850,6 +1007,7 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
 
     /* ---------------- update */
     function update(dt: number) {
+      refreshPaws();
       bumpCd -= dt;
       popCd -= dt;
       for (let i = 0; i < 3; i++) netKick[i] = Math.max(0, netKick[i] - dt * 3);
@@ -864,6 +1022,8 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
         }
       }
 
+      // a Space held through the crash lockout opens the paw the moment it may
+      if (paw.want && !pointers.has(KEY_ID) && acceptsPointerDown(t, crash)) pointerDown(KEY_ID, "key", paw.x, pawY());
       // keyboard paw: ease into PAW_SPEED over PAW_EASE s, then glide (a held Space sweeps along the way)
       const dir = (paw.dirR ? 1 : 0) - (paw.dirL ? 1 : 0);
       if (dir !== paw.dir) {
@@ -891,7 +1051,7 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
           b.justLanded = false;
           if (grabPx > 0 && b.it.spark) {
             let grabbed = false;
-            for (const tr of pointers.values()) if (tr.armed && Math.hypot(tr.x - b.x, tr.y - b.y) <= grabPx) grabbed = true;
+            for (const [id, tr] of pointers) if (paws.has(id) && Math.hypot(tr.x - b.x, tr.y - b.y) <= grabPx) grabbed = true;
             if (grabbed) {
               collect(b);
               continue;
@@ -911,8 +1071,14 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
         if (b.age >= life) lost(b);
       }
 
-      // held pointers keep catching what falls into them
-      for (const tr of pointers.values()) if (tr.armed) sweep(tr, tr.x, tr.y, tr.x, tr.y);
+      // held pointers keep catching what falls into them (the two paws; a third finger only hears the hint, once)
+      for (const [id, tr] of pointers) {
+        if (paws.has(id)) sweep(id, tr, tr.x, tr.y, tr.x, tr.y);
+        else if (tr.armed && !twoPawsSaid) {
+          twoPawsSaid = true;
+          addFloat("У крысы две лапы", tr.x, tr.y - 44, "#e8c983", W < 520 ? 13 : 15, 1.8, 18);
+        }
+      }
 
       // clockwork legion: one item every 0.5 s (the most endangered one)
       if (legion) {
@@ -1104,8 +1270,72 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       }
     }
 
+    /** SCN-2: a curio — its parchment tag in a slowly turning gold ring, with two glints running round it. */
+    function drawCurio(g: CanvasRenderingContext2D, b: Body, size: number, alpha: number, scale: number, dy: number) {
+      const def = b.it.curio ? CURIOS[b.it.curio] : undefined;
+      if (!def) return;
+      const x = b.x;
+      const y = b.y + dy;
+      const R = size * 0.95 * scale;
+      const spin = reduced ? 0 : t * 2.2;
+      g.save();
+      g.globalAlpha = alpha;
+      // the gold ring (a halo under a crisp rim)
+      g.lineWidth = 6;
+      g.strokeStyle = "rgba(255,214,107,.28)";
+      g.beginPath();
+      g.arc(x, y, R, 0, Math.PI * 2);
+      g.stroke();
+      g.lineWidth = 2;
+      g.strokeStyle = "#d4af37";
+      g.setLineDash([R * 0.9, R * 0.25]);
+      g.lineDashOffset = -spin * R;
+      g.beginPath();
+      g.arc(x, y, R, 0, Math.PI * 2);
+      g.stroke();
+      g.setLineDash([]);
+      // the tag swings a little on its string (a landed one holds still under reduced motion)
+      g.save();
+      g.translate(x, y);
+      g.rotate(b.landed ? (reduced ? 0 : Math.sin(t * 3 + b.it.id) * 0.12) : b.rot * 0.4);
+      const s = size * 2 * scale;
+      g.drawImage(curioSprite(def.icon, size), -s / 2, -s / 2, s, s);
+      g.restore();
+      // two four-point glints running round the ring
+      g.globalCompositeOperation = "lighter";
+      g.fillStyle = "#fff6dc";
+      for (let k = 0; k < 2; k++) {
+        const a = spin * 1.3 + k * Math.PI;
+        const gx = x + Math.cos(a) * R;
+        const gy = y + Math.sin(a) * R;
+        const r = (reduced ? 4 : 3 + 2.5 * Math.abs(Math.sin(t * 6 + k))) * scale;
+        g.beginPath();
+        g.moveTo(gx, gy - r * 1.6);
+        g.lineTo(gx + r * 0.35, gy - r * 0.35);
+        g.lineTo(gx + r * 1.6, gy);
+        g.lineTo(gx + r * 0.35, gy + r * 0.35);
+        g.lineTo(gx, gy + r * 1.6);
+        g.lineTo(gx - r * 0.35, gy + r * 0.35);
+        g.lineTo(gx - r * 1.6, gy);
+        g.lineTo(gx - r * 0.35, gy - r * 0.35);
+        g.closePath();
+        g.fill();
+      }
+      g.restore();
+    }
+
+    /** SCN-2: what lights the loot in the fog — every pointer, the mouse hovering, the keyboard paw. */
+    function fogLights(): { x: number; y: number }[] {
+      const pts: { x: number; y: number }[] = [];
+      for (const tr of pointers.values()) pts.push(tr);
+      if (hover) pts.push(hover);
+      if (kbd && !pointers.has(KEY_ID)) pts.push({ x: paw.x, y: pawY() });
+      return pts;
+    }
+
     function drawItems(g: CanvasRenderingContext2D) {
       const size = itemSize();
+      const lights = fog ? fogLights() : null;
       for (const b of bodies) {
         if (b.st !== 1) continue;
         const left = life - b.age;
@@ -1117,6 +1347,16 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
           alpha = 1 - k;
           scale *= 1 - 0.35 * k;
           dy = k * 10;
+        }
+        // sparks glow through the fog; the loot only shows near a paw, in the lantern or as it lands
+        if (lights && !b.it.spark) {
+          let near = Infinity;
+          for (const p of lights) near = Math.min(near, Math.hypot(p.x - b.x, p.y - b.y));
+          alpha *= fogAlpha(near, b.inCone, b.landAge >= 0 ? b.age - b.landAge : -1);
+        }
+        if (b.it.curio) {
+          drawCurio(g, b, size, alpha, scale, dy);
+          continue;
         }
         if (b.it.spark) {
           const fl = flicker(t, b.it.id);
@@ -1209,11 +1449,22 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
     }
 
     function drawTrails(g: CanvasRenderingContext2D) {
-      const now = performance.now();
+      const now = sceneNow();
       g.save();
       g.globalCompositeOperation = "lighter";
       g.lineCap = "round";
-      for (const tr of pointers.values()) {
+      for (const [id, tr] of pointers) {
+        if (!paws.has(id)) {
+          // a finger past the two paws: a dim ring, no trail, no catch
+          if (tr.armed) {
+            g.strokeStyle = "rgba(185,171,148,.3)";
+            g.lineWidth = 1.5;
+            g.beginPath();
+            g.arc(tr.x, tr.y, hitR(tr.type) * 0.8, 0, Math.PI * 2);
+            g.stroke();
+          }
+          continue;
+        }
         const maxAge = reduced ? 70 : 150;
         while (tr.trail.length > 1 && now - tr.trail[0].at > maxAge) tr.trail.shift();
         const pts = tr.trail;
@@ -1472,11 +1723,10 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
         g.lineTo(nx, y + GAUGE_H + 3);
         g.stroke();
         const pop = got && !reduced ? 1 + 0.7 * Math.exp(-7 * (t - tierAt[k])) : 1;
-        const s = 14 * pop;
         const iy = y + GAUGE_H + 11;
-        g.globalAlpha = got ? 1 : lostT ? 0.32 : 0.62;
-        g.drawImage(emojiSprite(TIERS[k].icon, 12), nx - s / 2, iy - s / 2, s, s);
-        g.globalAlpha = 1;
+        // SCN-3: the same struck medals as the haul card, as small discs (royal wears its crown)
+        const id = TIERS[k].id;
+        if (isMedalTier(id)) drawMedalDisc(g, nx, iy + (id === "royal" ? 1.5 : 0), 5.5 * pop, id, got ? 1 : lostT ? 0.32 : 0.62);
         if (crossed) {
           g.strokeStyle = "#ff5a3a";
           g.lineWidth = 2;
@@ -1487,6 +1737,21 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
           g.lineTo(nx - 7, iy + 7);
           g.stroke();
         }
+      }
+    }
+
+    /** SCN-2: «Гороховый суп» — a yellow-grey wash over the pass and three fog banks drifting the train's way. */
+    function drawFog(g: CanvasRenderingContext2D) {
+      g.fillStyle = "rgba(150,146,104,.3)";
+      g.fillRect(0, 0, W, H);
+      const img = fogSprite();
+      const bw = Math.max(240, W * 0.7);
+      const bh = Math.max(120, H * 0.42);
+      const span = W + bw;
+      for (let k = 0; k < 3; k++) {
+        const x = (((reduced ? 0 : -t * (18 + 9 * k)) + k * span * 0.37) % span + span) % span - bw;
+        const y = H * (0.08 + 0.26 * k) - bh * 0.3;
+        g.drawImage(img, x, y, bw, bh);
       }
     }
 
@@ -1511,6 +1776,7 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
         g.fillStyle = "rgba(220,245,250,.35)";
         for (let x = (t * -40) % 36; x < W; x += 36) g.fillRect(x, wy + Math.sin(x * 0.05 + t * 3) * 1.5, 18, 1.5);
       }
+      if (fog) drawFog(g);
       const c = cone();
       if (c) drawCone(g, c);
       if (nets.length) drawNets(g);
@@ -1527,16 +1793,30 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
       drawHud(g);
     }
 
+    // SCN-2: the crew's carts went over — the pass opens with the crash (the paws come back at CRASH_LOCK_S)
+    if (crash && t < CRASH_LOCK_S + 1) banner("💥 Авария!", "Тележки перевернулись — автосбор ×0.5", "#ff8a6a", 2.4);
+
     /* ---------------- loop */
-    let last = performance.now();
+    let last = sceneNow();
     let raf = 0;
-    const loop = (now: number) => {
+    const loop = () => {
       raf = requestAnimationFrame(loop);
+      const now = sceneNow();
+      if (sceneHeld()) {
+        // SCN-1: held — nothing moves, nothing resolves; paint once (again after a resize), then wait
+        last = now;
+        if (!heldPainted) {
+          heldPainted = true;
+          draw(0);
+        }
+        return;
+      }
+      heldPainted = false;
       let dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
       last = now;
       const c = ctl();
       if (c && now < c.slowUntil) dt *= 0.5;
-      // after a stall (hidden tab) jump forward to the engine clock
+      // the engine ran on without us (a long absence caught up): jump forward to its clock
       const gt = useGame.getState().game.time - phaseStart;
       if (gt - t > 1.5) t = gt - 0.25;
       t += dt;
@@ -1549,6 +1829,7 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
+      offHold();
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerup", onUp);
@@ -1566,7 +1847,14 @@ export function CatchCanvasCore(props: CatchCanvasProps & CatchCanvasExtra) {
 
   return (
     <div ref={wrapRef} className={props.className ?? "absolute inset-0"}>
-      <canvas ref={canvasRef} className="block h-full w-full cursor-crosshair touch-none select-none" aria-label="Лови добычу: жми или веди, зажав кнопку; с клавиатуры — стрелки и пробел" />
+      {/* the keyboard's home in the catch phase (SceneHost moves the focus here); ←/→ and Space work from anywhere */}
+      <canvas
+        ref={canvasRef}
+        tabIndex={0}
+        data-autofocus=""
+        className="block h-full w-full cursor-crosshair touch-none select-none outline-none"
+        aria-label="Лови добычу: жми или веди, зажав кнопку; с клавиатуры — стрелки и пробел"
+      />
     </div>
   );
 }

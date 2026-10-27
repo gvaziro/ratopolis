@@ -1,28 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { EngineCtx, GameState } from "../types";
-import { buyBuilding, click, openZone } from "./actions";
+import { openZone } from "./actions";
 import { derive } from "./derive";
 import { onZoneOpen, sceneAction } from "./events";
-import { deserialize as deserializeAny, exportString, importAny, importString, isNewerSave, migrate, savedVersion, serialize } from "./save";
+import { deserialize as deserializeAny, exportString, importAny, importString, isNewerSave, migrate, MIGRATIONS, savedVersion, serialize } from "./save";
 import { createInitialState, SCHEMA_VERSION } from "./state";
 import { step, TICK } from "./step";
+import { metroState, playedState } from "./testkit";
 
 /** deserialize() for saves of this version: newer-version results fail the test. */
 function deserialize(str: string): GameState | null {
   const r = deserializeAny(str);
   expect(isNewerSave(r)).toBe(false);
   return isNewerSave(r) ? null : r;
-}
-
-function playedState(): GameState {
-  const s = createInitialState(31337, 1_700_000_000_000);
-  const ctx: EngineCtx = { fx: [] };
-  for (let i = 0; i < 600; i++) {
-    step(s, TICK, { active: true }, ctx);
-    if (i % 3 === 0) click(s, derive(s), ctx);
-    if (i % 50 === 0) buyBuilding(s, derive(s), "nest", 1, ctx);
-  }
-  return s;
 }
 
 describe("save", () => {
@@ -198,6 +188,130 @@ describe("save v2 (EN-7 / EN-8)", () => {
     expect(importString(JSON.stringify(raw))).toBeNull();
     expect(savedVersion(JSON.stringify(raw))).toBe(SCHEMA_VERSION + 1);
     expect(deserializeAny("{\"schemaVersion\":")).toBeNull(); // truncated: garbage, not "newer"
+  });
+
+  /** A v2 save as v2 wrote it: no v3 field at all. */
+  function v2Raw(): Record<string, unknown> {
+    const raw = JSON.parse(serialize(playedState())) as Record<string, unknown>;
+    raw.schemaVersion = 2;
+    const settings = raw.settings as Record<string, unknown>;
+    delete settings.sfxVolume;
+    delete settings.music;
+    const meta = raw.meta as Record<string, unknown>;
+    delete meta.districtId;
+    delete meta.visited;
+    delete meta.curios;
+    delete raw.steamPriority;
+    delete raw.carriagePass;
+    delete raw.hintMemo;
+    delete (raw.buffs as Record<string, unknown>).fogUntil;
+    delete (raw.timers as Record<string, unknown>).fog;
+    return raw;
+  }
+
+  it("a v2 save loads with every v3 default (ENG-12 settings, steam valve, fog, carriage pass)", () => {
+    const raw = v2Raw();
+    (raw.settings as Record<string, unknown>).volume = 0.7;
+    const m = migrate(raw);
+    expect(m.schemaVersion).toBe(SCHEMA_VERSION);
+    expect(SCHEMA_VERSION).toBe(3);
+    expect(m.settings).toMatchObject({ volume: 0.7, sfxVolume: 1, music: 0.35 });
+    expect(m.steamPriority).toBe("works");
+    expect(m.carriagePass).toBeNull();
+    expect(m.buffs.fogUntil).toBe(0);
+    expect(m.meta).toMatchObject({ districtId: "whitechapel", visited: ["whitechapel"], curios: [] });
+    expect(m.flags.focus_manual).toBeUndefined(); // focus "forager": the auto focus stays on
+    expect(m.hintMemo).toEqual({ id: "", since: 0, muted: "", mutedUntil: 0 }); // ENG-1 hint hysteresis
+    expect(m.timers.fog).toBe(Infinity); // ENG-9: scheduled on the first tick with the Metro open
+  });
+
+  it("ENG-9: a save from before the fog timer gets its first «Гороховый суп» 20–30 min after the next tick", () => {
+    const raw = JSON.parse(serialize(metroState(3, { quiet: true }))) as Record<string, unknown>;
+    raw.schemaVersion = 2;
+    delete (raw.timers as Record<string, unknown>).fog;
+    const m = migrate(raw);
+    expect(m.timers.fog).toBe(Infinity);
+    step(m, TICK, { active: false }, { fx: [] });
+    expect(m.timers.fog - m.time).toBeGreaterThanOrEqual(1200 - TICK);
+    expect(m.timers.fog - m.time).toBeLessThanOrEqual(1800);
+    // and a v3 save keeps the time it had
+    const s = metroState(3, { quiet: true });
+    s.timers.fog = 777;
+    expect(deserialize(serialize(s))!.timers.fog).toBe(777);
+  });
+
+  it("the elder's hint memo (ENG-1) survives a roundtrip; a malformed one is reset", () => {
+    const s = playedState();
+    s.hintMemo = { id: "rebalance:pickpocket", since: 30, muted: "housing", mutedUntil: 95 };
+    expect(deserialize(serialize(s))!.hintMemo).toEqual(s.hintMemo);
+    const raw = JSON.parse(serialize(s)) as Record<string, unknown>;
+    raw.hintMemo = { id: 7, since: "soon", muted: null };
+    expect(deserialize(JSON.stringify(raw))!.hintMemo).toEqual({ id: "", since: 0, muted: "", mutedUntil: 0 });
+    raw.hintMemo = "stale";
+    expect(deserialize(JSON.stringify(raw))!.hintMemo).toEqual({ id: "", since: 0, muted: "", mutedUntil: 0 });
+  });
+
+  it("v2 → v3: a hand-picked focus stays manual, the district index becomes visited ids, trophies become curios", () => {
+    const raw = v2Raw();
+    raw.focus = "pickpocket";
+    const meta = raw.meta as Record<string, unknown>;
+    meta.district = 6;
+    meta.migrations = 6;
+    meta.trophies = ["cat_fur", "broken_pipe", "mystery"];
+    meta.history = [{ district: 1, seconds: 3600, eRun: 2e6, crowns: 14, zones: {}, bestRating: "gold" }];
+    const m = migrate(raw);
+    expect(m.flags.focus_manual).toBe(true);
+    expect(m.meta.district).toBe(6);
+    expect(m.meta.visited).toEqual(["whitechapel", "southwark", "lambeth", "bloomsbury", "mayfair", "westminster", "city"]);
+    expect(m.meta.districtId).toBe("city");
+    expect(m.meta.history[0].districtId).toBe("southwark");
+    expect(m.meta.curios).toEqual(["cat_fur_tuft", "broken_pipe"]);
+    expect(m.meta.trophies).toEqual(["cat_fur", "broken_pipe", "mystery"]); // still written for old readers
+  });
+
+  it("v3 values survive a roundtrip; unknown curio and district ids are dropped, settings clamped", () => {
+    const s = playedState();
+    s.settings.sfxVolume = 0.25;
+    s.settings.music = 0;
+    s.steamPriority = "power";
+    s.carriagePass = { seq: 7, until: 99 };
+    s.buffs.fogUntil = 120;
+    s.meta.visited = ["whitechapel", "kings_cross"];
+    s.meta.district = 1;
+    s.meta.districtId = "kings_cross";
+    s.meta.curios = ["monocle", "tower_key"];
+    s.shinies = [{ id: 5, x: 0.5, y: 0.5, res: "coins", until: 99, kind: "carriage", amt: 120 }];
+    const back = deserialize(serialize(s))!;
+    expect(back).toEqual({ ...s, scene: null });
+
+    const raw = JSON.parse(serialize(s)) as Record<string, unknown>;
+    const meta = raw.meta as Record<string, unknown>;
+    meta.curios = ["monocle", "dragon_egg", "monocle"];
+    meta.visited = ["whitechapel", "atlantis"];
+    (raw.settings as Record<string, unknown>).music = 7;
+    raw.steamPriority = "both";
+    raw.shinies = [{ id: 6, x: 0.1, y: 0.5, res: "coins", until: 9, kind: "comet", amt: "lots" }];
+    const m = deserialize(JSON.stringify(raw))!;
+    expect(m.meta.curios).toEqual(["monocle"]);
+    expect(m.meta.visited).toEqual(["whitechapel", "southwark"]); // broken list: rebuilt from the index
+    expect(m.meta.districtId).toBe("southwark");
+    expect(m.settings.music).toBe(1);
+    expect(m.steamPriority).toBe("works");
+    expect(m.shinies).toEqual([{ id: 6, x: 0.1, y: 0.5, res: "coins", until: 9 }]);
+  });
+
+  it("MIGRATIONS run in order from the save's version (a test-only registry step is applied)", () => {
+    const raw = v2Raw();
+    (raw as { charters: number }).charters = 4;
+    const registry = {
+      ...MIGRATIONS,
+      2: (r: Record<string, unknown>) => {
+        MIGRATIONS[2](r);
+        (r.meta as Record<string, unknown>).crowns = (r as { charters: number }).charters * 100;
+      },
+    };
+    expect(migrate(structuredClone(raw), registry).meta.crowns).toBe(400);
+    expect(migrate(structuredClone(raw)).meta.crowns).toBe((raw.meta as { crowns: number }).crowns);
   });
 
   it("importAny takes both the export string and the raw save file", () => {

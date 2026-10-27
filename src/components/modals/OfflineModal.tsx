@@ -2,18 +2,21 @@
 
 /**
  * «Пока вас не было…»: the offline report as a front page of «Крысиные Ведомости».
- * Gains roll up like odometers, trains passed without you, night-shift efficiency η and the cap note.
+ * Gains roll up like odometers, trains passed without you, how hard the night shift worked («вполсилы (50%)»; the
+ * physicist's η sits in its tooltip) and the cap note. On phones the system Back is «К делу!» (v3 SHL-4).
  */
 import { useEffect, useRef, useState } from "react";
 import { RESOURCES, RES_ORDER } from "@/game/data/resources";
-import { districtName } from "@/game/data/zones";
+import { districtInfo } from "@/game/data/districts";
 import type { OfflineReport } from "@/game/engine/offline";
 import { useGame } from "@/game/store";
 import type { Amounts, ResId } from "@/game/types";
 import { BrassButton, cx, Odometer } from "@/components/ui/kit";
+import { ResGlyph } from "@/components/ui/ResGlyph";
 import { clockLine } from "@/components/layout/clock";
 import HudStyles from "@/components/layout/HudStyles";
-import { fmt, fmtInt, fmtPct, fmtTime, plural } from "@/lib/format";
+import { fmt, fmtDuration, fmtInt, fmtPct, plural } from "@/lib/format";
+import { useBackCloses } from "@/lib/useBackCloses";
 
 export default function OfflineModal() {
   const report = useGame((s) => s.offlineReport);
@@ -30,6 +33,16 @@ function rows(a: Amounts): [ResId, number][] {
 /** Word form for a count printed by fmtInt; a compact «1.2K» reads «…тысячи», so it takes the "many" form. */
 function countForm(n: number, one: string, few: string, many: string): string {
   return Math.abs(n) < 1000 ? plural(n, one, few, many) : many;
+}
+
+/** How hard the night shift worked, in words (η = 0.5 base; the night shift and the edict raise it past 1). */
+function shiftWords(eta: number): string {
+  if (eta < 0.45) return "спустя рукава";
+  if (eta < 0.6) return "вполсилы";
+  if (eta < 0.85) return "в три четверти силы";
+  if (eta < 0.98) return "почти в полную силу";
+  if (eta <= 1.02) return "в полную силу";
+  return "сверх всяких сил";
 }
 
 /** Witty sub-headline, picked deterministically from the report. */
@@ -49,12 +62,15 @@ function FrontPage({ r }: { r: OfflineReport }) {
   const calm = useGame((s) => s.game.settings.reducedMotion);
   const time = useGame((s) => s.game.time);
   const migrations = useGame((s) => s.game.meta.migrations);
-  const district = useGame((s) => s.game.meta.district);
+  // v3: the district this run lives in (meta.visited), not the old fixed sequence
+  const district = useGame((s) => districtInfo(s.game.meta).name);
   const nightShift = useGame((s) => !!s.game.upgrades.night_shift);
   const eternal = useGame((s) => !!s.game.meta.edicts.eternal_night_shift);
   const [rolled, setRolled] = useState(false);
   const footRef = useRef<HTMLElement>(null);
   const close = () => useGame.getState().dismissOffline();
+  // phones: the system Back gesture reads the paper and gets on with it, instead of leaving the game
+  useBackCloses(true, close);
 
   useEffect(() => {
     const t = window.setTimeout(() => setRolled(true), calm ? 0 : 450);
@@ -84,7 +100,7 @@ function FrontPage({ r }: { r: OfflineReport }) {
     >
       <HudStyles />
       <article
-        className="hud-paper relative max-h-[calc(100dvh-32px)] w-full max-w-[560px] overflow-y-auto rounded-sm border-2 px-4 pb-4 pt-3 shadow-[0_20px_60px_rgba(0,0,0,.75)] sm:px-6"
+        className="hud-paper ui-zoom relative max-h-[calc(100dvh-32px)] w-full max-w-[560px] overflow-y-auto rounded-sm border-2 px-4 pb-4 pt-3 shadow-[0_20px_60px_rgba(0,0,0,.75)] sm:px-6"
         style={{ borderColor: INK, animation: calm ? undefined : "hud-pop .5s cubic-bezier(.2,1.2,.4,1) both", color: INK }}
       >
         {/* masthead */}
@@ -98,12 +114,12 @@ function FrontPage({ r }: { r: OfflineReport }) {
           </h2>
           <div className="mt-0.5 flex flex-wrap items-center justify-between gap-x-3 font-mono text-[10.5px] tabular">
             <span>{clockLine(time, migrations)}</span>
-            <span>{districtName(district)}</span>
+            <span>{district}</span>
           </div>
         </header>
 
         <h3 id="offline-title" className="mt-3 text-center font-display text-[22px] font-bold leading-tight sm:text-[26px]">
-          Пока вас не было ({fmtTime(r.elapsed)})…
+          Пока вас не было ({fmtDuration(r.elapsed)})…
         </h3>
         <p className="mt-1 text-center text-[13px] italic leading-snug text-[#4a3826]">{kicker(r)}</p>
 
@@ -122,7 +138,7 @@ function FrontPage({ r }: { r: OfflineReport }) {
                     style={{ borderColor: `${INK}40`, animationDelay: `${0.08 * i}s` }}
                   >
                     <span className="flex min-w-0 items-center gap-1.5">
-                      <span aria-hidden>{RESOURCES[res].icon}</span>
+                      <ResGlyph id={res} />
                       <span className="truncate">{RESOURCES[res].name}</span>
                     </span>
                     <Odometer
@@ -158,8 +174,8 @@ function FrontPage({ r }: { r: OfflineReport }) {
               {loot.length > 0 && (
                 <p className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 pl-5 font-mono text-[12px] font-bold text-[#2f5d1f]">
                   {loot.map(([res, v]) => (
-                    <span key={res} className="whitespace-nowrap">
-                      {RESOURCES[res].icon}+{fmt(v)}
+                    <span key={res} className="inline-flex items-center gap-0.5 whitespace-nowrap">
+                      <ResGlyph id={res} label={RESOURCES[res].name} />+{fmt(v)}
                     </span>
                   ))}
                 </p>
@@ -167,11 +183,14 @@ function FrontPage({ r }: { r: OfflineReport }) {
             </div>
             <p>
               <span aria-hidden>🌙 </span>
-              Ночная смена работала с КПД <b className="whitespace-nowrap font-mono">η = {fmtPct(r.eta)}</b>
+              Ночная смена работала{" "}
+              <b className="cursor-help whitespace-nowrap" title={`КПД ночной смены η = ${fmtPct(r.eta)}: такая доля дневной добычи шла без вас`}>
+                {shiftWords(r.eta)} ({fmtPct(r.eta)})
+              </b>
             </p>
             {capped && (
               <p className="rounded-sm border border-dashed px-2 py-1 text-[12.5px] italic" style={{ borderColor: `${INK}66` }}>
-                Крысы работали только {fmtTime(r.simulated)} — дальше уснули.{extend ? ` ${extend}.` : ""}
+                Крысы работали только {fmtDuration(r.simulated)} — дальше уснули.{extend ? ` ${extend}.` : ""}
               </p>
             )}
           </section>

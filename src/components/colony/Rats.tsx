@@ -3,7 +3,9 @@
 /**
  * The colony's rats: at most 40 sprites (≈ 4·log2(rats+1)) walking between their job's chamber and the burrow.
  * Positions live in refs and are written straight to the DOM by one rAF loop — React only re-renders
- * when the job mix, stun count or hunger changes.
+ * when the job mix, stun count or hunger changes. COL-3: they walk between the chambers' back and front layers (behind
+ * the furniture), in two depth lanes, with a CSS walk cycle (feet, tail) the loop switches on and off only when a
+ * sprite starts or stops walking in view. COL-4: three settlers climb down the ladder of a newly opened zone.
  */
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -12,9 +14,10 @@ import { onFx } from "@/game/fx";
 import { derivedOf, useGame } from "@/game/store";
 import { JOBS } from "@/game/data/jobs";
 import { RESOURCES } from "@/game/data/resources";
+import { ZONE_ORDER } from "@/game/data/zones";
 import { JOB_IDS, UPGRADE_IDS, type BuildingId, type JobId, type UpgradeId, type ZoneId } from "@/game/types";
 import { camView } from "./camera";
-import { BUILDING_SLOT, bandTop, floorY, jobRoute, ROUTE_BUILDINGS, routeBetween, type Pt } from "./geometry";
+import { BUILDING_SLOT, bandTop, floorY, jobRoute, ROUTE_BUILDINGS, routeBetween, shade, SHAFT_X, type Pt } from "./geometry";
 import { FURS, RatBody, UPGRADE_LOOKS } from "./ratArt";
 import { colonyPaused, pokeChamber } from "./registry";
 
@@ -93,7 +96,17 @@ interface Sprite {
   /** Index among the sprites of the same job and their count (spreads the waiting spots, no clumps). */
   slot: number;
   of: number;
+  /** COL-3: the walk cycle class (cv-walk) is on — toggled only when walking starts or stops in view. */
+  walkOn: boolean;
 }
+
+/**
+ * COL-3: two depth lanes. Odd sprites walk 5 units further back (higher on the floor), at .9 scale, in a darker fur
+ * (a shade, not a CSS filter) — the lane is the sprite's index, so it never changes under a rat.
+ */
+const BACK_LANE_DY = 5;
+const BACK_FURS = FURS.map((f) => shade(f, -0.28));
+const furOf = (i: number) => (i & 1 ? BACK_FURS : FURS)[i % FURS.length];
 
 /** CO-6: chambers with no job route get one resident each (at most 10, on top of the 40 sprites). */
 const RESIDENT_BUILDINGS: BuildingId[] = [
@@ -120,6 +133,7 @@ interface Resident {
   dir: 1 | -1;
   hop: number;
   shown: boolean;
+  walkOn: boolean;
 }
 
 /** The icon of a job's main output (the cargo a rat carries home). */
@@ -134,6 +148,8 @@ interface Guest {
   from: Pt;
   to: Pt;
   foreman?: boolean;
+  /** Seconds to wait (unseen) before setting off — the settlers of a new zone go down the ladder one by one. */
+  delay?: number;
 }
 
 interface GuestState {
@@ -143,6 +159,16 @@ interface GuestState {
   fade: number;
   dir: 1 | -1;
   done: boolean;
+  wait: number;
+}
+
+/** COL-4: a zone opened — three settlers climb down the new ladder segment to the zone's upper floor. */
+function settlers(zone: ZoneId, nextId: () => number): Guest[] {
+  const i = ZONE_ORDER.indexOf(zone);
+  if (i <= 0) return [];
+  const from = { x: SHAFT_X, y: floorY(ZONE_ORDER[i - 1], 1) };
+  // bindles on sticks (the scavenger's look) and a basket in the middle
+  return [560, 470, 385].map((x, k) => ({ id: nextId(), job: k === 1 ? "forager" : "scavenger", from, to: { x, y: floorY(zone, 0) }, delay: 0.8 + k * 0.45 }));
 }
 
 const NEST: Pt = { x: BUILDING_SLOT.nest.cx, y: BUILDING_SLOT.nest.floor };
@@ -169,6 +195,7 @@ function newSprite(job: JobId, r: Route): Sprite {
     carry: false,
     slot: 0,
     of: 1,
+    walkOn: false,
   };
 }
 
@@ -327,7 +354,7 @@ export const RatsLayer = memo(function RatsLayer() {
       const old = prev.get(b);
       if (old) return old;
       const slot = BUILDING_SLOT[b];
-      return { b, x: slot.cx, y: slot.floor, home: slot.cx, target: slot.cx, wait: Math.random() * 2, dir: 1, hop: 0, shown: true };
+      return { b, x: slot.cx, y: slot.floor, home: slot.cx, target: slot.cx, wait: Math.random() * 2, dir: 1, hop: 0, shown: true, walkOn: false };
     });
   }, [residentList]);
 
@@ -378,6 +405,9 @@ export const RatsLayer = memo(function RatsLayer() {
       } else if (fx.k === "vagrants") {
         const y = NEST.y;
         setGuests((g) => [...g, { id: ++seq, job: "forager", from: { x: -60, y }, to: { x: NEST.x - 30, y } }, { id: ++seq, job: "forager", from: { x: -110, y }, to: { x: NEST.x + 20, y } }]);
+      } else if (fx.k === "zoneOpen") {
+        const add = settlers(fx.zone, () => ++seq);
+        if (add.length) setGuests((g) => [...g, ...add]);
       }
     });
   }, []);
@@ -428,13 +458,17 @@ export const RatsLayer = memo(function RatsLayer() {
             }
           }
         }
+        const back = (i & 1) === 1;
         let tx = s.x;
         let ty = s.y;
+        if (back && !s.stunned) ty -= BACK_LANE_DY;
         if (walking && s.climb === 0) ty -= Math.abs(Math.sin(t * 15 + s.phase)) * 1.8;
         if (hungryNow && !s.stunned) tx += Math.sin(t * 52 + s.phase) * 0.6;
         // off-screen sprites keep walking but are not rewritten (one last write moves them out of sight)
         const inView = ty > vy0 && ty < vy1;
         if (!inView && !s.shown) continue;
+        // its tail and feet (and badges) pause while it is out of sight
+        if (inView !== s.shown) el.toggleAttribute("data-off", !inView);
         s.shown = inView;
         el.setAttribute("transform", `translate(${tx.toFixed(1)} ${ty.toFixed(1)})`);
         const cargo = cargoEls.current[i];
@@ -442,7 +476,18 @@ export const RatsLayer = memo(function RatsLayer() {
           const want = s.carry && walking && !s.stunned ? "1" : "0";
           if (cargo.getAttribute("opacity") !== want) cargo.setAttribute("opacity", want);
         }
-        const tr = s.stunned ? "translate(0 -20) rotate(180)" : s.climb !== 0 ? `rotate(${s.climb < 0 ? -90 : 90})` : s.dir < 0 ? "scale(-1 1)" : "scale(1 1)";
+        // COL-3: the walk cycle switches only when walking starts or stops (a stunned rat lies still)
+        const step = walking && !s.stunned;
+        if (inView && step !== s.walkOn) {
+          s.walkOn = step;
+          el.classList.toggle("cv-walk", step);
+        }
+        const k = back ? 0.9 : 1;
+        const tr = s.stunned
+          ? `translate(0 -20) rotate(180)${back ? " scale(.9)" : ""}`
+          : s.climb !== 0
+            ? `rotate(${s.climb < 0 ? -90 : 90})${back ? " scale(.9)" : ""}`
+            : `scale(${s.dir < 0 ? -k : k} ${k})`;
         if (tr !== s.tr) {
           s.tr = tr;
           el.firstElementChild?.setAttribute("transform", tr);
@@ -477,9 +522,15 @@ export const RatsLayer = memo(function RatsLayer() {
         const ry = r.y - (r.hop > 0 ? Math.sin((r.hop / 0.3) * Math.PI) * 3 : 0);
         const inView = ry > vy0 && ry < vy1;
         if (!inView && !r.shown) continue;
+        if (inView !== r.shown) el.toggleAttribute("data-off", !inView);
         r.shown = inView;
         el.setAttribute("transform", `translate(${r.x.toFixed(1)} ${ry.toFixed(1)})`);
         el.firstElementChild?.setAttribute("transform", r.dir < 0 ? "scale(-1 1)" : "scale(1 1)");
+        const pacing = r.wait <= 0;
+        if (inView && pacing !== r.walkOn) {
+          r.walkOn = pacing;
+          el.classList.toggle("cv-walk", pacing);
+        }
       }
 
       // guests: newborns running out of the nest, the first vagrants
@@ -488,10 +539,15 @@ export const RatsLayer = memo(function RatsLayer() {
         if (!g) {
           const def = guestsRef.current.find((x) => x.id === id);
           if (!def) continue;
-          g = { x: def.from.x, y: def.from.y, path: routeBetween(def.from, def.to), fade: 1, dir: 1, done: false };
+          g = { x: def.from.x, y: def.from.y, path: routeBetween(def.from, def.to), fade: 1, dir: 1, done: false, wait: def.delay ?? 0 };
           guestState.current.set(id, g);
         }
         if (g.done) continue;
+        if (g.wait > 0) {
+          g.wait -= dt;
+          el.setAttribute("opacity", "0");
+          continue;
+        }
         let climb = 0;
         if (g.path.length) climb = walk(g, 95, dt);
         else {
@@ -525,13 +581,14 @@ export const RatsLayer = memo(function RatsLayer() {
       {list.map((job, i) => (
         <g
           key={i}
+          className="cv-rat"
           transform="translate(-600 -600)"
           ref={(el) => {
             els.current[i] = el;
           }}
         >
           <g>
-            <RatBody job={job} fur={FURS[i % FURS.length]} looks={looks} />
+            <RatBody job={job} fur={furOf(i)} looks={looks} />
           </g>
           {job !== "idle" && (
             <text
@@ -565,6 +622,7 @@ export const RatsLayer = memo(function RatsLayer() {
       {residentList.map((b, i) => (
         <g
           key={`r${b}`}
+          className="cv-rat"
           transform={`translate(${BUILDING_SLOT[b].cx} ${BUILDING_SLOT[b].floor})`}
           ref={(el) => {
             residentEls.current[i] = el;
@@ -578,7 +636,9 @@ export const RatsLayer = memo(function RatsLayer() {
       {guests.map((g) => (
         <g
           key={`g${g.id}`}
+          className="cv-rat cv-walk"
           transform={`translate(${g.from.x} ${g.from.y})`}
+          opacity={g.delay ? 0 : undefined}
           ref={(el) => {
             if (el) guestEls.current.set(g.id, el);
             else guestEls.current.delete(g.id);

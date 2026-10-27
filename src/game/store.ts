@@ -20,12 +20,14 @@ import {
   setForeman,
   setRatios,
   setSeal,
+  setSteamPriority,
   toggleSatiety,
 } from "./engine/actions";
+import { cloneState, shareState } from "./engine/clone";
 import { abandonCommission } from "./engine/commissions";
 import { derive, type Derived } from "./engine/derive";
-import { clickPurse, clickShiny, marketDeal, onZoneOpen, sceneAction, whistle } from "./engine/events";
-import type { Hint } from "./engine/hints";
+import { clickPurse, clickShiny, deferTrainsForReturn, marketDeal, onZoneOpen, releaseDeferredToast, sceneAction, whistle } from "./engine/events";
+import { applyHintAction, trackHint, type Hint } from "./engine/hints";
 import { simulateOffline, type OfflineReport } from "./engine/offline";
 import { deserialize, exportString, importAny, isNewerSave, SAVE_KEY, savedVersion, serialize } from "./engine/save";
 import { createInitialState, defaultMeta, newRun, SCHEMA_VERSION } from "./engine/state";
@@ -37,6 +39,7 @@ import type {
   CommissionId,
   CrewPosition,
   BuyMode,
+  DistrictId,
   EdictId,
   EngineCtx,
   Fx,
@@ -47,7 +50,9 @@ import type {
   SceneEventId,
   SealId,
   Settings,
+  SteamPriority,
   TabId,
+  TrainVariantId,
   UpgradeId,
   ZoneId,
 } from "./types";
@@ -135,6 +140,11 @@ export interface GameStore {
   advance: (steps: number, active: boolean) => void;
   /** Catch up a long absence (tab hidden > 60 s). */
   catchUp: (seconds: number) => void;
+  /**
+   * Credit a short hold (≤ 60 s, holdCredit "ticks", v3 ENG-5): trains due meanwhile are deferred behind a fresh
+   * «К путям!» (deferTrainsForReturn), then away/TICK plain ticks (inactive).
+   */
+  creditShortHold: (away: number) => void;
   noteInput: () => void;
   /** Write the save; false when it could not be written (blocked storage, quota) or saving is paused. */
   save: () => boolean;
@@ -146,7 +156,10 @@ export interface GameStore {
   buyBuilding: (id: BuildingId, mode?: BuyMode) => void;
   buyUpgrade: (id: UpgradeId) => void;
   assignJob: (job: JobId, delta: number | "max" | "zero") => void;
+  /** The player picks the newborn focus: also sets flags.focus_manual (the auto focus stops, v3 ENG-1). */
   setFocus: (job: JobId) => void;
+  /** Steam priority valve (v3 ENG-4): "works" = smelters/smiths first, "power" = presses and clocks first. */
+  setSteamPriority: (p: SteamPriority) => void;
   setAssignMode: (mode: AssignMode) => void;
   setRatios: (r: Partial<GameState["ratios"]>) => void;
   contributeExpedition: (zone: ZoneId, res?: ResId) => void;
@@ -159,7 +172,8 @@ export interface GameStore {
   clickShiny: (id: number) => void;
   marketDeal: (i: number) => void;
   whistle: () => void;
-  migrate: () => void;
+  /** Great Migration; v3 (ENG-11): `to` = one of migrationPreview().options (default options[0]). */
+  migrate: (to?: DistrictId) => void;
   buyEdict: (id: EdictId) => void;
   /** Rank II/III of a signed edict (after the first coronation ever). */
   buyEdictRank: (id: EdictId) => void;
@@ -187,7 +201,8 @@ export interface GameStore {
   /* ---- dev tools */
   devGive: (res: ResId, amount: number) => void;
   devWarp: (seconds: number) => void;
-  devTrigger: (id: SceneEventId | "purse" | "market") => void;
+  /** Start an event now; for a metro train, `variant` forces its variant (v3: circus, fog, …). */
+  devTrigger: (id: SceneEventId | "purse" | "market", variant?: TrainVariantId) => void;
   devOpenZone: (zone: ZoneId) => void;
 }
 
@@ -195,9 +210,17 @@ function seed(): number {
   return (Math.random() * 2 ** 32) >>> 0;
 }
 
+/**
+ * The dev handle window.__rr (and `?slot=`) is on in development, and in a production build only when the URL
+ * carries `dev` (`?dev`, `?dev=1`): the e2e suite (REP-2) drives the built app through it (v3 ENG-12).
+ */
+export function devHandleAllowed(nodeEnv: string | undefined, search: string): boolean {
+  return nodeEnv !== "production" || /(^|[?&])dev(=|&|$)/.test(search);
+}
+
 /** localStorage key; in dev `?slot=name` keeps a separate save per tab (parallel playtests). */
 function saveKey(): string {
-  if (process.env.NODE_ENV === "production" || typeof window === "undefined") return SAVE_KEY;
+  if (typeof window === "undefined" || !devHandleAllowed(process.env.NODE_ENV, window.location.search)) return SAVE_KEY;
   const slot = new URLSearchParams(window.location.search).get("slot");
   return slot ? `${SAVE_KEY}:${slot}` : SAVE_KEY;
 }
@@ -382,19 +405,29 @@ export const useGame = create<GameStore>((set, get) => {
     set({ crashed: true, crashError: errorText(e) });
   };
 
+  /**
+   * Publish a state worked on a clone of `prev` (v3 ENG-6): subtrees equal to prev's keep prev's objects
+   * (shareState), so selectors of unchanged parts return the same reference and their components skip the render.
+   * Safe because no published snapshot is ever mutated: every tick and action starts from cloneState.
+   */
+  const publish = (prev: GameState, next: GameState) => {
+    set({ game: shareState(prev, next) });
+  };
+
   /** Clone, mutate through the engine, publish, emit fx. A throw publishes nothing and marks the game crashed. */
   const mutate = (fn: (s: GameState, d: Derived, ctx: EngineCtx) => GameState | void) => {
     if (blocked()) return;
     const ctx: EngineCtx = { fx: [] };
+    const prev = get().game;
     let next: GameState;
     try {
-      const s = structuredClone(get().game);
+      const s = cloneState(prev);
       next = fn(s, derive(s), ctx) ?? s;
     } catch (e) {
       crash(e);
       return;
     }
-    set({ game: next });
+    publish(prev, next);
     emitFx(ctx.fx);
   };
 
@@ -610,15 +643,19 @@ export const useGame = create<GameStore>((set, get) => {
     advance: (steps, active) => {
       if (!get().ready || steps <= 0 || blocked()) return;
       const ctx: EngineCtx = { fx: [] };
+      const prev = get().game;
       let s: GameState;
       try {
-        s = structuredClone(get().game);
-        for (let i = 0; i < steps; i++) step(s, TICK, { active }, ctx);
+        s = cloneState(prev);
+        let d: Derived | null = null;
+        for (let i = 0; i < steps; i++) d = step(s, TICK, { active }, ctx);
+        // the elder's hint hysteresis (ENG-1): about once a second of play, never in a catch-up
+        if (d && s.settings.hints && Math.floor(s.time) !== Math.floor(prev.time) && steps <= 10) trackHint(s, d);
       } catch (e) {
         crash(e);
         return;
       }
-      set({ game: s });
+      publish(prev, s);
       // a stalled frame (short hidden tab, GC) catches up many ticks at once: drop the per-tick chatter
       emitFx(steps > 3 ? ctx.fx.filter((f) => !(f.k === "click" && f.auto) && f.k !== "birth" && !(f.k === "drop" && !f.big)) : ctx.fx);
     },
@@ -629,7 +666,7 @@ export const useGame = create<GameStore>((set, get) => {
       let s: GameState;
       let report: OfflineReport | null;
       try {
-        s = structuredClone(get().game);
+        s = cloneState(get().game);
         report = simulateOffline(s, seconds, ctx);
       } catch (e) {
         crash(e);
@@ -637,6 +674,16 @@ export const useGame = create<GameStore>((set, get) => {
       }
       set({ game: s, offlineReport: report && report.elapsed >= 60 ? report : get().offlineReport });
       emitFx(ctx.fx);
+    },
+
+    creditShortHold: (away) => {
+      if (!get().ready || blocked() || !(away > 0)) return;
+      let deferred: number[] = [];
+      mutate((s) => {
+        deferred = deferTrainsForReturn(s, away);
+      });
+      get().advance(Math.min(600, Math.floor(away / TICK)), false);
+      if (deferred.length) mutate((s) => releaseDeferredToast(s, deferred));
     },
 
     noteInput: () => set({ lastInputAt: Date.now() }),
@@ -687,7 +734,12 @@ export const useGame = create<GameStore>((set, get) => {
         buyUpgrade(s, id, ctx);
       }),
     assignJob: (job, delta) => mutate((s, d) => assignJob(s, d, job, delta)),
-    setFocus: (job) => mutate((s) => setFocus(s, job)),
+    setFocus: (job) =>
+      mutate((s) => {
+        setFocus(s, job);
+        if (s.focus === job) s.flags.focus_manual = true;
+      }),
+    setSteamPriority: (p) => mutate((s) => setSteamPriority(s, p)),
     setAssignMode: (mode) => mutate((s) => setAssignMode(s, mode)),
     setRatios: (r) => mutate((s) => setRatios(s, r)),
     contributeExpedition: (zone, res) =>
@@ -717,8 +769,8 @@ export const useGame = create<GameStore>((set, get) => {
       mutate((s, _d, ctx) => {
         whistle(s, ctx);
       }),
-    migrate: () => {
-      mutate((s, _d, ctx) => migrate(s, Date.now(), ctx) ?? undefined);
+    migrate: (to) => {
+      mutate((s, _d, ctx) => migrate(s, Date.now(), ctx, to) ?? undefined);
       get().save();
     },
     buyEdict: (id) =>
@@ -746,11 +798,10 @@ export const useGame = create<GameStore>((set, get) => {
         abandonCommission(s, ctx);
       }),
     applyHint: (h) => {
-      const a = h.action;
-      if (a?.kind === "assign") get().assignJob(a.job, a.n);
-      else if (a?.kind === "contribute") get().contributeExpedition(a.zone);
-      else if (a?.kind === "buyBuilding") get().buyBuilding(a.id, 1);
-      else if (a?.kind === "buyUpgrade") get().buyUpgrade(a.id);
+      // the same «Сделать» the newcomer bot uses (hints.applyHintAction); it also restarts the hint's stale clock
+      mutate((s, d, ctx) => {
+        applyHintAction(s, d, h, ctx);
+      });
       get().focus(h.tab, h.target);
     },
     setTrainPref: (pos) =>
@@ -814,7 +865,7 @@ export const useGame = create<GameStore>((set, get) => {
       const active = isActive(get().lastInputAt);
       let s: GameState;
       try {
-        s = structuredClone(get().game);
+        s = cloneState(get().game);
         for (let i = 0; i < steps; i++) step(s, TICK, { active }, ctx);
       } catch (e) {
         crash(e);
@@ -823,8 +874,9 @@ export const useGame = create<GameStore>((set, get) => {
       set({ game: s });
       emitFx(ctx.fx.filter((f) => f.k !== "birth" && f.k !== "click" && f.k !== "drop"));
     },
-    devTrigger: (id) =>
+    devTrigger: (id, variant) =>
       mutate((s) => {
+        if (variant && id === "metro_train") s.forceVariant = variant;
         if (id === "purse") s.timers.purse = s.time;
         else if (id === "market") s.timers.market = s.time;
         else if (id === "cat") s.timers.catForcedAt = s.time;
@@ -844,13 +896,8 @@ export const useGame = create<GameStore>((set, get) => {
 
 export { isActive };
 
-/** Derived values for the current state (memoized per state object). */
-export function useDerived(): Derived {
-  const game = useGame((st) => st.game);
-  return derivedOf(game);
-}
-
 const cache = new WeakMap<GameState, Derived>();
+/** Derived values of a game snapshot, memoized per state object. */
 export function derivedOf(game: GameState): Derived {
   let d = cache.get(game);
   if (!d) {
@@ -860,7 +907,15 @@ export function derivedOf(game: GameState): Derived {
   return d;
 }
 
-// dev-only handle for debugging in the browser console
-if (process.env.NODE_ENV !== "production" && typeof window !== "undefined") {
+/**
+ * The game is held (v3 ENG-5, K1): a ceremony is open, the engine crashed or a save issue is shown. Nothing ticks;
+ * scenes (SCN-1) freeze their clocks and audio (AUD-1) pauses while this is true.
+ */
+export function isHeld(st: Pick<GameStore, "ceremony" | "crashed" | "saveIssue">): boolean {
+  return st.ceremony || st.crashed || st.saveIssue !== null;
+}
+
+// the dev handle for the browser console and the e2e suite (dev builds; production only with ?dev)
+if (typeof window !== "undefined" && devHandleAllowed(process.env.NODE_ENV, window.location.search)) {
   (window as unknown as { __rr?: typeof useGame }).__rr = useGame;
 }

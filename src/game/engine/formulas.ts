@@ -1,7 +1,8 @@
 import { BUILDINGS } from "../data/buildings";
-import { CHARTER_MAX, CHARTER_MULT, CHARTER_MULT_CAP } from "../data/commissions";
+import { districtInfo } from "../data/districts";
+import { crownBonusMult } from "./metaMath";
 import { HUMAN_ACTIVITIES } from "../data/headlines";
-import { EXPRESS_BASE, EXPRESS_GROWTH } from "../data/meta";
+import { EXPRESS_BASE, EXPRESS_GROWTH, WAGON_GROWTH, WAGON_LINEAR, WAGON_LINEAR_RES, type ExpressRes } from "../data/meta";
 import { RESOURCES } from "../data/resources";
 import { ZONES } from "../data/zones";
 import type { Amounts, BuildingId, BuyMode, GameState, ResId, ZoneId } from "../types";
@@ -27,11 +28,25 @@ export function canAfford(s: GameState, cost: Amounts): boolean {
   return true;
 }
 
-/** How many levels are affordable right now (respecting maxLevel and `limit`). */
+/**
+ * The highest level a building can be bought to: BUILDINGS[id].maxLevel (Infinity without one); the boiler's 12 plus
+ * the current district's boilerMaxDelta (v3 ENG-4). A v2 save above it keeps its level (derive caps the effects).
+ */
+export function buildingMaxLevel(s: Pick<GameState, "meta">, id: BuildingId): number {
+  const max = BUILDINGS[id].maxLevel ?? Infinity;
+  return id === "boiler" ? max + (districtInfo(s.meta).trait.mods.boilerMaxDelta ?? 0) : max;
+}
+
+/** The building is at (or, from an old save, above) its highest level: nothing more to buy. */
+export function atMaxLevel(s: Pick<GameState, "meta" | "buildings">, id: BuildingId): boolean {
+  return s.buildings[id] >= buildingMaxLevel(s, id);
+}
+
+/** How many levels are affordable right now (respecting buildingMaxLevel and `limit`). */
 export function maxAffordable(s: GameState, id: BuildingId, limit = Infinity): number {
   const def = BUILDINGS[id];
   const level = s.buildings[id];
-  const room = (def.maxLevel ?? Infinity) - level;
+  const room = buildingMaxLevel(s, id) - level;
   let k = Math.min(room, limit);
   if (k <= 0) return 0;
   const g = def.growth;
@@ -52,7 +67,7 @@ export function maxAffordable(s: GameState, id: BuildingId, limit = Infinity): n
 export function buyCount(s: GameState, id: BuildingId, mode: BuyMode): number {
   if (mode === "max") return maxAffordable(s, id);
   if (mode === 10) {
-    const room = (BUILDINGS[id].maxLevel ?? Infinity) - s.buildings[id];
+    const room = buildingMaxLevel(s, id) - s.buildings[id];
     const want = Math.min(10, room);
     return want > 0 && maxAffordable(s, id, want) === want ? want : 0;
   }
@@ -86,6 +101,11 @@ export function affordFraction(s: GameState, cost: Amounts): number {
   return Math.max(0, Math.min(1, f));
 }
 
+/** Market value of one unit for payback maths (📜💍 have no market price: 50, like marketValue; 💨 counts as 0). */
+export function unitValue(r: ResId): number {
+  return RESOURCES[r].market ?? (r === "steam" ? 0 : 50);
+}
+
 /** Market value of an amount bundle (for ROI, purse "cheapest building"). */
 export function marketValue(a: Amounts): number {
   let v = 0;
@@ -105,15 +125,19 @@ export function expeditionCost(s: GameState, zone: ZoneId): Amounts {
   return out;
 }
 
-/** Cost of Rat Express stage n (1-based) or post-coronation wagon (n > 10). */
+/**
+ * Cost of Rat Express stage n (1-based) or post-coronation wagon k = n − 10 (v3 ENG-3):
+ * stage: base[r] × growth[r]^(n−1) × 0.75^[express_blueprints] (growth 1.6 for 🛤️⚙️🔔, 1.45 for 💍📜);
+ * wagon k: the stage-10 price × WAGON_GROWTH^k (🛤️⚙️🔔) or × (1 + WAGON_LINEAR·k) (💍📜, which ignore the global multiplier).
+ */
 export function expressStageCost(s: GameState, n: number): Amounts {
   const disc = s.meta.edicts.express_blueprints ? 0.75 : 1;
   const out: Amounts = {};
-  if (n <= 10) {
-    for (const [r, v] of entries(EXPRESS_BASE)) out[r] = Math.ceil(v * Math.pow(EXPRESS_GROWTH, n - 1) * disc);
-  } else {
-    const k = n - 10;
-    for (const [r, v] of entries(EXPRESS_BASE)) out[r] = Math.ceil(v * Math.pow(EXPRESS_GROWTH, 9) * disc * Math.pow(3, k));
+  const k = Math.max(0, n - 10);
+  for (const [r, v] of Object.entries(EXPRESS_BASE) as [ExpressRes, number][]) {
+    const g = EXPRESS_GROWTH[r];
+    const wagon = k <= 0 ? 1 : WAGON_LINEAR_RES.includes(r) ? 1 + WAGON_LINEAR * k : Math.pow(WAGON_GROWTH, k);
+    out[r] = Math.ceil(v * Math.pow(g, Math.min(n, 10) - 1) * disc * wagon);
   }
   return out;
 }
@@ -131,11 +155,8 @@ export function isComplete(cost: Amounts, progress: Amounts): boolean {
 
 /* ------------------------------------------------------------ prestige */
 
-/** The coronation's ×1.25 on crowns, times the King's charters (EN-12: ×1.05 each, at most ×1.5). */
-function crownBonus(s: GameState): number {
-  const charters = Math.min(CHARTER_MULT_CAP, Math.pow(CHARTER_MULT, Math.max(0, Math.min(CHARTER_MAX, s.charters ?? 0))));
-  return (s.coronatedThisRun ? 1.25 : 1) * charters;
-}
+/** The coronation's ×1.25 on crowns, times the King's charters (metaMath.crownBonusMult). */
+const crownBonus = crownBonusMult;
 
 /** No crowns below this E_run (the first migration gives 10). */
 const CROWNS_MIN_E = 1e6;

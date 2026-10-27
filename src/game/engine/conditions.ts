@@ -14,6 +14,7 @@ export function check(s: GameState, c: Cond): boolean {
   if ("upgrade" in c) return !!s.upgrades[c.upgrade];
   if ("edict" in c) return !!s.meta.edicts[c.edict];
   if ("flag" in c) return !!s.flags[c.flag];
+  if ("migrations" in c) return s.meta.migrations >= c.migrations;
   return false;
 }
 
@@ -31,6 +32,8 @@ export function describeCond(c: Cond, names: (kind: string, id: string) => strin
   if ("upgrade" in c) return `улучшение «${names("upgrade", c.upgrade)}»`;
   if ("edict" in c) return `указ «${names("edict", c.edict)}»`;
   if ("flag" in c) return flagName(c.flag);
+  if ("migrations" in c)
+    return c.migrations <= 1 ? "после первого Великого Переселения" : `после ${c.migrations} ${plural(c.migrations, "переселения", "переселений", "переселений")}`;
   return "?";
 }
 
@@ -54,6 +57,7 @@ function flagName(f: string): string {
     first_capsule: "первая пневмокапсула",
     first_train: "пережить первый поезд",
     first_cat: "встретить Кота",
+    first_rumble: "услышать гул из глубины",
   };
   return m[f] ?? f;
 }

@@ -5,7 +5,7 @@
  * SVG world (street + zone bands + chambers + rats + rail) under an imperative camera,
  * plus screen-space widgets (Суета, Цели, манометр, кошелёк, блестяшки, кнопки зон).
  */
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { cx } from "@/components/ui/kit";
 import { BUILDINGS } from "@/game/data/buildings";
@@ -13,13 +13,14 @@ import { RESOURCES } from "@/game/data/resources";
 import { ZONES } from "@/game/data/zones";
 import { nextMilestone, resMult } from "@/game/engine/derive";
 import { buildingCost, canAfford, entries, timeToAfford } from "@/game/engine/formulas";
-import { onFx } from "@/game/fx";
+import { emitUiFx, onFx } from "@/game/fx";
 import { derivedOf, useGame } from "@/game/store";
 import { BUILDING_IDS, ZONE_IDS, type Amounts, type BuildingId, type ResId, type ZoneId } from "@/game/types";
+import { useSampled } from "@/game/useSampled";
 import { fmt, fmtInt, fmtRate, fmtTime } from "@/lib/format";
-import { sfx } from "@/audio/sfx";
+import { isPhoneLayout, matchesQuery } from "@/lib/layoutMode";
 import { BrassButton } from "@/components/ui/kit";
-import { addAnchorResolver, setColonyRectGetter, setFxAnchor } from "../fx/fxBus";
+import { addAnchorResolver, fxBurst, inColony, setColonyRectGetter, setFxAnchor } from "../fx/fxBus";
 import { BgEvents } from "./BgEvents";
 import { BustleMeter } from "./BustleMeter";
 import { CameraController, camView, onCamera, toScreen, type CamView } from "./camera";
@@ -29,31 +30,53 @@ import { FlyingItems } from "./FlyingItems";
 import { BAND_H, bandTop, BUILDING_SLOT, GRATE, nextLocked, openZoneCount, shade, SHAFT_W, SHAFT_X, STREET_H, W } from "./geometry";
 import { GoalWidget } from "./GoalWidget";
 import { tipBox } from "./layout";
-import { LockedBand } from "./LockedBand";
+import { LockedBand, plaqueInfo, plaqueLine, RumbleLight } from "./LockedBand";
 import { Defs } from "./parts";
 import { Rail } from "./Rail";
 import { RatsLayer, SatietyBadge, spriteCount } from "./Rats";
 import { registerCull, setColonyCovered, updateCull } from "./registry";
 import { SteamGauge } from "./SteamGauge";
-import { Grate, PawHint, Rays, Street, Windup } from "./Street";
+import { Elder, Grate, PawHint, Rays, Street, Windup } from "./Street";
 import { Traffic } from "./Traffic";
 import { WorkBeats } from "./WorkBeats";
-import { ZoneBand, ZoneReveal } from "./ZoneBand";
+import { ZoneBand, ZoneReveal, ZoneSign } from "./ZoneBand";
 import { ZonePips } from "./ZonePips";
 
 /* ------------------------------------------------------------ small world pieces */
 
+/** The shaft's hole between y0 and y1, rounded only at the shaft's very top and bottom (segments meet flush). */
+function shaftHole(y0: number, y1: number, roundTop: boolean, roundBottom: boolean): string {
+  const l = SHAFT_X - SHAFT_W / 2;
+  const r = SHAFT_X + SHAFT_W / 2;
+  const R = 18;
+  const top = roundTop ? `M${l} ${y0 + R}Q${l} ${y0} ${l + R} ${y0}H${r - R}Q${r} ${y0} ${r} ${y0 + R}` : `M${l} ${y0}H${r}`;
+  const bottom = roundBottom ? `V${y1 - R}Q${r} ${y1} ${r - R} ${y1}H${l + R}Q${l} ${y1} ${l} ${y1 - R}` : `V${y1}H${l}`;
+  return `${top}${bottom}Z`;
+}
+
+/**
+ * The ladder shaft, one segment per open zone. COL-4: the segment of a zone opened while the player watches unrolls
+ * from the top (700 ms; none with reduced motion) and the settlers climb down it (Rats.tsx).
+ */
 const Shaft = memo(function Shaft() {
   const open = useGame((s) => openZoneCount(s.game));
+  const [open0] = useState(open);
   const top = STREET_H + 22;
-  const bottom = STREET_H + open * BAND_H - 18;
-  const x = SHAFT_X - SHAFT_W / 2;
+  const ends = Array.from({ length: open }, (_, i) => STREET_H + (i + 1) * BAND_H - 18);
   return (
     <g pointerEvents="none">
-      <rect x={x} y={top} width={SHAFT_W} height={bottom - top} rx="18" fill="#000" opacity=".42" />
-      <line x1={SHAFT_X} y1={top + 8} x2={SHAFT_X} y2={bottom - 6} stroke="#8a6438" strokeWidth="26" strokeDasharray="2.2 13" />
-      <line x1={SHAFT_X - 13} y1={top} x2={SHAFT_X - 13} y2={bottom} stroke="#a8743f" strokeWidth="1.6" />
-      <line x1={SHAFT_X + 13} y1={top} x2={SHAFT_X + 13} y2={bottom} stroke="#a8743f" strokeWidth="1.6" />
+      {ends.map((y1, i) => {
+        const y0 = i === 0 ? top : ends[i - 1];
+        const last = i === open - 1;
+        // the rungs keep their 15.2-unit rhythm across the joins (a band is 25 rungs)
+        return (
+          <g key={i} className={i >= open0 ? "cv-grow" : undefined}>
+            <path d={shaftHole(y0, y1, i === 0, last)} fill="#000" opacity=".42" />
+            <line x1={SHAFT_X} y1={i === 0 ? y0 + 8 : y0} x2={SHAFT_X} y2={last ? y1 - 6 : y1} stroke="#8a6438" strokeWidth="26" strokeDasharray="2.2 13" strokeDashoffset={i === 0 ? 0 : +((y0 - top - 8) % 15.2).toFixed(2)} />
+            <path d={`M${SHAFT_X - 13} ${y0}V${y1}M${SHAFT_X + 13} ${y0}V${y1}`} stroke="#a8743f" strokeWidth="1.6" />
+          </g>
+        );
+      })}
     </g>
   );
 });
@@ -227,10 +250,8 @@ function ChamberTip({ id, onHold, onClose }: { id: BuildingId; onHold: (on: bool
             size="sm"
             className="min-h-10 flex-1 text-xs"
             disabled={!affordable}
-            onClick={() => {
-              useGame.getState().buyBuilding(id, 1);
-              sfx.click();
-            }}
+            // the engine's buy fx already sounds the thud (audio-8: no extra click on top)
+            onClick={() => useGame.getState().buyBuilding(id, 1)}
           >
             {affordable ? "Построить +1" : eta >= 0 ? `через ${fmtTime(eta)}` : "не копится"}
           </BrassButton>
@@ -317,11 +338,96 @@ const MoreRats = memo(function MoreRats() {
   const extra = useGame((s) => Math.max(0, Math.floor(s.game.rats) - spriteCount(s.game.rats)));
   if (extra <= 0) return null;
   return (
-    <div className="pointer-events-none absolute bottom-2 left-1/2 z-10 -translate-x-1/2 rounded border border-line/80 bg-soot-2/80 px-2 py-0.5 font-display text-sm font-bold text-parchment shadow">
+    <div className="rounded border border-line/80 bg-soot-2/80 px-2 py-0.5 font-display text-sm font-bold text-parchment shadow">
       🐀 и ещё <span className="font-mono tabular text-brass-light">×{fmtInt(extra)}</span>
     </div>
   );
 });
+
+/** Same counter-scale as the level plates (--plate-k). */
+const plateK = (s: number) => Math.min(PLATE_K_MAX, Math.max(1, 11 / (9.5 * s)));
+
+/**
+ * COL-2 / mobile-8: on a zoomed-out colony (phones) the expedition plaque can sit below the view — then a chip docked
+ * bottom-centre says the same («↓ Разведка: Канализация · 9/12»). A tap opens the Map tab at the zone (or, before the
+ * Map tab exists, flies the camera down to the plaque).
+ */
+const ExpeditionChip = memo(function ExpeditionChip({ onGo }: { onGo: (z: ZoneId) => void }) {
+  const zone = useGame((s) => nextLocked(s.game));
+  const info = useSampled((s) => {
+    const z = nextLocked(s.game);
+    return z ? plaqueInfo(s.game, z) : null;
+  }, 2);
+  const digging = useGame((s) => !!s.game.digging && s.game.digging.zone === nextLocked(s.game));
+  const mapOpen = useGame((s) => !!s.game.revealed.tab_map);
+  const [below, setBelow] = useState(false);
+
+  useEffect(() => {
+    if (!zone) return;
+    return onCamera((v) => {
+      if (v.cw <= 1) return;
+      // the plaque's bottom edge (counter-scaled ≤ ×2 about its centre, colonyCss .cv-plaque)
+      const bottom = bandTop(zone) + BAND_H / 2 + 22 * Math.min(2, plateK(v.s));
+      const b = v.s < 0.7 && v.ch / 2 + (bottom - v.cy) * v.s > v.ch - 2;
+      setBelow((p) => (p === b ? p : b));
+    });
+  }, [zone]);
+
+  if (!zone || !below || !info) return null;
+  const text = plaqueLine(zone, info, digging);
+  return (
+    <button
+      type="button"
+      data-nodrag=""
+      onClick={() => onGo(zone)}
+      aria-label={`${text} — ${mapOpen ? "открыть карту" : "показать в колонии"}`}
+      className="pointer-events-auto flex min-h-10 max-w-[calc(100vw-24px)] items-center gap-1.5 rounded-full border border-[#4f9d8a] bg-soot-2/95 px-3 font-display text-sm font-bold text-parchment shadow-[0_2px_8px_rgba(0,0,0,.55)]"
+    >
+      <span aria-hidden>{digging ? "⛏️" : "↓"}</span>
+      <span className="min-w-0 truncate">{text}</span>
+    </button>
+  );
+});
+
+/** Narrow phones (portrait): the side panel is a bottom sheet there (GameRoot), «full» leaves a colony sliver. */
+const NARROW_MQ = "(max-width: 767px)";
+function subscribeNarrow(cb: () => void): () => void {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return () => {};
+  const m = window.matchMedia(NARROW_MQ);
+  m.addEventListener("change", cb);
+  return () => m.removeEventListener("change", cb);
+}
+const narrowNow = () => matchesQuery(NARROW_MQ);
+const narrowServer = () => false;
+
+/** mobile-10: the colony sliver of a full sheet keeps the grate and this way back to the half sheet. */
+function SliverChip() {
+  return (
+    <button
+      type="button"
+      data-nodrag=""
+      onClick={() => useGame.getState().setSheet("half")}
+      aria-label="Показать колонию — свернуть панель наполовину"
+      className="absolute right-2 top-2 z-20 flex h-10 items-center gap-1 rounded-full border border-brass-dark bg-soot-2/90 px-3 font-display text-sm font-bold text-brass-light shadow-[0_2px_8px_rgba(0,0,0,.5)]"
+    >
+      <span aria-hidden>▾</span> Колония
+    </button>
+  );
+}
+
+/** «Гул из глубины» (COL-1): dust trickles from the burrow's top shelf in two waves and the screen trembles 3 px. */
+function rumbleDust(): void {
+  const wave = () => {
+    for (let i = 0; i < 7; i++) {
+      const p = toScreen(40 + i * 106 + (Math.random() - 0.5) * 30, STREET_H + 6);
+      if (inColony(p)) fxBurst(p.x, p.y, "dust", 3, 1.3);
+    }
+  };
+  wave();
+  window.setTimeout(wave, 450);
+  // GameRoot drops the shake under reduced motion / «без тряски»
+  emitUiFx({ k: "shake", px: 3, ms: 900 });
+}
 
 /** A <g> that pauses its CSS animations while its world y-range is far outside the view. */
 function Culled({ y0, y1, children }: { y0: number; y1: number; children: ReactNode }) {
@@ -347,7 +453,12 @@ export default function ColonyView() {
   const covered = useGame((s) => s.game.scene !== null);
   const crowned = useGame((s) => s.game.meta.achievements.coronation !== undefined);
   const frenzy = useGame((s) => s.game.buffs.frenzyUntil > s.game.time);
+  // mobile-10: a full sheet on a portrait phone leaves a sliver: the grate and «▾ Колония», no widgets over them
+  const narrow = useSyncExternalStore(subscribeNarrow, narrowNow, narrowServer);
+  const sliver = useGame((s) => s.sheet === "full") && narrow;
   const [away, setAway] = useState(false);
+  // a colony under 700 px (portrait or landscape phones, tablets): «⤒ К решётке» would cover the bottom-centre chips
+  const [tight, setTight] = useState(false);
   const [overview, setOverview] = useState(false);
   const [tip, setTip] = useState<BuildingId | null>(null);
 
@@ -365,20 +476,33 @@ export default function ColonyView() {
     // the colony rect is cached from the camera (ResizeObserver, resize, scroll): no layout reads per fx
     let rect: DOMRect | null = null;
     setColonyRectGetter(() => rect);
-    let plateK = "";
+    let plateKey = "";
+    let tiny: boolean | null = null;
+    let tightNow: boolean | null = null;
     const offAnchor = onCamera((v) => {
       if (v.cw <= 1) return; // not measured yet
       if (!rect || rect.left !== v.left || rect.top !== v.top || rect.width !== v.cw || rect.height !== v.ch) rect = new DOMRect(v.left, v.top, v.cw, v.ch);
+      const tt = v.cw < 700;
+      if (tt !== tightNow) {
+        tightNow = tt;
+        setTight(tt);
+      }
       setFxAnchor(v.left + v.cw / 2 + (GRATE.x - v.cx) * v.s, v.top + v.ch / 2 + (GRATE.y - v.cy) * v.s);
       // CSS animations pause outside the view ± CULL_MARGIN (paused art still draws, so nothing pops; a whole band
       // of margin kept a fully hidden band running on phones)
       const hy = v.ch / 2 / v.s;
       updateCull(v.cy - hy - CULL_MARGIN, v.cy + hy + CULL_MARGIN);
       // level plates keep ≥ 11 css px digits at any home zoom (capped, so the 🔭 overview is not all plates)
-      const k = Math.min(PLATE_K_MAX, Math.max(1, 11 / (9.5 * v.s))).toFixed(2);
-      if (k !== plateK) {
-        plateK = k;
+      const k = plateK(v.s).toFixed(2);
+      if (k !== plateKey) {
+        plateKey = k;
         svg.style.setProperty("--plate-k", k);
+      }
+      // mobile-8: on phones the small painted lettering (signs, slates, relic labels) would be under 10 css px — hidden
+      const t = isPhoneLayout() && 9.6 * v.s < 10;
+      if (t !== tiny) {
+        tiny = t;
+        c.classList.toggle("cv-tiny", t);
       }
     });
     const offResolver = addAnchorResolver((key) => {
@@ -389,6 +513,9 @@ export default function ColonyView() {
     const offFx = onFx((fx) => {
       if (fx.k === "zoneDig") cam.focusZone(fx.zone, null);
       else if (fx.k === "zoneOpen") cam.focusZone(fx.zone, 4500);
+      else if (fx.k === "deepRumble") rumbleDust();
+      // COL-4: a finished express stage flies the camera to the platform, where the new part is fitted (ZoneBand)
+      else if (fx.k === "expressStage" && useGame.getState().game.zones.terminal) cam.focusZone("terminal", 4000);
     });
     cam.attach();
     return () => {
@@ -430,6 +557,10 @@ export default function ColonyView() {
     setTip(null);
     camRef.current?.toggleOverview();
   }, []);
+  const onPlaque = useCallback((z: ZoneId) => {
+    if (useGame.getState().game.revealed.tab_map) useGame.getState().focus("map", `z_${z}`);
+    else camRef.current?.focusZone(z, 4000);
+  }, []);
 
   return (
     <div
@@ -459,18 +590,29 @@ export default function ColonyView() {
           <ZoneBand key={z} zone={z} />
         ))}
         <LockedBand />
-        <Shaft />
+        {/* COL-3: chamber backs, then the shaft, the rail and the rats, then the chamber fronts (and the zone signboards over them) — rats work behind the furniture */}
         {BUILDING_IDS.map((id) => (
-          <Chamber key={id} id={id} onTip={onTip} />
+          <Chamber key={`b-${id}`} id={id} layer="back" />
         ))}
-        <WorkBeats />
+        <Shaft />
         <Rail />
         <RatsLayer />
+        {BUILDING_IDS.map((id) => (
+          <Chamber key={`f-${id}`} id={id} layer="front" onTip={onTip} />
+        ))}
+        {ZONE_IDS.map((z) => (
+          <ZoneSign key={z} zone={z} />
+        ))}
+        <Culled y0={STREET_H} y1={STREET_H + 200}>
+          <Elder />
+        </Culled>
+        <WorkBeats />
         <SatietyBadge />
         <FlyingItems />
         {ZONE_IDS.map((z) => (
           <ZoneReveal key={z} zone={z} />
         ))}
+        <RumbleLight />
         <Culled y0={-60} y1={STREET_H + 362}>
           <Rays />
           <Windup />
@@ -482,11 +624,20 @@ export default function ColonyView() {
 
       {frenzy && <div className="cv-frenzy pointer-events-none absolute inset-0 z-20 shadow-[inset_0_0_24px_6px_rgba(255,120,60,.6)]" />}
       <BgEvents />
-      <BustleMeter />
-      <GoalWidget />
-      <SteamGauge />
-      <ZonePips onZone={onZone} onOverview={onOverview} overview={overview} />
-      <MoreRats />
+      {sliver ? (
+        <SliverChip />
+      ) : (
+        <>
+          <BustleMeter />
+          <GoalWidget />
+          <SteamGauge />
+          <ZonePips onZone={onZone} onOverview={onOverview} overview={overview} />
+          <div className="pointer-events-none absolute left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1" style={{ bottom: away && tight ? 60 : 8 }}>
+            <MoreRats />
+            <ExpeditionChip onGo={onPlaque} />
+          </div>
+        </>
+      )}
       {away && (
         <button
           type="button"

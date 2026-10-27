@@ -6,7 +6,7 @@
  */
 import { memo, useEffect, useRef } from "react";
 import { useGame } from "@/game/store";
-import { hash01 } from "./sceneUtils";
+import { hash01, sceneHeld, sceneNow } from "./sceneUtils";
 
 export type TrainVariant = "metro" | "royal" | "capsule";
 
@@ -139,11 +139,14 @@ export function TrainDust({ intensity, color = "200,182,150" }: { intensity: num
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(canvas);
-    let last = performance.now();
+    // SCN-1: the dust hangs in the air while the game is held (scene clock)
+    let last = sceneNow();
     let raf = 0;
     let acc = 0;
-    const loop = (now: number) => {
+    const loop = () => {
       raf = requestAnimationFrame(loop);
+      if (sceneHeld()) return;
+      const now = sceneNow();
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
       acc += dt * 80 * level.current * k;

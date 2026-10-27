@@ -1,9 +1,11 @@
 "use client";
 
 /**
- * "Работы": population stats, food balance, satiety, the assignment mode, ratio sliders
- * and one row per unlocked job: what one rat brings (in coin-equivalents), surplus/full-store tags,
- * idle brigades and who needs them, converter intake, efficiency, runway and bottleneck (GDD 4.4, PA-4).
+ * "Работы": population stats, food balance, satiety, the assignment mode, ratio sliders, where the newborns go
+ * (the ★ focus, or the colony's own «авто» pick until the player chooses — PAN-1) and one row per unlocked job:
+ * the rat in its hat (JobThumb), what one rat brings (its «польза» in 🪙 per second, once a zone has opened),
+ * «лишние руки» / full-store tags, idle brigades and who needs them, converter intake, efficiency, runway and
+ * bottleneck (GDD 4.4, PA-4). The stokers' row carries the steam valve: who gets the steam first (ENG-4).
  * Every block subscribes to its own pre-formatted JSON model, so a tick re-renders only rows whose text
  * changed (PA-1).
  */
@@ -11,21 +13,26 @@ import { memo, useMemo, useState, type CSSProperties, type ReactNode } from "rea
 import { BUILDING_ORDER, BUILDINGS } from "@/game/data/buildings";
 import { JOBS } from "@/game/data/jobs";
 import { RESOURCES } from "@/game/data/resources";
+import { JOB_FROM, JOB_TO } from "@/game/data/sources";
 import { UPGRADE_ORDER, UPGRADES } from "@/game/data/upgrades";
 import { ZONES } from "@/game/data/zones";
 import { buildingVisible, currentExpedition, upgradeVisible } from "@/game/engine/actions";
 import { check } from "@/game/engine/conditions";
+import { hasFreeSlot } from "@/game/engine/core";
 import { idleRats, stunnedRats, resMult, type Derived } from "@/game/engine/derive";
-import { unitValue } from "@/game/engine/economy";
+import { crumbBalance, steamBudget, unitValue } from "@/game/engine/economy";
 import { buildingCost, entries, expeditionCost, remaining } from "@/game/engine/formulas";
+import { newbornTarget } from "@/game/engine/goals";
 import { converterBottleneck, inputRunway, jobValuePerRat } from "@/game/engine/hints";
 import { derivedOf, useGame } from "@/game/store";
-import { JOB_IDS, type AssignMode, type GameState, type JobId, type ResId } from "@/game/types";
+import { JOB_IDS, UPGRADE_IDS, ZONE_IDS, type AssignMode, type GameState, type JobId, type ResId, type SteamPriority, type UpgradeId } from "@/game/types";
 import { useSampled } from "@/game/useSampled";
 import { fmt, fmtInt, fmtRate, fmtTime } from "@/lib/format";
+import { UPGRADE_LOOKS } from "@/components/colony/ratArt";
 import { Badge, Bar, BrassButton, ResIcon, cx } from "@/components/ui/kit";
 import { isFresh } from "./alerts";
 import { HoverTip, SectionTitle, Segmented, Switch, Tag, Toolbar } from "./common";
+import { JobThumb } from "./Thumb";
 
 const MODE_NOTE: Record<AssignMode, string> = {
   focus: "Новорождённые идут на работу со ☆, пока там есть места, иначе — в собиратели. Пока еда в минусе, Старейшина шлёт всех кормить колонию.",
@@ -51,7 +58,7 @@ function signed(v: number): string {
   return v < 0 ? `−${fmt(-v)}` : fmt(v);
 }
 
-/** The brigade that earns most per rat, among those whose output is not in surplus («выгоднее всего»). */
+/** The brigade that earns most per rat, among those whose output is not in surplus («👍 выгодно»). */
 function bestJob(s: GameState): JobId | null {
   const d = derivedOf(s);
   let best: JobId | null = null;
@@ -66,6 +73,42 @@ function bestJob(s: GameState): JobId | null {
   return best;
 }
 
+/** Where the next newborn goes and which job wears the ★ (the player's focus, or the colony's own pick: «авто»). */
+interface NewbornModel {
+  /** The job wearing the filled star (null: the focus job is not open). */
+  star: JobId | null;
+  /** The star is the colony's pick (ENG-1 auto focus): the row shows an «авто» badge. */
+  auto: boolean;
+  /** «в ★ 🎩 карманники»: the target with its icon (★ only when the newborns follow the star). */
+  to: string;
+  /** What follows the dash. */
+  tail: string;
+}
+
+function newbornModel(s: GameState): NewbornModel {
+  const d = derivedOf(s);
+  const t = newbornTarget(s, d);
+  const auto = !!t.auto;
+  const star: JobId | null = auto ? t.job : check(s, JOBS[s.focus].unlock) ? s.focus : null;
+  const follows = t.job === star;
+  const to = `в ${follows ? "★ " : ""}${JOBS[t.job].icon} ${JOB_TO[t.job].slice(2)}`;
+  const others = JOB_IDS.some((j) => j !== "idle" && j !== t.job && check(s, JOBS[j].unlock));
+  let tail: string;
+  if (auto) tail = `${t.reason ?? "так рассудил Старейшина"} (авто${others ? "; нажмите звезду, чтобы выбрать самим" : ""})`;
+  else if (follows) tail = others ? "нажмите звезду у другой работы, чтобы сменить" : "других работ пока нет, но скоро найдутся";
+  else if (t.reason) tail = t.reason;
+  else if (crumbBalance(s, d) < 0) tail = "еда в минусе: Старейшина шлёт всех кормить колонию";
+  else if (star && !hasFreeSlot(s, d, star)) tail = `у ${JOB_FROM[star].slice(3)} под ★ нет свободных мест`;
+  else tail = "★ пока не выбрана";
+  return { star, auto, to, tail };
+}
+
+/** Owned upgrades that change how the rats look (UPGRADE_LOOKS), for the job thumbnails: "sharp_teeth,…". */
+const LOOK_IDS = UPGRADE_IDS.filter((u) => UPGRADE_LOOKS[u]);
+function looksKey(s: GameState): string {
+  return LOOK_IDS.filter((u: UpgradeId) => s.upgrades[u]).join(",");
+}
+
 export default function JobsTab() {
   const jobsKey = useGame((s) => JOB_IDS.filter((j) => check(s.game, JOBS[j].unlock)).join(","));
   const jobs = useMemo(() => jobsKey.split(",") as JobId[], [jobsKey]);
@@ -73,7 +116,18 @@ export default function JobsTab() {
   const relay = useGame((s) => !!s.game.upgrades.rat_relay);
   const tube = useGame((s) => !!s.game.upgrades.tube_orders);
   const best = useSampled((s) => bestJob(s.game), 2, Object.is);
+  const nbJson = useSampled((s) => JSON.stringify(newbornModel(s.game)), 2, Object.is);
+  const nb = useMemo(() => JSON.parse(nbJson) as NewbornModel, [nbJson]);
+  // the player's own ★ follows a click at once (the sampled model trails by up to 0.5 s); the «авто» pick stays sampled
+  const manual = useGame((s) => !!s.game.flags.focus_manual || s.game.assignMode !== "focus");
+  const focusJob = useGame((s) => (check(s.game, JOBS[s.game.focus].unlock) ? s.game.focus : null));
+  const star = manual ? focusJob : nb.star;
+  const autoStar = !manual && nb.auto;
+  // the only open job: its «авто» star offers no choice, and a press would switch the auto focus off for the run
+  const sole = jobs.filter((j) => j !== "idle").length <= 1;
+  const looks = useGame((s) => looksKey(s.game));
   const showRatios = relay && mode !== "focus";
+  const focusMode = mode === "focus" || !relay;
 
   return (
     <>
@@ -119,16 +173,17 @@ export default function JobsTab() {
           />
           {showRatios && <Ratios />}
         </>
-      ) : (
+      ) : null}
+      {focusMode && (
         <p className="mt-3 text-[11px] leading-snug text-parchment-dim">
-          Новорождённые идут в <span className="text-gaslight">☆</span> — нажмите звезду у нужной работы.
+          Новорождённые идут <b className="font-bold text-gaslight">{nb.to}</b> — {nb.tail}
         </p>
       )}
 
       <SectionTitle>Бригады</SectionTitle>
       <div className="space-y-2">
         {jobs.map((j) => (
-          <JobRow key={j} j={j} best={best === j} />
+          <JobRow key={j} j={j} best={best === j} star={star === j} auto={autoStar && star === j} sole={sole} looks={looks} />
         ))}
       </div>
     </>
@@ -352,7 +407,6 @@ interface JobModel {
   slots: string;
   prod: { r: ResId; v: string }[];
   cons: { r: ResId; v: string }[];
-  focus: boolean;
   focusMode: boolean;
   room: boolean;
   take: boolean;
@@ -363,6 +417,8 @@ interface JobModel {
   /** Converter intake per second at the current efficiency. */
   eat: { r: ResId; v: string }[];
   value: string | null;
+  /** The «польза» number waits for the first new zone: a newcomer's first minutes do without economics (PAN-1). */
+  showValue: boolean;
   /** Output without a market price (💨): no coin value line. */
   unpriced: boolean;
   surplus: boolean;
@@ -404,7 +460,6 @@ function jobModel(s: GameState, d: Derived, j: JobId): JobModel {
     slots: Number.isFinite(slots) ? fmtInt(slots) : "∞",
     prod: perRat.map(([r, v]) => ({ r, v: fmt(v) })),
     cons: intake.map(([r, v]) => ({ r, v: fmt(v) })),
-    focus: s.focus === j,
     focusMode: s.assignMode === "focus" || !s.upgrades.rat_relay,
     room: n < slots,
     take: canTake(s, d, j),
@@ -413,6 +468,7 @@ function jobModel(s: GameState, d: Derived, j: JobId): JobModel {
     total: perRat.map(([r, v]) => ({ r, v: fmtRate(v * n * workforce * eff), capped: capped.has(r) })),
     eat: isConv ? intake.map(([r, v]) => ({ r, v: fmt(v * n * workforce * eff) })) : [],
     value: val ? signed(val.value) : null,
+    showValue: s.meta.migrations > 0 || ZONE_IDS.some((z) => z !== "burrow" && !!s.zones[z]),
     unpriced: !idle && !val,
     surplus: !!val?.surplus,
     anyCapped: capped.size > 0,
@@ -422,25 +478,43 @@ function jobModel(s: GameState, d: Derived, j: JobId): JobModel {
   };
 }
 
-const JobRow = memo(function JobRow({ j, best }: { j: JobId; best: boolean }) {
+const JobRow = memo(function JobRow({
+  j,
+  best,
+  star,
+  auto,
+  sole,
+  looks,
+}: {
+  j: JobId;
+  best: boolean;
+  star: boolean;
+  auto: boolean;
+  /** The only open job: an «авто» star has nothing to choose from, so a press leaves the auto focus on. */
+  sole: boolean;
+  looks: string;
+}) {
   const json = useGame((s) => JSON.stringify(jobModel(s.game, derivedOf(s.game), j)));
   const m = useMemo(() => JSON.parse(json) as JobModel, [json]);
   const def = JOBS[j];
   const idle = j === "idle";
   const assign = (delta: number | "max") => useGame.getState().assignJob(j, delta);
+  const noChoice = auto && sole;
 
   return (
     <div
       data-target={`j_${j}`}
       className={cx(
         "scroll-my-16 rounded-lg border p-2 shadow-[inset_0_1px_0_rgba(232,201,131,.05)]",
-        m.focus && !idle ? "border-brass-dark bg-gradient-to-b from-brass/10 to-panel/60" : "border-line bg-panel/60",
+        star && !idle ? "border-brass-dark bg-gradient-to-b from-brass/10 to-panel/60" : "border-line bg-panel/60",
       )}
     >
       <div className="flex items-center gap-2">
         <HoverTip tip={def.desc}>
-          <span className="grid h-10 w-10 shrink-0 cursor-help place-items-center rounded-md border border-black/40 bg-black/30 text-xl shadow-[inset_0_2px_5px_rgba(0,0,0,.5)]">
-            {def.icon}
+          <span
+            className="grid h-10 w-12 shrink-0 cursor-help place-items-center rounded-md border border-black/40 bg-gradient-to-b from-black/10 to-black/40 shadow-[inset_0_2px_5px_rgba(0,0,0,.5)]"
+          >
+            <JobThumb job={j} looks={looks} className="h-[27px] w-12" />
           </span>
         </HoverTip>
         <div className="min-w-0 flex-1">
@@ -472,34 +546,73 @@ const JobRow = memo(function JobRow({ j, best }: { j: JobId; best: boolean }) {
         {!idle && (
           <button
             type="button"
-            aria-pressed={m.focus}
-            onClick={() => useGame.getState().setFocus(j)}
-            title={m.focusMode ? "Фокус: новорождённые идут сюда" : "Звезда действует только в режиме «Фокус»"}
+            aria-pressed={star}
+            aria-label={
+              noChoice
+                ? `${def.name}: сюда идут новорождённые (авто)`
+                : auto
+                  ? `${def.name}: сюда идут новорождённые (авто). Выбрать самим`
+                  : star
+                    ? `${def.name}: фокус новорождённых`
+                    : `Сделать фокусом: ${def.name}`
+            }
+            onClick={() => {
+              if (!noChoice) useGame.getState().setFocus(j);
+            }}
+            title={
+              !m.focusMode
+                ? "Звезда действует только в режиме «Фокус»"
+                : noChoice
+                  ? "Авто: других работ пока нет, новорождённые идут сюда сами"
+                  : auto
+                    ? "Авто: колония сама шлёт новорождённых сюда, пока вы не выберете звезду"
+                    : star
+                      ? "Фокус: новорождённые идут сюда"
+                      : "Сделать фокусом: новорождённые пойдут сюда"
+            }
             className={cx(
-              "grid h-10 w-10 shrink-0 place-items-center rounded-md border text-xl transition",
-              m.focus ? "border-brass bg-brass/15 text-gaslight shadow-[0_0_8px_rgba(242,184,75,.35)]" : "border-line text-parchment-dim hover:text-brass-light",
+              "relative grid h-10 w-10 shrink-0 place-items-center rounded-md border text-xl transition",
+              star ? "border-brass bg-brass/15 text-gaslight shadow-[0_0_8px_rgba(242,184,75,.35)]" : "border-line text-parchment-dim hover:text-brass-light",
               !m.focusMode && "opacity-50",
             )}
           >
-            {m.focus ? "★" : "☆"}
+            <span className={cx(auto && "-mt-2")}>{star ? "★" : "☆"}</span>
+            {auto && (
+              <span
+                aria-hidden
+                className="absolute inset-x-0 bottom-0.5 text-center font-sans text-[10px] font-bold leading-none tracking-wide text-gaslight"
+              >
+                авто
+              </span>
+            )}
           </button>
         )}
       </div>
 
-      {m.value !== null && (
+      {m.value !== null && (m.showValue || m.surplus || m.anyCapped || best) && (
         <div className={cx("mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[11px] tabular", m.surplus ? "text-parchment-dim opacity-70" : "text-brass-light")}>
-          <HoverTip tip="Рыночная цена того, что одна крыса этой бригады приносит за секунду, в монетках (у переработчиков — за вычетом сырья).">
-            <span className="cursor-help">≈ {m.value} 🪙-экв/крыса</span>
-          </HoverTip>
+          {m.showValue && (
+            <HoverTip tip="Рыночная цена того, что одна крыса этой бригады добывает за секунду, в пересчёте на монетки (у переработчиков — за вычетом сырья).">
+              <span className="cursor-help">
+                польза ≈ {m.value} 🪙/с с крысы
+              </span>
+            </HoverTip>
+          )}
           {m.surplus && (
-            <HoverTip tip="Крошек больше чем на 50% сверх прокорма: лишние руки полезнее на другой работе.">
+            <HoverTip tip="Крошек больше чем на 50% сверх прокорма: этим крысам найдётся дело полезнее.">
               <Tag tone="dim" className="cursor-help">
-                в избытке
+                лишние руки
               </Tag>
             </HoverTip>
           )}
           {m.anyCapped && <Tag tone="dim">склад полон</Tag>}
-          {best && <Tag tone="verdigris">★ выгоднее всего</Tag>}
+          {best && (
+            <HoverTip tip="Из бригад, чья добыча не в избытке, здесь одна крыса приносит больше всего (по рыночной цене).">
+              <Tag tone="verdigris" className="cursor-help">
+                👍 выгодно
+              </Tag>
+            </HoverTip>
+          )}
         </div>
       )}
       {m.unpriced && (
@@ -507,6 +620,7 @@ const JobRow = memo(function JobRow({ j, best }: { j: JobId; best: boolean }) {
           {m.prod.map((p) => RESOURCES[p.r].icon).join("")} на рынке не в ходу, но без пара встанут плавильни, кузни и прессы.
         </p>
       )}
+      {j === "stoker" && <SteamValve />}
       {m.needFor.length > 0 && (
         <p className="mt-0.5 text-[11px] leading-snug text-gaslight">
           нужны для: <span className="text-parchment">{m.needFor.join(", ")}</span>
@@ -586,3 +700,64 @@ const JobRow = memo(function JobRow({ j, best }: { j: JobId; best: boolean }) {
     </div>
   );
 });
+
+/* ------------------------------------------------------------ steam valve (ENG-4) */
+
+interface ValveModel {
+  supply: string;
+  press: string;
+  clock: string;
+  conv: string;
+  /** The machines want more than the stokers give: the valve decides who goes without. */
+  short: boolean;
+}
+
+function valveModel(s: GameState): ValveModel {
+  const b = steamBudget(s, derivedOf(s));
+  const need = b.press + b.clock + b.conv;
+  return {
+    supply: fmt(b.supply),
+    press: fmt(b.press),
+    clock: fmt(b.clock),
+    conv: fmt(b.conv),
+    short: need > b.supply * 1.001 && need > 0,
+  };
+}
+
+const VALVE_TIP =
+  "Кому пар в первую очередь, когда его не хватает на всех. «Заводу»: плавильни и кузни, прессам и часам — что останется. «Прессам»: прессы и часы, плавильням и кузням — остатки. Бюджет — что дадут кочегары; дальше — сколько просит каждый на полном ходу.";
+
+/** «Пар: заводу / прессам» under the stokers, with the budget split (who asks how much). */
+function SteamValve() {
+  const json = useSampled((s) => JSON.stringify(valveModel(s.game)), 2, Object.is);
+  const m = useMemo(() => JSON.parse(json) as ValveModel, [json]);
+  // the valve itself follows a click at once; only the budget numbers are sampled
+  const p = useGame((s): SteamPriority => (s.game.steamPriority === "power" ? "power" : "works"));
+  return (
+    <div className="mt-1.5 rounded border border-line/70 bg-black/25 px-2 py-1.5">
+      <div className="flex items-center gap-2">
+        <HoverTip tip={VALVE_TIP}>
+          <span className="shrink-0 cursor-help text-[10px] font-bold uppercase tracking-wider text-parchment-dim">💨 Пар:</span>
+        </HoverTip>
+        <Segmented<SteamPriority>
+          label="Кому пар в первую очередь"
+          className="min-w-0 flex-1"
+          value={p}
+          onChange={(p) => useGame.getState().setSteamPriority(p)}
+          options={[
+            { value: "works", label: "заводу", title: "Плавильни и кузни первыми, прессам и часам — что останется" },
+            { value: "power", label: "прессам", title: "Прессы и часы первыми, плавильням и кузням — что останется" },
+          ]}
+        />
+      </div>
+      <p className="mt-1 font-mono text-[11px] leading-snug tabular text-parchment-dim">
+        бюджет {m.supply} 💨/с: прессы {m.press} · часы {m.clock} · плавильни/кузни {m.conv}
+      </p>
+      {m.short && (
+        <p className="mt-0.5 text-[11px] leading-snug text-gaslight">
+          На всех не хватает: первыми пар получают {p === "works" ? "плавильни и кузни" : "прессы и часы"}.
+        </p>
+      )}
+    </div>
+  );
+}

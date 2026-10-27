@@ -43,9 +43,22 @@ export function fmtPct(fraction: number, digits = 0): string {
   return (fraction * 100).toFixed(digits) + "%";
 }
 
-/** Seconds to a short Russian duration: "45с", "3м 12с", "1ч 05м", "2д 3ч". */
+/** Longest ETA fmtTime spells out (100 h); anything longer reads «> 4 д» (v3: no more «1.01e+25д»). */
+export const FMT_TIME_MAX_SEC = 100 * 3600;
+
+/**
+ * Seconds to a short Russian ETA: "45с", "3м 12с", "1ч 05м", "2д 3ч"; ≥ 100 ч → "> 4 д"; NaN/±∞ → "—".
+ * For elapsed time that may run past days (play time, absences) use fmtDuration.
+ */
 export function fmtTime(seconds: number): string {
-  if (!Number.isFinite(seconds)) return "∞";
+  if (!Number.isFinite(seconds)) return "—";
+  if (seconds >= FMT_TIME_MAX_SEC) return "> 4 д";
+  return fmtDuration(seconds);
+}
+
+/** Elapsed seconds without the ETA cap: "45с", "3м 12с", "1ч 05м", "12д 3ч" (NaN/±∞ → "—"). */
+export function fmtDuration(seconds: number): string {
+  if (!Number.isFinite(seconds)) return "—";
   const s = Math.max(0, Math.floor(seconds));
   if (s < 60) return `${s}с`;
   const m = Math.floor(s / 60);

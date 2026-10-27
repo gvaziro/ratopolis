@@ -10,21 +10,28 @@
  * lamps. Phones get a «Наверху» inset with the human train above (in the tag column, so the hook's count-in tag stays
  * in view under it). Reduced motion: no slow-mo, flash, streaks or gust (read when the arrival happens, so toggling it
  * mid-pass does not replay the arrival).
+ * v3 SCN-1: slow-mo and the sound throttles run on the scene clock (the canvas stands still while the game is held).
+ * SCN-2: a crew of four rats holds a tarp on the rail head under the wheels (crew.ts; the stance follows the crew
+ * position, catches near a span sag it, a rat ducks as a wheel crests over it; after a crash they lie dazed under 💫).
+ * SCN-4: the conductor shouts down with the arrival thump.
  */
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { sfx } from "@/audio/sfx";
 import { CREW_POSITIONS, HOOK_JACKPOT, TRAIN_CARS, TRAIN_VARIANTS } from "@/game/data/events";
 import { humanClock } from "@/game/engine/formulas";
-import { sfxCue } from "@/game/fx";
+import { sfxCue, sfxCue3 } from "@/game/fx";
 import { useGame } from "@/game/store";
 import type { CatchItem, CatchResult, Scene } from "@/game/types";
 import { fmt } from "@/lib/format";
 import { CatchCanvasCore, newCatchControl, type CatchControl } from "./CatchCanvas";
+import { CRASH_LOCK_S } from "./catchRules";
+import { crewCatch, drawCrew, newCrew } from "./crew";
+import { CrewSprites } from "./CrewArt";
 import TimingBar, { type TimingResult } from "./TimingBar";
 import { TrainDust } from "./TrainBackdrop";
 import { UpstairsInset } from "./UpstairsInset";
 import { createTrainPainter, type TrainPainter } from "./TrainPainter";
-import { act, reducedNow, shake } from "./sceneUtils";
+import { act, carLeft, EMOJI_FONT, reducedNow, sceneNow, shake, trainGeom } from "./sceneUtils";
 
 type HookUi = "hidden" | "open" | "thrown";
 
@@ -47,6 +54,8 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
 
   const control = useRef<CatchControl>(newCatchControl());
   const painter = useRef<TrainPainter | null>(null);
+  const crew = useRef(newCrew());
+  const wheelXs = useRef<number[]>([]);
   const lastJoint = useRef(-1);
   const chuffAt = useRef(0);
   const popAt = useRef(0);
@@ -74,10 +83,11 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
     else {
       sfx.chuffStart(2);
       sfx.whistle(royal);
-      // SC-5 arrival impact: hit-stop at half speed, a pale flash and a thump
+      // SC-5 arrival impact: hit-stop at half speed, a pale flash and a thump; SCN-4: the conductor shouts down
       sfxCue("thump");
+      sfxCue3("giantVoice", { intensity: 1 });
       if (!reducedNow()) {
-        control.current.slowUntil = performance.now() + 450;
+        control.current.slowUntil = sceneNow() + 450;
       }
     }
     shake(capsule ? 3 : 6, 500);
@@ -104,8 +114,28 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
         });
       }
       painter.current.draw(g, w, h, t, dt);
+      if (capsule) return;
+      // SCN-2: the crew on the rail head, under the loot (the canvas draws the items after us)
+      const G = trainGeom(w, h, sc.perCar, false);
+      const xs = wheelXs.current;
+      xs.length = 0;
+      for (let i = 0; i < n; i++) xs.push(carLeft(G, i, t, sc.perCar) + G.carLen / 2);
+      drawCrew(
+        g,
+        crew.current,
+        { w, h, railY: G.railY, position: sc.position, wheelXs: xs, wheelR: G.wheelR, t, crash: !!sc.crash, crashLock: CRASH_LOCK_S, reduced, emojiFont: EMOJI_FONT, dpr: Math.min(2, window.devicePixelRatio || 1), vmin: Math.min(window.innerWidth, window.innerHeight) },
+        dt,
+      );
     },
-    [sc, capsule, royal, hookCar, reduced, variant],
+    [sc, capsule, royal, hookCar, reduced, variant, n],
+  );
+
+  // SCN-2: a catch near a tarp span sags it and the nearest rat hops
+  const onCatch = useCallback(
+    (_combo: number, x: number, y: number) => {
+      if (!capsule) crewCatch(crew.current, x, y);
+    },
+    [capsule],
   );
 
   const onFrame = useCallback(
@@ -134,7 +164,7 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
         setCarIdx(Math.max(0, Math.min(n - 1, k)));
       }
       if (!capsule && t < n * sc.perCar) {
-        const now = performance.now();
+        const now = sceneNow();
         if (now - chuffAt.current > 200) {
           chuffAt.current = now;
           sfx.chuffSet(2 + 6 * Math.min(1, t / (n * sc.perCar)));
@@ -169,7 +199,7 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
   const onSpawn = useCallback((it: CatchItem, x: number, y: number) => {
     // capsules "sneeze" their loot out of the tube
     control.current.burst?.(x, y + 4, "#dfe7ea", it.spark ? 2 : 5);
-    const now = performance.now();
+    const now = sceneNow();
     if (now - popAt.current > 70) {
       popAt.current = now;
       sfx.pop();
@@ -188,7 +218,7 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
         sfx.tin();
       } else {
         control.current.hook = r === "perfect" ? "perfect" : "hit";
-        control.current.slowUntil = performance.now() + 300;
+        control.current.slowUntil = sceneNow() + 300;
         sfx.jackpot();
         shake(10, 600);
         setJackpot(r);
@@ -208,7 +238,8 @@ function TrainPassImpl({ scene }: { scene: Scene }) {
 
   return (
     <div className="absolute inset-0">
-      <CatchCanvasCore scene={sc} mode="train" onDone={onDone} control={control} drawBack={drawBack} onFrame={onFrame} onSpawn={capsule ? onSpawn : undefined} className="absolute inset-0" />
+      {!capsule && <CrewSprites />}
+      <CatchCanvasCore scene={sc} mode="train" onDone={onDone} onCatch={onCatch} control={control} drawBack={drawBack} onFrame={onFrame} onSpawn={capsule ? onSpawn : undefined} className="absolute inset-0" />
       <div className="pointer-events-none absolute left-2 top-2 flex flex-col items-start gap-1 md:left-3 md:top-3">
         {def && (
           <div className="flex items-center gap-1.5 rounded border border-brass-dark/70 bg-soot/75 px-2 py-1 text-xs shadow">

@@ -4,14 +4,34 @@
  * Shared helpers for event close-ups: store dispatch, motion settings, deterministic randomness,
  * colours/fonts for canvas drawing and the scene geometry shared by the canvas and the DOM backdrops.
  */
+import { useSyncExternalStore } from "react";
 import { emitUiFx } from "@/game/fx";
 import { useGame } from "@/game/store";
 import type { SceneAction } from "@/game/types";
+import { onSceneHold, sceneHeld, sceneNow } from "./sceneClock";
+import { isModalityKey } from "./sceneInput";
+
+export { onSceneHold, sceneHeld, sceneNow } from "./sceneClock";
 
 /* ------------------------------------------------------------ store */
 
-/** Dispatch a player action into the running scene. */
+/** Actions sent while the scenes are held, with the scene they were meant for (SCN-1). */
+const deferred: { a: SceneAction; seq: number }[] = [];
+onSceneHold((held) => {
+  if (held || !deferred.length) return;
+  const seq = useGame.getState().game.scene?.seq ?? 0;
+  for (const d of deferred.splice(0)) if (d.seq === seq) useGame.getState().scene(d.a);
+});
+
+/**
+ * Dispatch a player action into the running scene. While the scenes are held (a ceremony, a crash, a save issue, a
+ * hidden tab) nothing reaches the store: the action waits for the release and goes out then, if its scene still runs.
+ */
 export function act(a: SceneAction): void {
+  if (sceneHeld()) {
+    deferred.push({ a, seq: useGame.getState().game.scene?.seq ?? 0 });
+    return;
+  }
   useGame.getState().scene(a);
 }
 
@@ -24,8 +44,9 @@ export function actQuiet(a: SceneAction): void {
   useGame.getState().scene(a);
 }
 
-/** Screen shake through GameRoot (skipped entirely for reduced motion / no shake). */
+/** Screen shake through GameRoot (skipped entirely for reduced motion / no shake, and while the scenes are held). */
 export function shake(px: number, ms = 400): void {
+  if (sceneHeld()) return;
   const s = useGame.getState().game.settings;
   if (s.reducedMotion || s.noShake) return;
   emitUiFx({ k: "shake", px, ms });
@@ -35,9 +56,9 @@ export function reducedNow(): boolean {
   return useGame.getState().game.settings.reducedMotion;
 }
 
-/** A short haptic tick on phones (skipped for reduced motion; desktop browsers ignore it). */
+/** A short haptic tick on phones (skipped for reduced motion and while held; desktop browsers ignore it). */
 export function buzz(ms: number): void {
-  if (reducedNow()) return;
+  if (reducedNow() || sceneHeld()) return;
   try {
     navigator.vibrate?.(ms);
   } catch {
@@ -45,23 +66,70 @@ export function buzz(ms: number): void {
   }
 }
 
-/* Whether the player's last input in a close-up came from the keyboard (shows the ⌨ hints, survives phase changes). */
+/* ------------------------------------------------------------ input modality (SCN-5) */
+
+/* Whether the player's last input came from the keyboard (⌨ hints, focus moved into the scene; survives phase changes). */
 let keyboardLast = false;
+const kbdSubs = new Set<() => void>();
 export function noteKeyboard(on: boolean): void {
+  if (on === keyboardLast) return;
   keyboardLast = on;
+  for (const f of [...kbdSubs]) f();
 }
 export function keyboardUsed(): boolean {
   return keyboardLast;
 }
+function subscribeKeyboard(f: () => void): () => void {
+  kbdSubs.add(f);
+  return () => {
+    kbdSubs.delete(f);
+  };
+}
+/** keyboardUsed() as React state: re-renders when the player switches between the keys and a pointer. */
+export function useKeyboardUsed(): boolean {
+  return useSyncExternalStore(subscribeKeyboard, keyboardUsed, () => false);
+}
+
+let modalityUsers = 0;
+let modalityOff: (() => void) | null = null;
+/**
+ * Global input-modality tracker (SceneHost registers it once; ref-counted): Tab / Enter / Space / arrows switch to
+ * keyboard play, any pointer press switches back. Capture phase, so the scene handlers already see the new modality.
+ */
+export function trackInputModality(): () => void {
+  if (modalityUsers++ === 0 && typeof window !== "undefined") {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && isModalityKey(e.key)) noteKeyboard(true);
+    };
+    const onPointer = () => noteKeyboard(false);
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("pointerdown", onPointer, true);
+    modalityOff = () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("pointerdown", onPointer, true);
+    };
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    if (--modalityUsers === 0) {
+      modalityOff?.();
+      modalityOff = null;
+    }
+  };
+}
+
+/* ------------------------------------------------------------ clocks */
 
 /**
- * Seconds since `phaseStart`, anchored to the game clock when created and then advanced in real time
- * (the game clock only ticks at 10 Hz).
+ * Seconds since `phaseStart`, anchored to the game clock when created and then advanced on the scene clock (the game
+ * clock only ticks at 10 Hz). Stands still while the scenes are held (SCN-1) and goes on without a jump.
  */
 export function makeClock(phaseStart: number): () => number {
   const t0 = useGame.getState().game.time - phaseStart;
-  const p0 = performance.now();
-  return () => t0 + (performance.now() - p0) / 1000;
+  const p0 = sceneNow();
+  return () => t0 + (sceneNow() - p0) / 1000;
 }
 
 /* ------------------------------------------------------------ math */

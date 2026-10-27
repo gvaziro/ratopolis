@@ -11,6 +11,7 @@ import type { Derived } from "@/game/engine/derive";
 import { useGame } from "@/game/store";
 import type { Amounts, GameState, ResId } from "@/game/types";
 import { fmt } from "@/lib/format";
+import { ResGlyph } from "./ResGlyph";
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(" ");
@@ -96,10 +97,15 @@ export function Rivets() {
 
 /* ------------------------------------------------------------ resources */
 
+/**
+ * A resource's drawn glyph (v3 SHL-5: ResGlyph, the same on every OS) at the surrounding font size, named for
+ * screen readers. Needs <ResGlyphDefs/> mounted once (GameRoot does).
+ */
 export function ResIcon({ res, className }: { res: ResId; className?: string }) {
+  const name = RESOURCES[res].name;
   return (
-    <span className={cx("inline-block leading-none", className)} title={RESOURCES[res].name} aria-label={RESOURCES[res].name}>
-      {RESOURCES[res].icon}
+    <span role="img" className={cx("inline-flex items-center leading-none", className)} title={name} aria-label={name}>
+      <ResGlyph id={res} />
     </span>
   );
 }

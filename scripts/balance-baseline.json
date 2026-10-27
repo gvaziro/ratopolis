@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "written": "2026-10-26",
+  "args": [],
+  "seeds": {
+    "1": {
+      "coronationH": 2.837,
+      "r2gap": 460,
+      "r2steamMin": 1,
+      "r2steamShort": 0,
+      "passiveGap": 360,
+      "r2terminal": 49.115,
+      "passiveTerminal": 155.175,
+      "ncSewers": 12.237,
+      "ncCellars": 29.14,
+      "ncMetro": 52.345,
+      "ncTrain": 53.652
+    },
+    "2": {
+      "coronationH": 2.446,
+      "r2gap": 398,
+      "r2steamMin": 0.97,
+      "r2steamShort": 0,
+      "passiveGap": 300,
+      "r2terminal": 42.23,
+      "passiveTerminal": 143.175,
+      "ncSewers": 11.987,
+      "ncCellars": 26.59,
+      "ncMetro": 49.03,
+      "ncTrain": 50.335
+    },
+    "3": {
+      "coronationH": 2.533,
+      "r2gap": 307,
+      "r2steamMin": 1,
+      "r2steamShort": 0,
+      "passiveGap": 305,
+      "r2terminal": 48.435,
+      "passiveTerminal": 143.175,
+      "ncSewers": 10.237,
+      "ncCellars": 25.145,
+      "ncMetro": 42.91,
+      "ncTrain": 44.202
+    },
+    "777": {
+      "coronationH": 2.601,
+      "r2gap": 475,
+      "r2steamMin": 0.5,
+      "r2steamShort": 17,
+      "passiveGap": 365,
+      "r2terminal": 43.845,
+      "passiveTerminal": 160.175,
+      "ncSewers": 11.32,
+      "ncCellars": 26.675,
+      "ncMetro": 47.16,
+      "ncTrain": 48.468
+    },
+    "12345": {
+      "coronationH": 2.628,
+      "r2gap": 410,
+      "r2steamMin": 1,
+      "r2steamShort": 0,
+      "passiveGap": 240,
+      "r2terminal": 50.305,
+      "passiveTerminal": 157.175,
+      "ncSewers": 12.07,
+      "ncCellars": 25.145,
+      "ncMetro": 48.18,
+      "ncTrain": 49.485
+    }
+  }
+}

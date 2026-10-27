@@ -4,9 +4,13 @@
  * Event mini-scenes in «Наверху»: every event starts tiny up here, at human scale, while the colony
  * view shows the rat-scale close-up. Driven by game.scene (id/phase/seq) and game.market.
  * Moving actors use a small rAF tween that writes `transform` attributes directly.
+ * v3 (SHL-5, trains-12): the train wears its variant's colours (a freight is grey, the mail red) and the rare Cheddar
+ * dining car is painted yellow; after the Metro a carriage that only passes over the grate (s.carriagePass, ENG-9)
+ * trots by up here while its loot rains into the colony.
  */
 import { memo, useEffect, useRef, type CSSProperties, type RefObject } from "react";
-import type { SceneEventId, ScenePhase } from "@/game/types";
+import { TRAIN_VARIANTS } from "@/game/data/events";
+import type { SceneEventId, ScenePhase, TrainVariantId } from "@/game/types";
 import { H, MARGIN, PAVE_TOP, type SkyLayout } from "./skyGeo";
 
 export interface SceneInfo {
@@ -15,6 +19,10 @@ export interface SceneInfo {
   phase: ScenePhase;
   cars: number;
   perCar: number;
+  /** v3: the metro train's variant (absent = normal). */
+  variant?: TrainVariantId;
+  /** v3: index in scene.cars of the Cheddar dining car (0 is the engine), or -1. */
+  cheese?: number;
 }
 
 const vars = (v: Record<string, string>) => v as CSSProperties;
@@ -43,11 +51,23 @@ function useTweenX(ref: RefObject<SVGGElement | null>, from: number, to: number,
 
 /* ================================================================ near layer (street level) */
 
-export const NearEvents = memo(function NearEvents({ L, scene, market }: { L: SkyLayout; scene: SceneInfo | null; market: boolean }) {
+export const NearEvents = memo(function NearEvents({
+  L,
+  scene,
+  market,
+  pass,
+}: {
+  L: SkyLayout;
+  scene: SceneInfo | null;
+  market: boolean;
+  /** A carriage passing over the grate (no close-up): its seq and how long it takes (ms). */
+  pass?: { seq: number; ms: number } | null;
+}) {
   return (
     <g>
       {market && <MarketStall x={L.grate} />}
       {scene?.id === "carriage" && <Carriage key={scene.seq} L={L} />}
+      {!scene && pass && <Carriage key={`pass${pass.seq}`} L={L} ms={pass.ms} />}
       {scene?.id === "capsule" && <CapsuleTube x={L.pillar ?? L.grate + 56} phase={scene.phase} />}
       {(scene?.id === "metro_train" || scene?.id === "royal_express") && (
         <Train key={`${scene.seq}-${scene.phase === "catch" ? "go" : scene.phase}`} L={L} s={scene} />
@@ -59,11 +79,10 @@ export const NearEvents = memo(function NearEvents({ L, scene, market }: { L: Sk
 });
 
 /** A hansom cab trotting along the road and splashing through the puddle at the grate. */
-function Carriage({ L }: { L: SkyLayout }) {
+function Carriage({ L, ms = 5200 }: { L: SkyLayout; ms?: number }) {
   const ref = useRef<SVGGElement>(null);
   const from = Math.max(-70, L.C - 360);
   const to = Math.min(L.cut !== null ? L.cut - 8 : L.W + 70, L.C + 380);
-  const ms = 5200;
   useTweenX(ref, from, to, ms, 36);
   const splashAt = ((L.grate - from) / (to - from)) * ms;
   return (
@@ -175,7 +194,7 @@ function Train({ L, s }: { L: SkyLayout; s: SceneInfo }) {
       {passing && (
         <g clipPath={`url(#sk-cutclip-${s.seq})`}>
           <g ref={ref} transform={`translate(${from} 0)`}>
-            <TrainArt cars={cars} royal={royal} />
+            <TrainArt cars={cars} royal={royal} tint={royal ? null : (TRAIN_VARIANTS[s.variant ?? "normal"]?.tint ?? null)} cheese={s.cheese ?? -1} />
           </g>
         </g>
       )}
@@ -184,22 +203,35 @@ function Train({ L, s }: { L: SkyLayout; s: SceneInfo }) {
   );
 }
 
-export function TrainArt({ cars, royal }: { cars: number; royal: boolean }) {
-  const body = royal ? "#5a1c17" : "#3a2418";
+/**
+ * The train seen from the street. `tint`: the variant's body colour (TRAIN_VARIANTS[v].tint; null = the usual
+ * brown); `cheese`: index in scene.cars of the Cheddar dining car (0 is the engine), painted cheese-yellow.
+ */
+export function TrainArt({ cars, royal, tint = null, cheese = -1 }: { cars: number; royal: boolean; tint?: string | null; cheese?: number }) {
+  const body = royal ? "#5a1c17" : (tint ?? "#3a2418");
   const trim = royal ? "url(#sk-gold)" : "#7a5a3a";
-  const engine = royal ? "#4a1612" : "#2c4a3a";
-  // the engine leads at the right end of the group, carriages trail to the left
+  const engine = royal ? "#4a1612" : tint === "#4b4b52" ? "#2a2a30" : "#2c4a3a";
+  // the engine leads at the right end of the group, carriages trail to the left: car k (from the engine) sits at
+  // i = cars - k
   return (
     <g>
       {Array.from({ length: cars }, (_, i) => {
         const x = i * 34;
+        const cheddar = cheese > 0 && i === cars - cheese;
         return (
           <g key={i}>
-            <path d={`M${x + 1} 71.5 Q${x + 16.5} 66.5 ${x + 32} 71.5 V92 H${x + 1}Z`} fill={body} />
-            <rect x={x + 1} y={73.6} width={31} height={1.1} fill={trim} />
+            <path d={`M${x + 1} 71.5 Q${x + 16.5} 66.5 ${x + 32} 71.5 V92 H${x + 1}Z`} fill={cheddar ? "#e8b84b" : body} />
+            <rect x={x + 1} y={73.6} width={31} height={1.1} fill={cheddar ? "#b8861e" : trim} />
             {[4, 11, 18, 25].map((dx) => (
-              <rect key={dx} x={x + dx} y={76} width={4.4} height={5.2} rx={0.6} fill="#ffd27a" opacity={0.85} />
+              <rect key={dx} x={x + dx} y={76} width={4.4} height={5.2} rx={0.6} fill={cheddar ? "#fff4c4" : "#ffd27a"} opacity={0.85} />
             ))}
+            {cheddar && (
+              <g>
+                {[7, 16, 26].map((dx) => (
+                  <ellipse key={dx} cx={x + dx} cy={86} rx={1.5} ry={1.1} fill="#c98a1a" />
+                ))}
+              </g>
+            )}
             {royal && (
               <g>
                 <line x1={x + 16.5} y1={68.5} x2={x + 16.5} y2={63} stroke="#2a1f14" strokeWidth={0.4} />

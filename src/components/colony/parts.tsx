@@ -5,14 +5,84 @@
  * All parts are pure, hook-free components drawn around a local origin (usually bottom-centre or bottom-left).
  */
 import type { ReactNode } from "react";
-import { shade } from "./geometry";
+import { ZONES } from "@/game/data/zones";
+import { ZONE_IDS, type ZoneId } from "@/game/types";
+import { apexY, shade } from "./geometry";
 
 const INK = "#1a120c";
+
+/** A chamber's niche (local origin = floor centre): 176 × 148 with rounded upper corners. */
+export const NICHE = "M-88 0V-108Q-88 -148 -48 -148H48Q88 -148 88 -108V0Z";
+
+/**
+ * COL-3: the back wall of a built niche, one pattern per zone (userSpaceOnUse: the tiles line up with the chamber's
+ * floor centre). Drawn at .55 over the niche light, so the wall reads without competing with the art.
+ */
+function WallPatterns() {
+  return (
+    <>
+      {/* burrow: packed-earth strata and the hairs of roots that came through */}
+      <pattern id="cv-wall-burrow" width="120" height="46" patternUnits="userSpaceOnUse">
+        <path d="M0 13Q30 7 60 13T120 13" stroke="#6b4a2c" strokeWidth="5" fill="none" />
+        <path d="M0 34Q30 40 60 34T120 34" stroke="#4a3020" strokeWidth="3" fill="none" />
+        <path d="M86 0q-5 9 1 17q5 7 -2 14M30 18q3 6 -1 11" stroke="#9a7448" strokeWidth="1.1" fill="none" />
+        <path d="M14 24h4M70 26h5M104 4h3" stroke="#8a6a48" strokeWidth="2.6" strokeLinecap="round" />
+      </pattern>
+      {/* sewers: courses of wet brick */}
+      <pattern id="cv-wall-sewers" width="32" height="16" patternUnits="userSpaceOnUse">
+        <rect width="32" height="16" fill="#2c544f" />
+        <path d="M0 .5H32M0 8.5H32M8 0V8M24 8V16" stroke="#0e1e1d" strokeWidth="1.3" />
+      </pattern>
+      {/* cellars: vertical boards with a nail at the top and bottom */}
+      <pattern id="cv-wall-cellars" width="24" height="160" y="-152" patternUnits="userSpaceOnUse">
+        <rect width="24" height="160" fill="#6e4a2c" />
+        <path d="M.6 0V160" stroke="#2a1a0e" strokeWidth="1.4" />
+        <path d="M9 6q2 30 0 60t1 60" stroke="#8a6438" strokeWidth=".9" fill="none" />
+        <path d="M5 12h.1M5 146h.1" stroke="#c9b28a" strokeWidth="2" strokeLinecap="round" />
+      </pattern>
+      {/* metro: white tiles with a red band at y −70 */}
+      <pattern id="cv-wall-metro" width="24" height="168" y="-160" patternUnits="userSpaceOnUse">
+        <rect width="24" height="168" fill="url(#cv-tiles)" />
+        <rect width="24" height="168" fill="url(#cv-soot)" opacity=".55" />
+        <rect y="86" width="24" height="9" fill="#a8322a" />
+        <path d="M0 85.5H24M0 95.5H24" stroke="#4a1410" strokeWidth="1" />
+      </pattern>
+      {/* terminal: cream plaster above a brass dado rail and a panelled wainscot */}
+      <pattern id="cv-wall-terminal" width="176" height="168" x="-88" y="-160" patternUnits="userSpaceOnUse">
+        <rect width="176" height="168" fill="#efdcae" />
+        <rect y="120" width="176" height="48" fill="#7a5232" />
+        <path d="M14 128h40v30h-40zM68 128h40v30h-40zM122 128h40v30h-40z" fill="none" stroke="#4a2f1b" strokeWidth="1.4" />
+        <rect y="116" width="176" height="5" fill="url(#cv-brass)" />
+      </pattern>
+    </>
+  );
+}
 
 /** Gradients shared by the whole colony SVG (rendered once inside <defs>). */
 export function Defs() {
   return (
     <>
+      {/* COL-3: chamber interiors — the niche clip, the walls and a light that falls from the floor to a dark apex */}
+      <clipPath id="cv-niche">
+        <path d={NICHE} />
+      </clipPath>
+      <WallPatterns />
+      {ZONE_IDS.map((z) => {
+        const bg = ZONES[z].palette.bg;
+        return (
+          <linearGradient key={z} id={`cv-niche-light-${z}`} x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0" stopColor={shade(bg, -0.55)} />
+            <stop offset=".5" stopColor={shade(bg, -0.32)} />
+            <stop offset="1" stopColor={shade(bg, -0.1)} />
+          </linearGradient>
+        );
+      })}
+      {/* COL-4: a light pool in a zone-opening mask (black hides the veil, the soft edge lets it through) */}
+      <radialGradient id="cv-pool">
+        <stop offset="0" stopColor="#000" />
+        <stop offset=".55" stopColor="#000" stopOpacity=".92" />
+        <stop offset="1" stopColor="#000" stopOpacity="0" />
+      </radialGradient>
       <linearGradient id="cv-silver" x1="0" x2="1">
         <stop offset="0" stopColor="#8d949a" />
         <stop offset=".35" stopColor="#e9eef0" />
@@ -65,10 +135,11 @@ export function Defs() {
         <stop offset=".55" stopColor="#ffb36b" stopOpacity=".07" />
         <stop offset="1" stopColor="#ffb36b" stopOpacity="0" />
       </linearGradient>
+      {/* COL-1: at night the street's gas lamp shines through the grate (warm, not moonlight) */}
       <linearGradient id="cv-rays-night" x1="0" x2="0" y1="0" y2="1">
-        <stop offset="0" stopColor="#a9c1ff" stopOpacity=".18" />
-        <stop offset=".55" stopColor="#a9c1ff" stopOpacity=".04" />
-        <stop offset="1" stopColor="#a9c1ff" stopOpacity="0" />
+        <stop offset="0" stopColor="#ffcf7a" stopOpacity=".26" />
+        <stop offset=".55" stopColor="#ffcf7a" stopOpacity=".07" />
+        <stop offset="1" stopColor="#ffcf7a" stopOpacity="0" />
       </linearGradient>
       {(
         [
@@ -139,6 +210,91 @@ export type GlowKind = "warm" | "teal" | "red" | "gold" | "white" | "blue";
 export function Glow({ x, y, r, kind = "warm", className, opacity = 1 }: { x: number; y: number; r: number; kind?: GlowKind; className?: string; opacity?: number }) {
   const c = <circle cx={x} cy={y} r={r} fill={`url(#cv-glow-${kind})`} className={className} opacity={className ? undefined : opacity} />;
   return className && opacity !== 1 ? <g opacity={opacity}>{c}</g> : c;
+}
+
+/* ------------------------------------------------------------ the chamber lamp (COL-3) */
+
+const LAMP_GLOW: Record<ZoneId, GlowKind> = { burrow: "warm", sewers: "teal", cellars: "warm", metro: "warm", terminal: "gold" };
+/** Where the lamp's light sits relative to its hook x (the gas bracket burns off to the side). */
+const LAMP_DX: Partial<Record<ZoneId, number>> = { cellars: 8 };
+
+/**
+ * COL-3: the chamber's own lamp on a chain from the apex down to y −122, its body hanging to about −104. The glow
+ * (r 70, clipped to the niche) is the chamber's key light. Burrow: a candle stub in a thimble; sewers: a jam jar of
+ * glow-worms (teal); cellars: a gas bracket; metro: a caged bulb; terminal: a brass mini-chandelier.
+ * Off (an idle or steam-starved chamber): no flame, a dark bulb, glow .08. One infinite loop (cv-flicker, stepped by
+ * .cv-lamp so the flame repaints a few times a second, not every frame) while lit; culled with the chamber's back.
+ */
+export function ZoneLamp({ zone, x = 0, on = true }: { zone: ZoneId; x?: number; on?: boolean }) {
+  const top = apexY(x) + 1;
+  const lx = x + (LAMP_DX[zone] ?? 0);
+  let body: ReactNode;
+  switch (zone) {
+    case "burrow":
+      body = (
+        <>
+          <path d={`M${x} -122l-7 13M${x} -122l7 13`} stroke="#5d554d" strokeWidth=".8" fill="none" />
+          <rect x={x - 2.6} y={-115} width="5.2" height="7" rx="1" fill="#efe2c4" stroke={INK} strokeWidth=".5" />
+          <path d={`M${x - 8} -109h16l-2 9q-6 3 -12 0z`} fill="url(#cv-silver)" stroke="#3b3f42" strokeWidth=".7" />
+          {on && <path className="cv-flicker" d={`M${x} -125q4.5 6 0 10q-4.5 -4 0 -10z`} fill="#ffcf6a" stroke="#f08a2a" strokeWidth=".5" />}
+        </>
+      );
+      break;
+    case "sewers":
+      body = (
+        <>
+          <path d={`M${x - 6} -112q6 -10 12 0`} stroke="#5d554d" strokeWidth=".9" fill="none" />
+          <rect x={x - 7.5} y={-110} width="15" height="17" rx="3.5" fill={on ? "rgba(127,209,185,.32)" : "rgba(60,90,84,.4)"} stroke="#9cc7cf" strokeWidth=".8" />
+          <rect x={x - 7} y={-114} width="14" height="4.5" rx="1" fill="url(#cv-brass)" stroke={INK} strokeWidth=".5" />
+          {on && <path className="cv-flicker" d={`M${x - 3} -100.5h.1M${x + 2.5} -97.5h.1M${x + 1} -104.5h.1`} stroke="#c8fff0" strokeWidth="2.6" strokeLinecap="round" />}
+        </>
+      );
+      break;
+    case "cellars":
+      body = (
+        <>
+          <path d={`M${x} -122v8q0 6 6 6h2`} stroke="#b8913f" strokeWidth="2.4" fill="none" />
+          <path d={`M${x + 4} -100q0 -9 4 -11q4 2 4 11z`} fill={on ? "rgba(255,236,190,.4)" : "rgba(120,110,90,.4)"} stroke="#e8c983" strokeWidth=".7" />
+          {on && <path className="cv-flicker" d={`M${x + 8} -109q3 4 0 7q-3 -3 0 -7z`} fill="#ffcf6a" />}
+        </>
+      );
+      break;
+    case "metro":
+      body = (
+        <>
+          <rect x={x - 3} y={-122} width="6" height="6" fill="#2b2622" />
+          <circle cx={x} cy={-108} r="6.2" fill={on ? "#fff1c8" : "#5a544a"} stroke="#8d949a" strokeWidth=".5" />
+          {on && <path className="cv-flicker" d={`M${x - 2.6} -107l1.3 -2.2 1.3 2.2 1.3 -2.2 1.3 2.2`} stroke="#ff9a3a" strokeWidth=".9" fill="none" />}
+          <path d={`M${x - 7.5} -114v8q7.5 7 15 0v-8M${x} -116v16.5M${x - 7.5} -110h15`} stroke="#3b3f42" strokeWidth=".9" fill="none" />
+        </>
+      );
+      break;
+    case "terminal":
+      body = (
+        <>
+          <path d={`M${x} -122v10M${x - 12} -110q12 9 24 0`} stroke="url(#cv-brass)" strokeWidth="1.8" fill="none" />
+          <path d={`M${x - 13.5} -110h3v-5h-3zM${x - 1.5} -106h3v-5h-3zM${x + 10.5} -110h3v-5h-3z`} fill="#efe2c4" stroke={INK} strokeWidth=".4" />
+          {on && (
+            <path
+              className="cv-flicker"
+              d={`M${x - 12} -122q2.6 4 0 6.5q-2.6 -2.5 0 -6.5zM${x} -118q2.6 4 0 6.5q-2.6 -2.5 0 -6.5zM${x + 12} -122q2.6 4 0 6.5q-2.6 -2.5 0 -6.5z`}
+              fill="#ffd98a"
+            />
+          )}
+        </>
+      );
+      break;
+  }
+  return (
+    <g className="cv-lamp" pointerEvents="none">
+      <g clipPath="url(#cv-niche)">
+        <Glow x={lx} y={-108} r={70} kind={LAMP_GLOW[zone]} opacity={on ? 0.62 : 0.08} />
+      </g>
+      {zone !== "cellars" && <path d={`M${x} ${top}V-122`} stroke="#3a2a1a" strokeWidth="1.6" strokeDasharray="2.4 1.2" />}
+      {zone === "cellars" && <path d={`M${x} ${top}V-121`} stroke="#b8913f" strokeWidth="2.4" />}
+      {body}
+    </g>
+  );
 }
 
 /** A matchbox lying on its long side. (x, y) = bottom-left. */
@@ -538,7 +694,8 @@ export function Sign({ x, y, text, w, color = "#a8743f", ink = "#2a1a0c", size =
   return (
     <g>
       <rect x={x - ww / 2} y={y - size} width={ww} height={size * 1.9} rx="2" fill={color} stroke={INK} strokeWidth=".8" />
-      <text x={x} y={y + size * 0.32} fontSize={size} textAnchor="middle" fill={ink} className="font-display" fontWeight="700">
+      {/* cv-fine: hidden on phones while it would be under 10 css px (mobile-8; the blank board stays) */}
+      <text x={x} y={y + size * 0.32} fontSize={size} textAnchor="middle" fill={ink} className="font-display cv-fine" fontWeight="700">
         {text}
       </text>
     </g>

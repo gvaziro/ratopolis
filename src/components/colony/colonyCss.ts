@@ -27,6 +27,8 @@ const DECOR = [
   ".cv-drip",
   ".cv-fall",
   ".cv-clump",
+  // v3: every new decorative loop carries data-decor instead of joining this list
+  "[data-decor]",
 ].join(",");
 
 /** Keyframes and helper classes for the colony view (rendered once in a <style> tag by ColonyView). */
@@ -78,8 +80,6 @@ export const COLONY_CSS = `
 @keyframes cv-pop{0%{transform:scale(.2);opacity:0}60%{transform:scale(1.12);opacity:1}100%{transform:scale(1)}}
 .cv-boom{animation:cv-boom .9s ease-out both;transform-box:fill-box;transform-origin:center}
 @keyframes cv-boom{0%{transform:scale(.4);opacity:0}25%{transform:scale(1.15);opacity:1}70%{opacity:1}100%{transform:scale(1) translateY(-14px);opacity:0}}
-.cv-reveal{animation:cv-reveal 2.6s ease-in both}
-@keyframes cv-reveal{0%{opacity:1}100%{opacity:0}}
 .cv-crack{stroke-dasharray:var(--len,300);stroke-dashoffset:var(--len,300);animation:cv-crack 5s ease-out forwards}
 @keyframes cv-crack{to{stroke-dashoffset:0}}
 .cv-clump{animation:cv-clump 1.2s ease-in infinite}
@@ -123,4 +123,54 @@ export const COLONY_CSS = `
 .cv-ping{animation:cv-ping 1.4s cubic-bezier(0,0,.2,1) infinite}
 @keyframes cv-ping{0%{transform:scale(1);opacity:.8}75%,100%{transform:scale(1.7);opacity:0}}
 .cv-rm .cv-ping{animation:cv-blink 1s steps(2) infinite}
+.cv-grate-ring{opacity:0;transition:opacity .15s}
+g[role=button]:has(>.cv-grate-ring):focus{outline:none}
+g[role=button]:focus-visible .cv-grate-ring{opacity:1}
+.cv-litter{transform-box:fill-box;transform-origin:center}
+.cv-sniff{animation:cv-sniff 3.6s ease-in-out infinite;transform-box:fill-box;transform-origin:40% 100%}
+@keyframes cv-sniff{0%,52%,100%{transform:rotate(0)}58%{transform:rotate(-4deg)}62%{transform:rotate(-2deg)}66%{transform:rotate(-5deg)}74%,90%{transform:rotate(-14deg)}}
+.cv-glove{animation:cv-glove 1s ease-in-out infinite;transform-box:fill-box}
+@keyframes cv-glove{0%,100%{transform:translate(0,0)}50%{transform:translate(-3px,6px)}}
+.cv-ray-in{animation:cv-ray-in 3s ease-in-out both}
+@keyframes cv-ray-in{from{opacity:0}to{opacity:1}}
+.cv-ray-out{animation:cv-ray-out 3s ease-in-out both}
+@keyframes cv-ray-out{from{opacity:1}to{opacity:0}}
+.cv-rumble{animation:cv-rumble 3s ease-in-out both}
+@keyframes cv-rumble{0%{opacity:0}18%{opacity:1}70%{opacity:1}100%{opacity:0}}
+/* 10-unit lettering at ≥ 10.4 css px: --plate-k is 1.158/s below its cap, so 0.9·k ≥ 1.04/s (the signboards are drawn over the chambers) */
+.cv-sign{transform:scale(max(1,var(--plate-k,1)*.9));transform-box:fill-box;transform-origin:100% 0}
+.cv-cap{transform:scale(max(1,var(--plate-k,1)*.9));transform-box:fill-box;transform-origin:50% 50%}
+.cv-plaque{transform:scale(min(var(--plate-k,1),2));transform-box:fill-box;transform-origin:50% 50%}
+.cv-tiny .cv-fine{display:none}
+.cv-rat .cv-tail{transform-origin:-12px -6px;animation:cv-tail-idle 1.8s steps(3) infinite alternate}
+.cv-lamp .cv-flicker{animation-timing-function:steps(2)}
+@keyframes cv-tail-idle{from{transform:rotate(-4deg)}to{transform:rotate(5deg)}}
+.cv-rat.cv-walk .cv-tail{animation:cv-tail .44s ease-in-out infinite alternate}
+@keyframes cv-tail{from{transform:rotate(-10deg)}to{transform:rotate(10deg)}}
+.cv-walk .cv-foot-a,.cv-walk .cv-foot-b{animation:cv-step .22s steps(2) infinite}
+.cv-walk .cv-foot-b{animation-delay:-.11s}
+@keyframes cv-step{from{transform:translateY(0)}to{transform:translateY(-2.8px)}}
+.cv-roll-in{animation:cv-roll-in .3s ease-out both}
+@keyframes cv-roll-in{from{transform:translateY(-15px)}to{transform:translateY(0)}}
+.cv-roll-out{animation:cv-roll-out .3s ease-in both}
+@keyframes cv-roll-out{from{transform:translateY(0)}to{transform:translateY(15px)}}
+.cv-rm .cv-roll-out{display:none}
+.cv-rm .cv-roll-in{animation:none}
+.cv-badge.cv-bulk{animation-duration:1.2s}
+.cv-rm .cv-badge.cv-bulk{animation:cv-fade-out 1.2s ease-in both}
+@keyframes cv-fade-out{0%,60%{opacity:1}100%{opacity:0}}
+.cv-grow{animation:cv-grow .7s cubic-bezier(.3,.7,.4,1) both;transform-box:fill-box;transform-origin:50% 0}
+@keyframes cv-grow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+.cv-bloom{animation:cv-bloom .6s cubic-bezier(.2,.8,.3,1) both;transform-box:fill-box;transform-origin:center}
+@keyframes cv-bloom{from{transform:scale(0)}to{transform:scale(1)}}
+.cv-veil{animation:cv-veil 2.9s linear both}
+@keyframes cv-veil{0%,76%{opacity:1}100%{opacity:0}}
+.cv-veil-rm{animation:cv-veil-rm .4s ease-in both}
+@keyframes cv-veil-rm{from{opacity:1}to{opacity:0}}
+.cv-drop{animation:cv-drop .8s cubic-bezier(.3,1.4,.5,1) 1s both}
+@keyframes cv-drop{from{transform:translateY(-34px);opacity:0}25%{opacity:1}to{transform:translateY(0)}}
+.cv-rm .cv-grow,.cv-rm .cv-drop{animation:none}
+.cv-loco>svg{width:216px;height:79.2px;overflow:visible}
+/* the nested panel Locomotive (×0.6) letters at ~3 css px on phones: the «+N вагонов» pill goes whole, the matchbox loses its word */
+.cv-tiny .cv-loco text,.cv-tiny .cv-loco svg>g:has(>text:last-child){display:none}
 `;

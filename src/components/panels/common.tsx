@@ -16,7 +16,7 @@ import { ZONES } from "@/game/data/zones";
 import { buildingVisible } from "@/game/engine/actions";
 import { check, describeCond } from "@/game/engine/conditions";
 import type { Derived } from "@/game/engine/derive";
-import { canAfford, entries, lockedByCap, timeToAfford } from "@/game/engine/formulas";
+import { buildingCost, canAfford, entries, lockedByCap, timeToAfford } from "@/game/engine/formulas";
 import { resourceSources, storageHintFor } from "@/game/engine/hints";
 import { emitUiFx } from "@/game/fx";
 import { derivedOf, useGame } from "@/game/store";
@@ -84,12 +84,23 @@ export { plural } from "@/lib/format";
 
 /* ------------------------------------------------------------ 🔒 storage hints */
 
+/** The most levels a store suggestion may ask for: «Кладовка ур. 29» from ур. 13 is advice nobody follows (PAN-1). */
+const STORE_STEPS_MAX = 3;
+
+interface StoreOption {
+  id: BuildingId;
+  /** The level that holds the price. */
+  level: number;
+}
+
 /**
- * Which storage building (and which level) would lift the cap of `r` above `price`.
+ * Stores that would lift the cap of `r` above `price` within STORE_STEPS_MAX levels, multipliers first (a vault
+ * doubles every cap at once); a store whose own next level is itself above a cap is no advice. `soon`: a store of an
+ * already open zone that has not appeared yet (the pantry before the first cap hit).
  * Flat adders: extra levels = (price − cap) / (amt × M), M = current multiplier on flat caps.
  * Multipliers: extra levels = log(price / cap) / log(mult).
  */
-export function storageHint(s: GameState, d: Derived, r: ResId, price: number): string {
+function storeOptions(s: GameState, d: Derived, r: ResId, price: number): { opts: StoreOption[]; soon: BuildingId | null } {
   const def = RESOURCES[r];
   const cap = d.caps[r];
   let flat = def.baseCap ?? 0;
@@ -107,31 +118,56 @@ export function storageHint(s: GameState, d: Derived, r: ResId, price: number): 
     }
   }
   const M = flat > 0 ? cap / flat : 1;
-  const opts: string[] = [];
-  // a store in an already open zone that has not appeared yet (the pantry before the first cap hit)
+  const opts: StoreOption[] = [];
   let soon: BuildingId | null = null;
+  const consider = (id: BuildingId, k: number) => {
+    const L = s.buildings[id];
+    if (k > STORE_STEPS_MAX || L + k > (BUILDINGS[id].maxLevel ?? Infinity)) return;
+    if (lockedByCap(buildingCost(id, L), d).length > 0) return;
+    opts.push({ id, level: L + k });
+  };
+  for (const m of mults) {
+    if (buildingVisible(s, m.id)) consider(m.id, Math.max(1, Math.ceil(Math.log(price / cap) / Math.log(m.m))));
+    else if (s.zones[BUILDINGS[m.id].zone]) soon ??= m.id;
+  }
   for (const a of adders) {
-    const L = s.buildings[a.id];
-    const k = Math.max(1, Math.ceil((price - cap) / (a.amt * M)));
-    if (L + k > (BUILDINGS[a.id].maxLevel ?? Infinity)) continue;
-    if (buildingVisible(s, a.id)) opts.push(`«${BUILDINGS[a.id].name}» ур. ${L + k}`);
+    if (buildingVisible(s, a.id)) consider(a.id, Math.max(1, Math.ceil((price - cap) / (a.amt * M))));
     else if (s.zones[BUILDINGS[a.id].zone]) soon ??= a.id;
   }
-  for (const m of mults) {
-    if (!buildingVisible(s, m.id)) {
-      if (s.zones[BUILDINGS[m.id].zone]) soon ??= m.id;
-      continue;
-    }
-    const k = Math.max(1, Math.ceil(Math.log(price / cap) / Math.log(m.m)));
-    opts.push(`«${BUILDINGS[m.id].name}» ур. ${s.buildings[m.id] + k}`);
-  }
-  const head = `Цена ${fmt(price)} ${def.icon} выше лимита склада (${fmt(cap)}).`;
+  return { opts, soon };
+}
+
+/** Which storage building (and which level) would lift the cap of `r` above `price` (the 🔒 cost tooltip). */
+export function storageHint(s: GameState, d: Derived, r: ResId, price: number): string {
+  const def = RESOURCES[r];
+  const { opts, soon } = storeOptions(s, d, r, price);
+  const head = `Цена ${fmt(price)} ${def.icon} выше лимита склада (${fmt(d.caps[r])}).`;
   const body = opts.length
-    ? ` Нужен склад: ${opts.slice(0, 3).join(" или ")}.`
+    ? ` Нужен склад: ${opts
+        .slice(0, 3)
+        .map((o) => `«${BUILDINGS[o.id].name}» ур. ${o.level}`)
+        .join(" или ")}.`
     : soon
       ? ` Склад «${BUILDINGS[soon].name}» откроется: ${condHint(s, BUILDINGS[soon].unlock)}.`
-      : " Подходящий склад откроется в новой зоне.";
+      : " Ни один склад пока столько не вместит: поднимите склады повыше или ищите склад в новой зоне.";
   return `${head}${body} Или добыча событий — ей лимит не писан.`;
+}
+
+/**
+ * The engine's «🔒 нужен склад» link, unless it asks a visible store for more than STORE_STEPS_MAX levels or for a
+ * level that is itself above a cap (ENG-1 fixes storageHintFor the same way; until then the panel corrects it).
+ */
+function storeLink(s: GameState, d: Derived, r: ResId, price: number): { text: string; target?: string; tip?: string } {
+  const h = storageHintFor(s, d, r, price);
+  const id = h.buildingId;
+  if (!id || !buildingVisible(s, id)) return h;
+  const lv = /ур\. (\d+)/.exec(h.text);
+  const jump = lv ? Number(lv[1]) - s.buildings[id] : 0;
+  if (jump <= STORE_STEPS_MAX && lockedByCap(buildingCost(id, s.buildings[id]), d).length === 0) return h;
+  const { opts, soon } = storeOptions(s, d, r, price);
+  if (opts.length) return { text: `${BUILDINGS[opts[0].id].icon} ${BUILDINGS[opts[0].id].name} ур. ${opts[0].level}`, target: `b_${opts[0].id}` };
+  if (soon) return { text: `«${BUILDINGS[soon].name}» — ${condHint(s, BUILDINGS[soon].unlock)}` };
+  return { text: "не влезет ни в один склад", tip: "Цена выше лимита любого склада: поднимите склады повыше или ищите склад в новой зоне." };
 }
 
 /* ------------------------------------------------------------ «Где взять» */
@@ -225,8 +261,8 @@ export function CostView({ items, className }: { items: CostItem[]; className?: 
 /** Serializable "why not yet" of a price (part of the card models). */
 export type WaitInfo =
   | { k: "eta"; text: string }
-  /** Price above the cap: a store to build (target b_<id> / z_<zone>, or none when it is not unlocked yet). */
-  | { k: "lock"; text: string; target?: string }
+  /** Price above the cap: a store to build (target b_<id> / z_<zone>, or none when it is not unlocked yet; tip: own tooltip). */
+  | { k: "lock"; text: string; target?: string; tip?: string }
   /** A short resource nobody produces. */
   | { k: "none"; r: ResId };
 
@@ -235,8 +271,8 @@ export function waitInfo(s: GameState, d: Derived, cost: Amounts): WaitInfo | nu
   if (canAfford(s, cost)) return null;
   const locked = lockedByCap(cost, d).find((r) => s.res[r] < (cost[r] ?? 0));
   if (locked) {
-    const h = storageHintFor(s, d, locked, cost[locked]);
-    return { k: "lock", text: h.text, target: h.target };
+    const h = storeLink(s, d, locked, cost[locked] ?? 0);
+    return h.tip ? { k: "lock", text: h.text, tip: h.tip } : { k: "lock", text: h.text, target: h.target };
   }
   const t = timeToAfford(s, cost);
   if (Number.isFinite(t)) return { k: "eta", text: `через ${fmtTime(Math.ceil(t))}` };
@@ -259,7 +295,7 @@ export function WaitView({ w }: { w: WaitInfo | null }) {
   if (w.k === "lock") {
     if (!w.target) {
       return (
-        <HoverTip tip={`Цена выше лимита склада. Нужен склад: ${w.text}`}>
+        <HoverTip tip={w.tip ?? `Цена выше лимита склада. Нужен склад: ${w.text}`}>
           <span className={cx(chip, "cursor-help whitespace-normal text-gaslight")}>🔒 {w.text}</span>
         </HoverTip>
       );
@@ -432,14 +468,17 @@ export function Segmented<T extends string | number>({
   className,
   label,
   dense,
+  slot,
 }: {
   value: T;
   options: SegOption<T>[];
   onChange: (v: T) => void;
   className?: string;
   label?: string;
-  /** Phone toolbars: 36 px buttons below md. */
+  /** Toolbar controls: 40 px buttons on phones too (PAN-3; it used to shrink them to 36 px below md). */
   dense?: boolean;
+  /** The phone sheet's 40 px handle row (SheetSlot): 32 px buttons whose touch area reaches the row's full height. */
+  slot?: boolean;
 }) {
   return (
     <div
@@ -459,8 +498,10 @@ export function Segmented<T extends string | number>({
             title={o.title}
             onClick={() => onChange(o.value)}
             className={cx(
-              "min-h-10 min-w-11 flex-1 whitespace-nowrap rounded px-2.5 text-xs font-bold transition",
-              dense && "max-md:min-h-9",
+              slot
+                ? "rr-slop min-h-8 min-w-10 flex-1 whitespace-nowrap rounded px-2 text-xs font-bold transition"
+                : "min-h-10 min-w-11 flex-1 whitespace-nowrap rounded px-2.5 text-xs font-bold transition",
+              dense && !slot && "max-md:min-h-10",
               sel
                 ? "bg-gradient-to-b from-brass-light via-brass to-brass-dark text-soot shadow-[inset_0_1px_0_rgba(255,255,255,.45)]"
                 : "text-parchment-dim hover:text-parchment disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-parchment-dim",
@@ -477,7 +518,7 @@ export function Segmented<T extends string | number>({
 /**
  * Sticky header of a tab: title on the left, controls on the right. Below md (the phone sheet) the tab bar already
  * names the tab, so the title is screen-reader only and the controls take the full width (PA-2); a toolbar with
- * no controls takes no room at all there.
+ * no controls takes no room at all there (with only `children`, the title row collapses and they stay).
  */
 export function Toolbar({ icon, title, right, children }: { icon: ReactNode; title: ReactNode; right?: ReactNode; children?: ReactNode }) {
   const bare = !right && !children;
@@ -488,7 +529,7 @@ export function Toolbar({ icon, title, right, children }: { icon: ReactNode; tit
         bare && "max-md:sr-only",
       )}
     >
-      <div className="flex min-h-9 flex-wrap items-center justify-between gap-x-3 gap-y-1 md:min-h-10">
+      <div className={cx("flex min-h-9 flex-wrap items-center justify-between gap-x-3 gap-y-1 md:min-h-10", !right && "max-md:min-h-0")}>
         <h2 className="font-display text-lg font-bold leading-none tracking-wide text-brass-light max-md:sr-only">
           <span className="mr-1.5">{icon}</span>
           {title}
@@ -602,10 +643,18 @@ const CSS = `
 .rr-puff { transform-box: fill-box; transform-origin: center; animation: rr-puff 1.9s ease-out infinite; }
 .rr-sway { transform-box: fill-box; transform-origin: 50% 0%; animation: rr-sway 2.6s ease-in-out infinite; }
 .rr-tick { animation: rr-tick 1s steps(1) infinite; }
+.rr-map-ping { transform-box: fill-box; transform-origin: center; animation: rr-ping 1.8s cubic-bezier(0,0,.2,1) infinite; }
 @keyframes rr-focus-ring { 0%,100% { box-shadow: 0 0 0 0 rgba(242,184,75,0); } 35% { box-shadow: 0 0 0 2px rgba(242,184,75,.95), 0 0 18px 4px rgba(242,184,75,.55); } }
 .rr-focus { animation: rr-focus-ring .8s ease-in-out 2; }
 .rr-board-glow { text-shadow: 0 0 6px rgba(242,184,75,.55), 0 0 1px rgba(242,184,75,.9); }
 .rr-silhouette { filter: brightness(0) drop-shadow(0 0 1px rgba(201,162,90,.75)); opacity: .7; }
+.cv-thumb { display: block; }
+.cv-thumb, .cv-thumb * { animation: none !important; }
+.rr-slop { position: relative; }
+.rr-slop::after { content: ""; position: absolute; inset: -4px -1px; }
+@media (max-width: 767.98px) {
+  main:has(> aside > [data-rr-sheet="peek"]) { grid-template-rows: minmax(0, 1fr) 3.5rem; }
+}
 .rr-range { -webkit-appearance: none; appearance: none; background: transparent; height: 40px; width: 100%; cursor: pointer; touch-action: pan-y; }
 .rr-range:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; border-radius: 6px; }
 .rr-range::-webkit-slider-runnable-track { height: 6px; border-radius: 9999px; background: linear-gradient(90deg, var(--brass-dark), var(--brass-light)) 0 0 / var(--pct, 50%) 100% no-repeat, rgba(0,0,0,.45); box-shadow: inset 0 1px 2px rgba(0,0,0,.6); }
@@ -613,10 +662,10 @@ const CSS = `
 .rr-range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 22px; height: 22px; margin-top: -8px; border-radius: 9999px; background: radial-gradient(circle at 35% 35%, var(--brass-light), var(--brass-dark)); border: 1px solid #4a3a1a; box-shadow: 0 2px 3px rgba(0,0,0,.6); }
 .rr-range::-moz-range-thumb { width: 22px; height: 22px; border-radius: 9999px; background: radial-gradient(circle at 35% 35%, var(--brass-light), var(--brass-dark)); border: 1px solid #4a3a1a; box-shadow: 0 2px 3px rgba(0,0,0,.6); }
 .rr-calm .rr-breathe, .rr-calm .rr-sheen::after, .rr-calm .rr-blink, .rr-calm .rr-glow, .rr-calm .rr-ping, .rr-calm .rr-dig,
-.rr-calm .rr-spin, .rr-calm .rr-puff, .rr-calm .rr-sway, .rr-calm .rr-tick, .rr-calm .rr-focus { animation: none !important; }
+.rr-calm .rr-spin, .rr-calm .rr-puff, .rr-calm .rr-sway, .rr-calm .rr-tick, .rr-calm .rr-focus, .rr-calm .rr-map-ping { animation: none !important; }
 .rr-calm .rr-focus { box-shadow: 0 0 0 2px var(--gaslight); }
 @media (prefers-reduced-motion: reduce) {
-  html:not([data-motion="on"]) :is(.rr-breathe, .rr-blink, .rr-glow, .rr-ping, .rr-dig, .rr-spin, .rr-puff, .rr-sway, .rr-tick, .rr-focus),
+  html:not([data-motion="on"]) :is(.rr-breathe, .rr-blink, .rr-glow, .rr-ping, .rr-dig, .rr-spin, .rr-puff, .rr-sway, .rr-tick, .rr-focus, .rr-map-ping),
   html:not([data-motion="on"]) .rr-sheen::after { animation: none !important; }
   html:not([data-motion="on"]) .rr-focus { box-shadow: 0 0 0 2px var(--gaslight); }
 }
