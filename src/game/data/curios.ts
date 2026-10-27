@@ -7,7 +7,7 @@ export type { CurioId, CurioOwner } from "../types";
  * «Кунсткамера Короля» (v3 ENG-10): 24 things the recurring humans keep losing, six sets of four. A curio drops at most
  * once per scene (a hash of the scene seq, never a draw from the sim RNG) as a rating-neutral item (CatchItem.curio)
  * from its source; catching it adds it to meta.curios for good. A full set grants a small perk.
- * v3: ids, owners, sources and texts are final; the drops, perks and medals are wired by ENG-10.
+ * Drops: rollCurio below and engine/curios.ts (addCurioItem, catchCurio); perks: curioPerks → derive / metaMath (GDD 11.1).
  */
 export interface CurioDef {
   id: CurioId;
@@ -32,7 +32,7 @@ export interface CurioSetDef {
   /** «Леди Пемберли». */
   name: string;
   icon: string;
-  /** The perk of the full set (text; ENG-10 applies it). */
+  /** The perk of the full set (text; curioPerks applies it). */
   perk: string;
   items: CurioId[];
 }

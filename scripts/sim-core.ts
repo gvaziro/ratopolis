@@ -7,7 +7,7 @@
 import { BUILDINGS } from "../src/game/data/buildings";
 import { CREW_POSITIONS, FOG_TOAST, GRATE_RAIN_TOAST, TRAIN_CARS } from "../src/game/data/events";
 import { CONVERTERS, JOBS } from "../src/game/data/jobs";
-import { EDICTS, EDICT_ORDER, EXPRESS_BASE, SEALS } from "../src/game/data/meta";
+import { EDICTS, EDICT_ORDER, EXPRESS_BASE, EXPRESS_GROWTH, SEALS } from "../src/game/data/meta";
 import { edictRank } from "../src/game/engine/ranks";
 import { RESOURCES } from "../src/game/data/resources";
 import { UPGRADES } from "../src/game/data/upgrades";
@@ -29,6 +29,7 @@ import {
   currentExpedition,
   expressCost,
   migrate,
+  SCOUT_PAY_SEC,
   setAssignMode,
   setFocus,
   setSteamPriority,
@@ -333,9 +334,16 @@ export function planJobs(s: GameState, d: Derived, rats: number, w: ResMap, defi
   }
 
   // 3. converter chains: one more worker plus the supporters its inputs need, if worth more per rat than an open job
-  const supporter: Partial<Record<ResId, JobId>> = { buttons: "scavenger", wire: "scavenger", coins: "pickpocket", coal: "coal_miner", cheese: "cheese_thief", steam: "stoker" };
+  // v3 (ENG-11): the forge is staffed with its smelters (🔔 for the smiths), the way a player runs the chain — planned
+  // on its own, a smith never found 🔔 the express had not already taken
+  const supporter: Partial<Record<ResId, JobId>> = { buttons: "scavenger", wire: "scavenger", coins: "pickpocket", coal: "coal_miner", cheese: "cheese_thief", steam: "stoker", brass: "smelter" };
+  // v3 (ENG-11): with the valve on "works" the smelters and smiths burn steam before the press and the clocks
+  // (economy.ts, ENG-4), so their inputs are checked without that demand. Checked against it, the press ate every
+  // stoker the chain could add and the planner staffed no smelter and no smith at all: a 35-minute 🛤️ stall with the
+  // forge built and coal by the million (Мэйфэр, run-3 replay 2 of scripts/sim-traits.ts). On "power" the press eats first.
+  const dIn: Derived = s.steamPriority === "power" ? d : { ...d, steamNeed: 0 };
   const lackOf = (t: Jobs, c: JobId): [ResId, number][] => {
-    const f = flows(s, d, { ...t, [c]: 0 }, rats, Infinity);
+    const f = flows(s, dIn, { ...t, [c]: 0 }, rats, Infinity);
     const rate = t[c] * d.jobSpeed[c] * wf;
     const out: [ResId, number][] = [];
     for (const [r, v] of entries(JOBS[c].consumes)) {
@@ -360,7 +368,7 @@ export function planJobs(s: GameState, d: Derived, rats: number, w: ResMap, defi
       for (let pass = 0; pass < 5; pass++) {
         let missing = false;
         let stuck = false;
-        for (const c of [j, "stoker"] as JobId[]) {
+        for (const c of (j === "smelter" ? [j, "stoker"] : [j, "smelter", "stoker"]) as JobId[]) {
           if (trial[c] <= 0) continue;
           for (const [r, lack] of lackOf(trial, c)) {
             missing = true;
@@ -1112,7 +1120,17 @@ export class Bot {
           .join(" ")} | def ${RES_IDS.filter((r) => this.deficit[r] > 0).map((r) => `${r}:${this.deficit[r].toFixed(0)}`).join(" ")} | w ${RES_IDS.filter((r) => this.w[r] > 0).map((r) => `${r}:${this.w[r].toFixed(2)}`).join(" ")}`,
       );
     this.lastTop = ranked[0] ?? null;
-    this.wishes = ranked.slice(0, 2).map((c) => c.cost);
+    // v3 (ENG-11): an express stage keeps the 💍 and 📜 it still needs (no multiplier reaches them) from buildings that
+    // do not make more of them, rush or not. Before, any extra 🪙 let the bot afford one more clocktower level
+    // (20 · 1.5^L 💍) and the 💍-bound late stages waited for what it had just spent, so a perk that only adds 🪙 made the
+    // coronation 12% slower (scripts/sim-traits.ts, GDD 15.17). A purchase under 2% of the stage's need still goes through.
+    const kept = zeroRes();
+    if (!this.rush && proj?.kind === "express") for (const [r, v] of entries(proj.rem)) if (r !== "steam" && RESOURCES[r].excludeGlobal) kept[r] += v;
+    const makes = (id: BuildingId | undefined, r: ResId) =>
+      !!id && (!!ENABLERS[r]?.includes(id) || (r === "trinkets" && id === "express_depot") || BUILDINGS[id].effects.some((e) => e.t === "produce" && e.res === r));
+    const keep = (cost: Amounts, r: ResId, id?: BuildingId) => (kept[r] > 0 && (cost[r] ?? 0) > 0.02 * kept[r] && !makes(id, r) ? kept[r] : 0);
+    // a wish does not hold back what the stage keeps (it would never be contributed, nor bought)
+    this.wishes = ranked.slice(0, 2).map((c) => Object.fromEntries(entries(c.cost).filter(([r]) => !keep(c.cost, r, c.id))) as Amounts);
     for (const u of [...UPGRADE_IDS]
       .filter((u) => !s.upgrades[u] && upgradeVisible(s, u))
       .sort((a, b) => bundleValue(UPGRADES[a].cost) - bundleValue(UPGRADES[b].cost))
@@ -1160,8 +1178,8 @@ export class Bot {
     // a rushed project holds everything it still needs, except from a small purchase (≤ 2% of what the project still
     // needs of each resource it shares): nobody stops buying a 15K-coin chute while saving 3M for the Terminal
     const small = (cost: Amounts) => entries(cost).every(([r, v]) => !(rushed[r] > 0) || v <= 0.02 * rushed[r]);
-    const held = (cost: Amounts, r: ResId) => reserve[r] + (small(cost) ? 0 : rushed[r]);
-    const fits = (cost: Amounts) => entries(cost).every(([r, v]) => s.res[r] + 1e-9 >= v + held(cost, r));
+    const held = (cost: Amounts, r: ResId, id?: BuildingId) => reserve[r] + (small(cost) ? 0 : rushed[r]) + keep(cost, r, id);
+    const fits = (cost: Amounts, id?: BuildingId) => entries(cost).every(([r, v]) => s.res[r] + 1e-9 >= v + held(cost, r, id));
 
     // priority targets: housing for the project's rat requirement, buildings that enable a missing project resource
     const prio: Candidate[] = [];
@@ -1174,7 +1192,9 @@ export class Bot {
       if (c) prio.push(c);
     }
     if (proj)
-      for (const id of this.enablers(s, d, proj.rem, rates)) {
+      // v3 (ENG-11): a chain that only runs on stock (the steam and coal left in the boiler room) is not production:
+      // the enablers are judged on the steady flows
+      for (const id of this.enablers(s, d, proj.rem, flows(s, d0, base.jobs, Math.floor(rats), Infinity))) {
         const c = cands.find((x) => x.id === id);
         if (c && !prio.includes(c)) prio.push(c);
       }
@@ -1184,7 +1204,7 @@ export class Bot {
         for (const r of p.locked) lockedRes.add(r);
         continue;
       }
-      if (fits(p.cost)) return [...p.extra, p.id];
+      if (fits(p.cost, p.id)) return [...p.extra, p.id];
       hold(p);
     }
 
@@ -1197,19 +1217,19 @@ export class Bot {
     for (const r of RES_IDS) if (isFull(s, d, r) && this.deficit[r] > 0 && rates[r] > 0) lockedRes.add(r);
     for (const r of lockedRes) {
       const st = this.cheapestStorage(s, d, r);
-      if (st && fits(st.cost)) return [st.id];
+      if (st && fits(st.cost, st.id)) return [st.id];
     }
 
     if (!ranked.length) return [];
     const best = ranked[0];
-    const affordable = ranked.filter((c) => fits(c.cost));
+    const affordable = ranked.filter((c) => fits(c.cost, c.id));
     if (!affordable.length) return [];
     if (affordable[0] === best) return [...best.extra, best.id];
     // save for the best unless it is far away; otherwise take a good affordable alternative
     const alt = affordable[0];
     // waiting only pays when the best will fit once affordable (not held back by a rushed project or a pending
     // target), and a passive player who already waited a whole check-in for it takes the alternative
-    const blocked = entries(best.cost).some(([r]) => held(best.cost, r) > 0);
+    const blocked = entries(best.cost).some(([r]) => held(best.cost, r, best.id) > 0);
     const stale = this.kind === "passive" && this.waitedFor === best.id;
     if (best.tta < 45 && !best.locked.length && !blocked && !stale && alt.score > best.score * 1.2) {
       this.waitedFor = best.id;
@@ -1218,7 +1238,7 @@ export class Bot {
     this.waitedFor = null;
     // an alternative is measured against the best purchase that is not held back: next to a bargain the rushed project
     // keeps out of reach for now, every other building would look like junk and the colony would buy nothing
-    const ref = blocked ? (ranked.find((c) => !entries(c.cost).some(([r]) => held(c.cost, r) > 0)) ?? best) : best;
+    const ref = blocked ? (ranked.find((c) => !entries(c.cost).some(([r]) => held(c.cost, r, c.id) > 0)) ?? best) : best;
     return alt.score <= Math.max(ref.score * 2.5, 600) ? [...alt.extra, alt.id] : [];
   }
 
@@ -1227,7 +1247,13 @@ export class Bot {
     const out: BuildingId[] = [];
     for (const [r, v] of entries(rem)) {
       if (v <= s.res[r] || rates[r] > 1e-6) continue;
-      for (const id of ENABLERS[r] ?? []) if (s.buildings[id] === 0 && buildingVisible(s, id) && !out.includes(id)) out.push(id);
+      for (const id of ENABLERS[r] ?? []) {
+        if (!buildingVisible(s, id)) continue;
+        // v3 (ENG-11): the chain's own supports come first — a foundry or a forge without a coal chute melts nothing.
+        // Before, a run whose bundle ROI picked the foundry alone waited 13 minutes at 8M 🪙 paid for the Terminal's 🛤️
+        for (const sup of BUNDLES[id] ?? []) if (s.buildings[sup] === 0 && buildingVisible(s, sup) && !out.includes(sup)) out.push(sup);
+        if (s.buildings[id] === 0 && !out.includes(id)) out.push(id);
+      }
       // v3 (ENG-11): the foundry or the forge stands, but its chain has no steam left (ENG-4: presses and clocks took
       // the stokers' budget) and the planner staffs nobody — another boiler level frees stokers for it. Without this the
       // bot sat on a 40-minute 🔔 stall with 2 empty smelter slots in about one run-3 replay in five (scripts/sim-traits.ts)
@@ -1485,6 +1511,8 @@ export interface RunReport {
   maxHungry: number;
   /** Foragers / rats at minutes 10, 26 and 45. */
   foragerShare: Partial<Record<number, number>>;
+  /** v3 (ENG-13): mechanics (the workshop crew, ⚙️) at minutes 10, 26 and 45 («Новичок»: some by minute 45). */
+  mechanicsAt: Partial<Record<number, number>>;
   /** The newcomer bot's own numbers (null for the other bots). */
   newcomer: NewcomerStats | null;
   /** Curios found, wagons built (express stages past 10) this run. */
@@ -1679,6 +1707,7 @@ export function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, e
     steamShortSec: 0,
     maxHungry: 0,
     foragerShare: {},
+    mechanicsAt: {},
     newcomer: null,
     curiosGained: 0,
     curiosOwned: 0,
@@ -1808,7 +1837,10 @@ export function runOne(s0: GameState, bot: Bot, run: number, opts: SimOptions, e
     if (dStep.steamNeed > 0 && s.steamEff < 0.9) rep.steamShortSec++;
     hungry = s.hungry ? hungry + 1 : 0;
     if (hungry > rep.maxHungry) rep.maxHungry = hungry;
-    if (sec === 600 || sec === 1560 || sec === 2700) rep.foragerShare[sec / 60] = s.jobs.forager / Math.max(1, s.rats);
+    if (sec === 600 || sec === 1560 || sec === 2700) {
+      rep.foragerShare[sec / 60] = s.jobs.forager / Math.max(1, s.rats);
+      rep.mechanicsAt[sec / 60] = s.jobs.mechanic;
+    }
     if (sec % 60 === 0) {
       const sb = steamBudget(s, dStep);
       rep.steamLog.push({ min: sec / 60, supply: sb.supply, need: sb.press + sb.clock + sb.conv, eff: s.steamEff, boiler: s.buildings.boiler, stock: s.res.steam });
@@ -1964,7 +1996,8 @@ export function fmtMin(sec: number | null | undefined): string {
 /* ================================================================ tuning overrides (dev) */
 
 type Overrides = {
-  buildings?: Record<string, { growth?: number; cost?: Amounts }>;
+  /** effects: replace the building's effect list (ENG-13: the press and clock steam use); maxLevel: the boiler cap. */
+  buildings?: Record<string, { growth?: number; cost?: Amounts; maxLevel?: number; effects?: (typeof BUILDINGS)[BuildingId]["effects"] }>;
   zones?: Record<string, { cost?: Amounts; rats?: number; mapRevealRats?: number; housingBonus?: number }>;
   jobs?: Record<string, { produces?: Amounts; consumes?: Amounts; unlock?: Cond }>;
   upgrades?: Record<string, { cost?: Amounts }>;
@@ -1974,6 +2007,9 @@ type Overrides = {
   districts?: Partial<Record<DistrictId, DistrictMods>>;
   /** v3 (ENG-10 tuning): curio drop chances per scene. */
   curios?: Partial<Record<CurioScene, number>>;
+  /** v3 (ENG-13 tuning): express stage growth per resource; seconds of event value per scout step (index = step − 1). */
+  expressGrowth?: Partial<Record<keyof typeof EXPRESS_GROWTH, number>>;
+  scoutPay?: number[];
 };
 
 /**
@@ -1988,6 +2024,8 @@ export function applyOverrides(json: string | Overrides | undefined): void {
     if (!def) throw new Error(`override: unknown building ${id}`);
     if (v.growth !== undefined) def.growth = v.growth;
     if (v.cost) def.cost = v.cost;
+    if (v.maxLevel !== undefined) def.maxLevel = v.maxLevel;
+    if (v.effects) def.effects = v.effects;
   }
   for (const [id, v] of Object.entries(o.zones ?? {})) {
     const def = ZONES[id as ZoneId];
@@ -2017,6 +2055,8 @@ export function applyOverrides(json: string | Overrides | undefined): void {
     def.trait = { ...def.trait, mods };
   }
   Object.assign(CURIO_CHANCE, o.curios ?? {});
+  Object.assign(EXPRESS_GROWTH, o.expressGrowth ?? {});
+  for (const [i, v] of (o.scoutPay ?? []).entries()) SCOUT_PAY_SEC[i] = v;
 }
 
 /** The data tables as they were before balance tuning (for `npm run sim -- --pre-tuning`, the "before" column). */

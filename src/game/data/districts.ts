@@ -100,9 +100,10 @@ export function amplifyMods(m: DistrictMods, k: number): DistrictMods {
 /**
  * The traits of the v1/v2 sequence (index = old meta.district). v3 (ENG-11) retune: the market's perk is a richer
  * «Сытость» and its quirk costs 📜; the potteries raise the boiler cap and slow the metro; the mansions pay in 💍;
- * Big Ben's quirk costs 📜 and lets the humans watch from 40 👁 (v2 quirks were extra paid events: no cost at all).
- * The forced-trait ablation (scripts/sim-traits.ts, GDD 15.17) softened three quirks that bit the late 💍 bottleneck
- * hardest: the mansions' 💍 −25% → −15%, the City's suspicion ×1.3 → ×1.2, Chelsea's express interval ×1.3 → ×1.2.
+ * Big Ben's quirk costs 📜 and lets the humans watch early (v2 quirks were extra paid events: no cost at all).
+ * The forced-trait ablation (scripts/sim-traits.ts, GDD 15.17: 3 replicates × 6 samples of run 3) keeps every plan value
+ * but Big Ben's: its double hit on the 💍 bottleneck (the express ×0.6 and 💍 ×1.5) crowned 15% faster than «Туман», so
+ * the perk is 💍 ×1.35 and the humans watch from 30 👁 (plan: ×1.5 and 40).
  */
 export const DISTRICT_TRAITS: DistrictTrait[] = [
   { name: "Туман", icon: "🌫️", perk: "Ничего особенного — только туман гуще похлёбки", quirk: "Никаких сюрпризов", mods: {} },
@@ -131,15 +132,15 @@ export const DISTRICT_TRAITS: DistrictTrait[] = [
     name: "Особняки",
     icon: "🎩",
     perk: "🪙 ×1.5, кошельки вдвое чаще",
-    quirk: "Дворецкие запирают шкатулки: 💍 −15%",
-    mods: { res: { coins: 1.5, trinkets: 0.85 }, purseFreqMult: 2 },
+    quirk: "Дворецкие запирают шкатулки: 💍 −25%",
+    mods: { res: { coins: 1.5, trinkets: 0.75 }, purseFreqMult: 2 },
   },
   {
     name: "Биг-Бен",
     icon: "🕰️",
-    perk: "Королевский экспресс чаще (×0.6 интервал), 💍 ×1.5",
-    quirk: "Часовые не дремлют: 📜 −20%, бдительность людей уже с 40 👁",
-    mods: { expressIntervalMult: 0.6, res: { trinkets: 1.5, blueprints: 0.8 }, vigilanceFrom: 40 },
+    perk: "Королевский экспресс чаще (×0.6 интервал), 💍 ×1.35",
+    quirk: "Часовые не дремлют: 📜 −20%, бдительность людей уже с 30 👁",
+    mods: { expressIntervalMult: 0.6, res: { trinkets: 1.35, blueprints: 0.8 }, vigilanceFrom: 30 },
   },
 ];
 
@@ -251,8 +252,8 @@ export const DISTRICTS: Record<DistrictId, DistrictDef> = {
       name: "Банки",
       icon: "🏦",
       perk: "🪙 ×1.5, кошельки в полтора раза чаще",
-      quirk: "Клерки бдительны: подозрение растёт ×1.2",
-      mods: { res: { coins: 1.5 }, purseFreqMult: 1.5, suspicionMult: 1.2 },
+      quirk: "Клерки бдительны: подозрение растёт ×1.3",
+      mods: { res: { coins: 1.5 }, purseFreqMult: 1.5, suspicionMult: 1.3 },
     },
     fillers: [
       "Сити: Банк Англии пересчитал золото. Дважды. Крысы сочувствуют",
@@ -339,8 +340,8 @@ export const DISTRICTS: Record<DistrictId, DistrictDef> = {
       name: "Мастерские художников",
       icon: "🎨",
       perk: "📜 ×1.5, кошельки в полтора раза чаще",
-      quirk: "Королевский экспресс реже (интервал ×1.2)",
-      mods: { res: { blueprints: 1.5 }, purseFreqMult: 1.5, expressIntervalMult: 1.2 },
+      quirk: "Королевский экспресс реже (интервал ×1.3)",
+      mods: { res: { blueprints: 1.5 }, purseFreqMult: 1.5, expressIntervalMult: 1.3 },
     },
     fillers: [
       "Челси: художник рисует Темзу в тумане. Туман позирует бесплатно",

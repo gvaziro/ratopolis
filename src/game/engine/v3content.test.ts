@@ -13,7 +13,7 @@ import { catchCurio } from "./curios";
 import { derive } from "./derive";
 import { buildTrain, clickShiny, sceneAction } from "./events";
 import { charterMult } from "./metaMath";
-import { coronationLine, weeksText } from "./narrative";
+import { coronationLine, expressLineSet, weeksText } from "./narrative";
 import { progressStat } from "./progress";
 import { RANKED } from "./ranks";
 import { deserialize, migrate as migrateSave, serialize } from "./save";
@@ -299,7 +299,8 @@ describe("ENG-11 London on a map", () => {
     const d = derive(next);
     expect(d.districtRes.coins).toBe(1.5);
     expect(d.purseFreq).toBe(1.5);
-    expect(d.suspicionMult).toBe(1.2);
+    expect(d.suspicionMult).toBe(DISTRICTS.city.trait.mods.suspicionMult);
+    expect(d.suspicionMult).toBeGreaterThan(1);
     expect(districtInfo(next.meta).loc).toBe("в Сити");
   });
 
@@ -447,6 +448,15 @@ describe("ENG-11 fresh words for repeat runs", () => {
     expect(contributeExpress(s, null, { fx: [] })).toBe(true);
     expect(s.express.stage).toBe(3);
     expect(s.news[s.news.length - 1].text).toBe("Этап «Котёл из медного чайника»: Леди Пемберли (дом №12) снова без чайника");
+    // the panel reads the same set: the coronation this run's express earned does not count for its own lines
+    expect(expressLineSet(s)).toBe(1);
+    s.express.stage = 9;
+    expect(contributeExpress(s, null, { fx: [] })).toBe(true);
+    expect(s.coronatedThisRun).toBe(true);
+    expect(s.meta.coronations).toBe(2);
+    expect(expressLineSet(s)).toBe(1);
+    expect(s.news.some((n) => n.text === `Этап «${EXPRESS_STAGES[9]}»: ${expressStageLine(10, 1).human}`)).toBe(true);
+    expect(expressLineSet({ meta: { ...s.meta, coronations: 2 }, coronatedThisRun: false })).toBe(2);
   });
 });
 

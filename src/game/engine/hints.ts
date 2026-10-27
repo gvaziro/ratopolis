@@ -940,7 +940,7 @@ export function steamBudgetLine(s: GameState, d: Derived): string {
  * The suspicion scale explained (SH-3 tooltip): +1%/min × suspicionMult (×3 while «Щепки от дудки» runs) while the
  * player is active (offline it stands still), the threshold that summons the ratcatcher (100%, Мэйфэр 80%) and the
  * time until he comes (0 once he is on his way), and what lowers it. v3 (ENG-8): human vigilance — the share of train
- * and capsule loot lost right now above vigilanceFrom (50, Биг-Бен 40), and its rule as a line.
+ * and capsule loot lost right now above vigilanceFrom (50, Биг-Бен 30), and its rule as a line.
  */
 export function suspicionInfo(
   s: GameState,

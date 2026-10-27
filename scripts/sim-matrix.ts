@@ -120,44 +120,77 @@ interface Metric {
   head: string;
   unit: Unit;
   ok: ((x: number) => boolean) | null;
+  /** How a missing value reads when missing is the target (the never-migrate coronation): it then passes. */
+  none?: string;
 }
 
 const METRICS: Metric[] = [
   { key: "coronationH", head: "коронация, ч (2.5–3.5)", unit: "h", ok: (x) => x >= 2.5 && x <= 3.5 },
+  // ENG-13: null = no coronation within the never-migrate run's 170 min (the target)
+  { key: "nmCoronation", head: "без переселения: коронация (нет за 170)", unit: "min", ok: (x) => x > 170, none: "нет" },
   { key: "r2gap", head: "з2 max(7→8, 8→9) (≤ 6:00)", unit: "sec", ok: (x) => x <= 360 },
+  { key: "r2gapMin", head: "з2 мин. этап 2..9 (≥ 0:45)", unit: "sec", ok: (x) => x >= 45 },
+  { key: "r2terminal", head: "з2 Вокзал (44–56)", unit: "min", ok: (x) => x >= 44 && x <= 56 },
+  { key: "r3coronation", head: "з3 коронация (≥ 30)", unit: "min", ok: (x) => x >= 30 },
+  { key: "r3wagons", head: "з3 вагонов за 20 мин после коронации (≥ 3)", unit: "int", ok: (x) => x >= 3 },
+  { key: "r2boiler", head: "з2 котёл (12)", unit: "int", ok: (x) => x === 12 },
+  { key: "r2steamTight", head: "з2 пар: спрос ≥ 90% (≥ 15 мин)", unit: "int", ok: (x) => x >= 15 },
   { key: "r2steamMin", head: "з2 мин steamEff", unit: "num", ok: null },
-  { key: "r2steamShort", head: "з2 пар < 0.9 (> 0)", unit: "sec", ok: (x) => x > 0 },
+  { key: "r2steamShort", head: "з2 пар < 0.9, с", unit: "sec", ok: null },
+  { key: "r2press", head: "з2 прессы (< 19)", unit: "int", ok: (x) => x < 19 },
+  { key: "r2clock", head: "з2 часы (< 9)", unit: "int", ok: (x) => x < 9 },
   { key: "passiveGap", head: "пассив: ожидание (≤ 4:00)", unit: "sec", ok: (x) => x <= 240 },
-  { key: "r2terminal", head: "з2 Вокзал (45–55)", unit: "min", ok: (x) => x >= 45 && x <= 55 },
   { key: "passiveTerminal", head: "пассив: Вокзал (≤ 165)", unit: "min", ok: (x) => x <= 165 },
   { key: "ncSewers", head: "новичок К (≤ 15)", unit: "min", ok: (x) => x <= 15 },
   { key: "ncCellars", head: "новичок П (≤ 40)", unit: "min", ok: (x) => x <= 40 },
   { key: "ncMetro", head: "новичок М (≤ 70)", unit: "min", ok: (x) => x <= 70 },
   { key: "ncTrain", head: "новичок: поезд (≤ 75)", unit: "min", ok: (x) => x <= 75 },
+  { key: "ncMechanics45", head: "новичок: механики, мин 45 (> 0)", unit: "int", ok: (x) => x > 0 },
+  { key: "ncHintStreak", head: "новичок: подсказка подряд (≤ 3:00)", unit: "sec", ok: (x) => x <= 180 },
+  { key: "unwarned", head: "поезда без «К путям!» (0)", unit: "int", ok: (x) => x === 0 },
+  { key: "offlineOk", head: "офлайн 8 ч", unit: "bool", ok: (x) => x === 1 },
 ];
 
-/** Which bot reports which metric. */
-const OWNER: Record<keyof Tails, BotName> = {
+/** Which bot reports which metric ("sum": every bot of the seed, added up). */
+const OWNER: Record<keyof Tails, BotName | "sum"> = {
   coronationH: "active",
+  nmCoronation: "active",
   r2gap: "active",
+  r2gapMin: "active",
+  r2terminal: "active",
+  r3coronation: "active",
+  r3wagons: "active",
+  r2boiler: "active",
+  r2steamTight: "active",
   r2steamMin: "active",
   r2steamShort: "active",
-  r2terminal: "active",
+  r2press: "active",
+  r2clock: "active",
   passiveGap: "passive",
   passiveTerminal: "passive",
   ncSewers: "newcomer",
   ncCellars: "newcomer",
   ncMetro: "newcomer",
   ncTrain: "newcomer",
+  ncMechanics45: "newcomer",
+  ncHintStreak: "newcomer",
+  unwarned: "sum",
+  offlineOk: "active",
 };
 
 type SeedMetrics = Partial<Record<keyof Tails, number | null>>;
 
+/** The metric's verdict: null passes only where a missing milestone is the target (`none`). */
+function okOf(m: Metric, x: number | null | undefined): boolean | null {
+  if (!m.ok || x === undefined) return null;
+  return x === null ? m.none !== undefined : m.ok(x);
+}
+
 function cell(m: Metric, x: number | null | undefined): string {
   if (x === undefined) return "";
-  const v = fmtValue(x, m.unit);
-  if (!m.ok) return v;
-  return `${v} ${x !== null && m.ok(x) ? "✓" : "✗"}`;
+  const v = x === null && m.none ? m.none : fmtValue(x, m.unit);
+  const ok = okOf(m, x);
+  return ok === null ? v : `${v} ${ok ? "✓" : "✗"}`;
 }
 
 function table(head: string[], rows: string[][]): string {
@@ -199,21 +232,35 @@ async function main() {
       continue;
     }
     const m = metrics.get(r.seed)!;
-    for (const key of Object.keys(OWNER) as (keyof Tails)[]) if (OWNER[key] === r.bot) m[key] = r.summary.tails?.[key] ?? null;
+    const t = r.summary.tails ?? {};
+    for (const key of Object.keys(OWNER) as (keyof Tails)[]) {
+      // a key the job never reported stays undefined (e.g. nmCoronation without --policy never-migrate)
+      if (OWNER[key] === "sum") m[key] = (m[key] ?? 0) + (t[key] ?? 0);
+      else if (OWNER[key] === r.bot && key in t) m[key] = t[key] ?? null;
+    }
     const f = fails.get(r.seed)!;
     f.fails += r.summary.fails.length;
     f.v2 += r.summary.v2fails.length;
   }
 
-  const shown = METRICS.filter((m) => o.bots.includes(OWNER[m.key]));
+  const shown = METRICS.filter((m) => o.seeds.some((seed) => metrics.get(seed)![m.key] !== undefined));
+  // metrics down, seeds across (ENG-13: 22 tails do not fit side by side), and how many seeds are on target
   console.log("=== Хвосты по сидам (✓ в цели, ✗ мимо) ===");
   console.log(
     table(
-      ["сид", ...shown.map((m) => m.head), "FAIL", "v2 FAIL"],
-      o.seeds.map((seed) => [String(seed), ...shown.map((m) => cell(m, metrics.get(seed)![m.key])), String(fails.get(seed)!.fails), String(fails.get(seed)!.v2)]),
+      ["метрика", ...o.seeds.map(String), "в цели"],
+      [
+        ...shown.map((m) => {
+          const vals = o.seeds.map((seed) => metrics.get(seed)![m.key]);
+          const judged = vals.map((x) => okOf(m, x)).filter((x): x is boolean => x !== null);
+          return [m.head, ...vals.map((x) => cell(m, x)), m.ok ? `${judged.filter(Boolean).length}/${judged.length}` : ""];
+        }),
+        ["FAIL (GDD 15.14 / 14.2 / приёмка)", ...o.seeds.map((seed) => String(fails.get(seed)!.fails)), ""],
+        ["FAIL целей v2", ...o.seeds.map((seed) => String(fails.get(seed)!.v2)), ""],
+      ],
     ),
   );
-  const misses = o.seeds.reduce((a, seed) => a + shown.filter((m) => m.ok && !(metrics.get(seed)![m.key] !== null && metrics.get(seed)![m.key] !== undefined && m.ok(metrics.get(seed)![m.key]!))).length, 0);
+  const misses = o.seeds.reduce((a, seed) => a + shown.filter((m) => okOf(m, metrics.get(seed)![m.key]) === false).length, 0);
   if (errors.length) console.log(`\nОшибки: ${errors.join("; ")}`);
 
   const longest = Math.max(0, ...results.map((r) => r.ms));

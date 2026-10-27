@@ -1894,7 +1894,7 @@ export function fogGap(t: number): number {
 
 /**
  * Human vigilance (ENG-8): the share of train and capsule item values kept at suspicion S, 1 up to `from` (50, Биг-Бен
- * 40), then −1% per point: 0.5 at 100. HaulSummary.vigilance = 1 − this.
+ * 30), then −1% per point: 0.5 at 100. HaulSummary.vigilance = 1 − this.
  */
 export function vigilance(S: number, from = 50): number {
   return 1 - Math.max(0, S - from) / 100;

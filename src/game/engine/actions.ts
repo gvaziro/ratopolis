@@ -47,7 +47,7 @@ import {
   remaining,
   unitValue,
 } from "./formulas";
-import { coronationLine, humanWeekday } from "./narrative";
+import { coronationLine, expressLineSet, humanWeekday } from "./narrative";
 import { commissionStat } from "./progress";
 import { rand } from "./rng";
 import { abandonCommission, commissionPossible, offerCommissions } from "./commissions";
@@ -487,8 +487,13 @@ export function contributeExpeditionKeeping(s: GameState, zone: ZoneId, keep: Am
 export const SCOUT_STEPS = [0.25, 0.5, 0.75, 0.9] as const;
 /** The 90% step's toast (ENG-3); steps 1–3 read «Разведчики вернулись: …». */
 export const SCOUT_NEAR_TEXT = "Разведчики: до цели рукой подать";
-/** A payout is this many seconds of the resource's event value. */
+/** A payout is this many seconds of the resource's event value (steps 1–3). */
 export const SCOUT_SECONDS = 60;
+/**
+ * Seconds of event value paid at each step (index = step − 1). v3 (ENG-13): the 90% step is the balance knob of the
+ * plan — it sets how long the last stretch of a coin-heavy expedition is (the run-2 Terminal, the passive bot's wait).
+ */
+export const SCOUT_PAY_SEC: number[] = [SCOUT_SECONDS, SCOUT_SECONDS, SCOUT_SECONDS, SCOUT_SECONDS];
 
 /**
  * Contributed share of an expedition, weighted by value (v3 ENG-3, K5): Σ min(1, paid/need)·need·unitValue(r) /
@@ -549,7 +554,7 @@ function checkScouting(s: GameState, zone: ZoneId, ctx: EngineCtx, d?: Derived):
     s.scouted[zone] = k;
     const r = scoutResource(s, dd, zone);
     if (!r) continue;
-    const amount = gain(s, dd, r, SCOUT_SECONDS * eventValue(s, dd, r), true, ctx);
+    const amount = gain(s, dd, r, (SCOUT_PAY_SEC[k - 1] ?? SCOUT_SECONDS) * eventValue(s, dd, r), true, ctx);
     ctx.fx.push({ k: "scout", zone, res: r, amount, step: k as 1 | 2 | 3 | 4 });
     news(s, k >= 4 ? "scout_near" : "scout", { from: ZONE_FROM[zone], amount: fmt(amount), icon: RESOURCES[r].icon }, ctx);
   }
@@ -630,7 +635,7 @@ export function contributeExpress(s: GameState, res: ResId | null, ctx: EngineCt
       s.express.stage++;
       ctx.fx.push({ k: "expressStage", stage: s.express.stage });
       // v3 (ENG-11): the second express and the later ones get their own lines (stages 6–10 replay every run)
-      news(s, "express_stage", { stage: EXPRESS_STAGES[s.express.stage - 1], human: expressStageLine(s.express.stage, s.meta.coronations).human }, ctx);
+      news(s, "express_stage", { stage: EXPRESS_STAGES[s.express.stage - 1], human: expressStageLine(s.express.stage, expressLineSet(s)).human }, ctx);
       if (s.express.stage >= 10) coronation(s, ctx);
     } else {
       s.express.wagons++;

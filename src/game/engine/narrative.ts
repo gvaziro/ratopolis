@@ -71,6 +71,15 @@ export function weeksText(migrations: number): string {
 }
 
 /**
+ * Which set of express stage lines this run's express reads (v3 ENG-11, data/meta expressStageLine): the coronations
+ * before it — meta.coronations, minus the one this run's express has just earned. The stage news and the express
+ * panel use the same number, so a crowned run still shows the lines its stages were built with.
+ */
+export function expressLineSet(s: Pick<GameState, "meta" | "coronatedThisRun">): number {
+  return Math.max(0, s.meta.coronations - (s.coronatedThisRun ? 1 : 0));
+}
+
+/**
  * The 👤/🐀 line of the coronation (headline, overlay), CORONATION_LINES[n − 1] for the n-th coronation (meta.coronations,
  * counted when the express is finished; past the tenth lines 2–10 come round again), with today's weekday, the
  * ordinal and the span of the story filled in (v3 ENG-11).

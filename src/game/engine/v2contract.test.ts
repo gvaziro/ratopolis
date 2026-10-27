@@ -324,7 +324,7 @@ describe("meta depth (EN-9 surface)", () => {
     expect(again.mods.satietyMult).toBeCloseTo(1.625, 12);
     expect(again.mods.res?.blueprints).toBeCloseTo(0.6875, 12);
     expect(districtTrait(17).name).toBe("Биг-Бен II");
-    expect(districtTrait(17).mods.vigilanceFrom).toBe(38);
+    expect(districtTrait(17).mods.vigilanceFrom).toBe(25);
     expect(districtLoc(1)).toBe("в Саутварке");
     expect(districtLoc(9)).toBe("в Челси");
     expect(districtLoc(13)).toBe("в Саутварке II");

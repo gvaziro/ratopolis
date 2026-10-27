@@ -545,7 +545,7 @@ export interface DistrictMods {
   suspicionMult?: number;
   /** v3 (ENG-4): boiler max level +n (Гончарни +2). */
   boilerMaxDelta?: number;
-  /** v3 (ENG-8): suspicion above which human vigilance eats train loot (absent = 50; Биг-Бен 40). */
+  /** v3 (ENG-8): suspicion above which human vigilance eats train loot (absent = 50; Биг-Бен 30). */
   vigilanceFrom?: number;
   /** v3 (ENG-11): the «Сытость» multiplier itself (absent = 1.25; Боро-маркет 1.5). */
   satietyMult?: number;

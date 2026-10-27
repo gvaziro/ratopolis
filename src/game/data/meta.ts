@@ -205,7 +205,7 @@ export const ACHIEVEMENTS: Record<AchievementId, AchievementDef> = {
   cat_nightmare: { id: "cat_nightmare", name: "Кошмар котов", icon: "🐈", desc: "Отогнать Кота 5 раз", group: "events", progress: { stat: "lifetime.catsBeaten", goal: 5 } },
   royal_retinue: { id: "royal_retinue", name: "Королевская свита", icon: "🚆", desc: "3 королевских экспресса за забег", group: "events", progress: { stat: "stats.royalExpresses", goal: 3 } },
   full_consist: { id: "full_consist", name: "Полный состав", icon: "🚃", desc: "Поезд подземки из 11 вагонов", group: "events" },
-  // ---- v3 (ENG-10): «Кунсткамера Короля». v3: awarded by ENG-10 (catching curios); ids, names and goals are final.
+  // ---- v3 (ENG-10): «Кунсткамера Короля», awarded by engine/curios.ts catchCurio (and housekeeping for v2 trophies)
   first_curio: { id: "first_curio", name: "Первый экспонат", icon: "🏺", desc: "Поймать первую диковину для Кунсткамеры Короля", group: "meta" },
   curio_full: { id: "curio_full", name: "Кунсткамера полна", icon: "🗝️", desc: "Собрать все 24 диковины Кунсткамеры", group: "meta", progress: { stat: "curios", goal: 24 } },
 };

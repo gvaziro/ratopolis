@@ -37,7 +37,7 @@ import { districtInfo } from "../src/game/data/districts";
 import { edictRank } from "../src/game/engine/ranks";
 import { DISTRICT_IDS, type DistrictId, type ResId, type ZoneId } from "../src/game/types";
 import { applyOverrides, fmtMin, PRE_TUNING_OVERRIDES, simulate, type Checkpoint, type RunReport, type SimPolicy, type SimSeal } from "./sim-core";
-import { aggregateChecks, fmtAggregate, fmtValue, judgeValue, type Aggregate, type CheckValue, type Judge, type Unit, type Verdict } from "./simStats";
+import { aggregateChecks, fmtAggregate, fmtValue, judgeValue, median, type Aggregate, type CheckValue, type Judge, type Unit, type Verdict } from "./simStats";
 
 /* ---------------------------------------------------------------- args */
 
@@ -626,6 +626,33 @@ export interface Tails {
   ncCellars: number | null;
   ncMetro: number | null;
   ncTrain: number | null;
+  /* v3 (ENG-13): the rest of the five-seed table (GDD 15.16) */
+  /** Run 2's shortest gap between express stages, arriving at stages 2..9 (s; ≥ 45). */
+  r2gapMin: number | null;
+  /** Minutes of run 2 whose steam demand reached 90% of what the stokers can give (K4: ≥ 15). */
+  r2steamTight: number | null;
+  r2boiler: number | null;
+  r2press: number | null;
+  r2clock: number | null;
+  /** Run 3's coronation, minutes from its start (≥ 30 on the replicate median). */
+  r3coronation: number | null;
+  /** Wagons of run 3 by its end, 20 min after its coronation (ENG-3: ≥ 3 within 30 min on ≥ 3/5 seeds). */
+  r3wagons: number | null;
+  /** The never-migrate run's coronation (minutes; null: none within its 170 min). Only with --policy never-migrate. */
+  nmCoronation?: number | null;
+  /** Metro trains and Royal Expresses with no «К путям!» in the 31 s before, over this job's runs (ENG-5: 0). */
+  unwarned: number;
+  /** The 8 h offline check of run 1 (1 PASS, 0 FAIL). */
+  offlineOk: number | null;
+  /** The newcomer's mechanics at minute 45 (> 0) and his longest streak of one hint (s; ≤ 180). */
+  ncMechanics45: number | null;
+  ncHintStreak: number | null;
+}
+
+/** Tails of replicates: every key's median (a missing milestone counts as +∞, as in the checks). */
+function medianTails(list: Tails[]): Tails {
+  const keys = [...new Set(list.flatMap((t) => Object.keys(t)))] as (keyof Tails)[];
+  return Object.fromEntries(keys.map((k) => [k, median(list.map((t) => t[k] ?? null))])) as unknown as Tails;
 }
 
 interface SimResult {
@@ -661,11 +688,15 @@ function runSummary(r: RunReport): RunSummary {
   };
 }
 
-function tailsOf(active: RunReport[] | null, passive: RunReport[] | null, newcomer: RunReport[] | null): Tails {
+function tailsOf(active: RunReport[] | null, passive: RunReport[] | null, newcomer: RunReport[] | null, nm: RunReport | null): Tails {
   const r2 = active?.[1];
+  const r3 = active?.[2];
   const cor = active ? coronationTotal(active) : null;
   const gaps = r2 ? [gapOf(r2, 7), gapOf(r2, 8)].filter((x): x is number => x !== null) : [];
+  const early = r2 ? expressGaps(r2).filter(([, b]) => b >= 2 && b <= 9) : [];
+  const tight = r2 ? r2.steamLog.filter((x) => x.supply > 0 && x.need >= 0.9 * x.supply).length : null;
   const nc = newcomer?.[0];
+  const off = active?.[0].offlineCheck;
   return {
     coronationH: cor === null ? null : cor / 3600,
     r2gap: gaps.length ? Math.max(...gaps) : null,
@@ -678,6 +709,18 @@ function tailsOf(active: RunReport[] | null, passive: RunReport[] | null, newcom
     ncCellars: minOf(nc?.zoneOpenAt.cellars),
     ncMetro: minOf(nc?.zoneOpenAt.metro),
     ncTrain: minOf(nc?.firstTrainAt),
+    r2gapMin: early.length ? Math.min(...early.map((x) => x[2])) : null,
+    r2steamTight: tight,
+    r2boiler: r2 ? (r2.buildingLevels.boiler ?? 0) : null,
+    r2press: r2 ? (r2.buildingLevels.steam_press ?? 0) : null,
+    r2clock: r2 ? (r2.buildingLevels.clocktower ?? 0) : null,
+    r3coronation: minOf(r3?.coronationAt),
+    r3wagons: r3 && r3.coronationAt !== null ? r3.wagons : null,
+    ...(nm ? { nmCoronation: minOf(nm.coronationAt) } : {}),
+    unwarned: [...(active ?? []), ...(passive ?? []), ...(newcomer ?? []), ...(nm ? [nm] : [])].reduce((a, r) => a + r.unwarnedTrains, 0),
+    offlineOk: off ? bool(off.ok) : null,
+    ncMechanics45: nc ? (nc.mechanicsAt[45] ?? null) : null,
+    ncHintStreak: nc?.newcomer ? nc.newcomer.hintStreak : null,
   };
 }
 
@@ -696,6 +739,7 @@ function runSim(args: Args, k: number): SimResult {
   let active: RunReport[] | null = null;
   let passive: RunReport[] | null = null;
   let newcomer: RunReport[] | null = null;
+  let neverMigrated: RunReport | null = null;
   const cpMinutes = [5, 11, 16, 26, 42, 50, 55, 62, 80];
 
   if (runsActive(args)) {
@@ -721,6 +765,7 @@ function runSim(args: Args, k: number): SimResult {
     if (args.long) v3.push(...longChecks(active));
     if (args.policy === "never-migrate") {
       const [nm] = simulate({ seed: args.seed, botSeed: botSeed(args.seed), bot: "active", runs: 1, minutes: 170, checkpointMinutes: cpMinutes, policy: "never-migrate" });
+      neverMigrated = nm;
       lines.push(`\n=== Без переселения (${fmtMin(nm.seconds)}) ===`);
       lines.push(
         `Зоны: ${ZONE_ORDER.map((z) => `${ZONE_SHORT[z]} ${fmtMin(nm.zoneOpenAt[z])}`).join("  ")} | этапы экспресса ${nm.expressStageAt.map(fmtMin).join(" ") || "—"} | коронация ${fmtMin(nm.coronationAt)} | 👑 за забег ${nm.crownsGained}`,
@@ -775,7 +820,7 @@ function runSim(args: Args, k: number): SimResult {
     v2fails: v2.filter((c) => settle(c, args, false).verdict === "FAIL").map((c) => c.name),
   };
   if (newcomer) summary.newcomer = runSummary(newcomer[0]);
-  const tails = tailsOf(active, passive, newcomer);
+  const tails = tailsOf(active, passive, newcomer, neverMigrated);
   if (args.tails) summary.tails = tails;
   return { lines, checks, v2, v3, nc, info, summary, tails, ms: Date.now() - t0 };
 }
@@ -873,6 +918,8 @@ function printReplicates(args: Args, results: SimResult[], t0: number): void {
           info: pack(info),
           fails: checks.filter((c) => c.verdict === "FAIL").map((c) => c.group.slice(-9) + ":" + c.name),
           v2fails: v2.filter((c) => c.verdict === "FAIL").map((c) => c.name),
+          // ENG-13: sim-matrix --replicates N tabulates the medians (and keeps every replicate's tails)
+          ...(args.tails ? { tails: medianTails(results.map((r) => r.tails)), tailsAll: results.map((r) => r.tails) } : {}),
         }),
     );
   }

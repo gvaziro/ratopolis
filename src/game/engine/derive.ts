@@ -53,7 +53,7 @@ export interface Derived {
    * with more keeps its level, but its stoker slots and buffer stop here. buildingMaxLevel() blocks buying past it.
    */
   boilerMax: number;
-  /** v3 (ENG-8): suspicion above which human vigilance eats train and capsule loot (50; Биг-Бен 40). */
+  /** v3 (ENG-8): suspicion above which human vigilance eats train and capsule loot (50; Биг-Бен 30). */
   vigilanceFrom: number;
   /** Production multipliers of the district trait per resource (EN-9), applied by resMult. */
   districtRes: Partial<Record<ResId, number>>;
