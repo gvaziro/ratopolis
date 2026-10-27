@@ -25,6 +25,7 @@
     "test:slow": "vitest run --mode slow",
     "test:all": "vitest run --mode all",
     "check": "npm run typecheck && npm run lint && npm test",
+    "e2e": "playwright test",
     "sim": "tsx scripts/balance-sim.ts",
     "sim:matrix": "tsx scripts/sim-matrix.ts",
     "sim:baseline": "tsx scripts/sim-matrix.ts --write-baseline"
@@ -36,6 +37,7 @@
     "zustand": "^5.0.16"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
     "@tailwindcss/turbopack": "^4",
     "@types/node": "^24.19.2",
     "@types/react": "^19",

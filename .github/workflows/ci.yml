@@ -100,9 +100,53 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # e2e (REP-2): the Playwright smoke + screenshot suite goes here as its own job, e.g.
-  #   e2e:
-  #     needs: build
-  #     runs-on: ubuntu-latest
-  #     steps: checkout, setup-node (.nvmrc), npm ci, `npx playwright install --with-deps chromium`, `npm run e2e`
-  #       (its webServer builds and serves the app on :3100), then upload e2e/__shots__ as an artifact.
+  # e2e (REP-2): the Playwright smoke run (desktop, 375 px phone, landscape phone) against the production build;
+  # playwright.config.ts's webServer builds and serves the app on :3100. Screenshots and the report are attached.
+  e2e:
+    name: e2e (Playwright)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Restore Next.js build cache
+        uses: actions/cache@v4
+        with:
+          path: .next/cache
+          key: nextjs-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ hashFiles('src/**', 'public/**', 'next.config.ts', 'tsconfig.json') }}
+          restore-keys: |
+            nextjs-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: npm run e2e
+        run: npm run e2e
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots
+          path: e2e/__shots__/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Upload the Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14
+          if-no-files-found: ignore

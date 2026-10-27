@@ -328,7 +328,9 @@ export const BUILDINGS: Record<BuildingId, BuildingDef> = {
     icon: "🗜️",
     zone: "metro",
     cost: { coal: 3000, brass: 200 },
-    growth: 1.6,
+    // v3 (ENG-13): 1.6 → 1.5. With the boiler cap (ENG-4) the active bot builds 11–14 presses, not EN-13's 20–25; at
+    // 1.6 the 4th–6th press cost 12–31K 🪨, and a passive colony (one coal chute) waited 5–6 min for it, buying nothing
+    growth: 1.5,
     effects: [{ t: "steamPress", use: 2, pct: 25 }],
     unlock: { all: [{ zone: "metro" }, { resEver: "brass", gte: 100 }] },
     desc: "Тратит 2 💨/с → всё производство +25% за уровень (× доля пара).",

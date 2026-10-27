@@ -52,7 +52,7 @@ npm run dev
 | `npm run sim` | headless-симулятор баланса: активный и пассивный боты играют настоящим движком (`-- --seed 777 --strict`) |
 | `npm run sim:matrix` | несколько сидов параллельно (`-- --seeds 12345,777,1 --baseline scripts/balance-baseline.json`) |
 | `npm run sim:baseline` | записать базовую линию баланса для `sim:matrix --baseline` |
-| `npm run e2e` | Playwright: смоук-сценарий и скриншоты на компьютере, 375 px, 320 px и телефоне боком (появится вместе с e2e-набором) |
+| `npm run e2e` | Playwright (`e2e/`): собирает игру и запускает её на :3100, проходит смоук-сценарий (решётка, бродяги, поезд метро до карточки улова) на компьютере, 375 px и телефоне боком; скриншоты — в `e2e/__shots__/`. Локально нужен установленный Microsoft Edge, в CI ставится Chromium |
 | `npm run lint` / `npm run typecheck` | ESLint с кэшем / проверка типов (`npm run typegen` создаёт типы маршрутов в свежем клоне) |
 
 ## Управление
