@@ -4,12 +4,13 @@ import { createBackCloser } from "./useBackCloses";
 /**
  * A browser-like history: pushState drops the forward entries and makes a new key; replaceState keeps the entry's key
  * (the Navigation API's currentEntry.key); back()/go() traverse asynchronously (flush) and fire one popstate, or none
- * when the target is out of range. `nav: false`: a browser without the Navigation API.
+ * when the target is out of range. `nav: false`: a browser without the Navigation API. `states`: the session history
+ * the page loads into (its last entry current), e.g. one an earlier page load left.
  */
-function mockEnv(nav: boolean) {
-  const entries: { state: unknown; key: string }[] = [{ state: { page: true }, key: "k0" }];
-  let index = 0;
-  let keys = 0;
+function mockEnv(nav: boolean, states: unknown[] = [{ page: true }]) {
+  const entries: { state: unknown; key: string }[] = states.map((state, i) => ({ state, key: `k${i}` }));
+  let index = entries.length - 1;
+  let keys = entries.length - 1;
   const listeners = new Set<() => void>();
   const pending: (() => void)[] = [];
   const history = {
@@ -71,6 +72,11 @@ function mockEnv(nav: boolean) {
     },
     position: () => index,
     listeners: () => listeners.size,
+    /** A reload (or a discarded tab restored): the document and its listeners go, history and its states stay. */
+    reload() {
+      listeners.clear();
+      pending.length = 0;
+    },
   };
   return env;
 }
@@ -234,6 +240,75 @@ describe.each([
     expect(env.history.state).toEqual({ page: true });
     expect(ctl.depth()).toBe(0);
     expect(env.listeners()).toBe(0);
+  });
+
+  it("reloads with an overlay open never grow history: the next one takes over the stale entry, one Back closes it", () => {
+    // perf-saves-2: the absence report is open when a phone discards the tab; on return it opens again right away
+    const env = mockEnv(nav);
+    createBackCloser(env).open(() => {});
+    const len = env.history.length;
+    let close = vi.fn();
+    for (let i = 0; i < 10; i++) {
+      env.reload();
+      close = vi.fn();
+      const t = createBackCloser(env).open(close);
+      expect(env.history.length).toBe(len);
+      expect(env.history.state).toMatchObject({ rr: "ov", token: t });
+    }
+    env.userBack();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(env.history.state).toEqual({ page: true });
+    expect(env.position()).toBe(0);
+    expect(env.listeners()).toBe(0);
+  });
+
+  it("a page loaded onto a stale entry of ours: ten cycles (Back and UI close) keep history at two, Next's keys stay", () => {
+    const env = mockEnv(nav, [{ page: true }, { rr: "ov", token: 1, __NA: true }]);
+    const ctl = createBackCloser(env);
+    for (let i = 0; i < 10; i++) {
+      const close = vi.fn();
+      const t = ctl.open(close);
+      expect(env.history.length).toBe(2);
+      expect(env.history.state).toMatchObject({ rr: "ov", token: t });
+      if (i === 0) expect(env.history.state).toMatchObject({ __NA: true });
+      if (i % 2 === 0) {
+        env.userBack(); // the first Back closes the overlay: no dead entry to spend it on
+        expect(close).toHaveBeenCalledTimes(1);
+        ctl.release(t);
+      } else {
+        ctl.release(t);
+        env.flush();
+        expect(close).not.toHaveBeenCalled();
+      }
+      env.flush();
+      expect(env.history.state).toEqual({ page: true });
+      expect(env.position()).toBe(0);
+      expect(env.history.length).toBe(2);
+    }
+    expect(ctl.depth()).toBe(0);
+    expect(env.listeners()).toBe(0);
+  });
+
+  it("only the bottom overlay takes over a stale entry; one with nothing behind it is pushed over", () => {
+    const env = mockEnv(nav, [{ page: true }, { rr: "ov", token: 1 }]);
+    const ctl = createBackCloser(env);
+    const closeA = vi.fn();
+    const a = ctl.open(closeA);
+    const b = ctl.open(() => {});
+    expect(env.history.length).toBe(3); // B goes on top of A's entry, never over it
+    expect(env.history.state).toMatchObject({ rr: "ov", token: b });
+    ctl.release(b);
+    env.flush();
+    expect(env.history.state).toMatchObject({ rr: "ov", token: a });
+    env.userBack();
+    expect(closeA).toHaveBeenCalledTimes(1);
+    expect(env.history.state).toEqual({ page: true });
+
+    // a marker on the only entry of the session: Back from it could not land anywhere, so it is pushed over
+    const lone = mockEnv(nav, [{ rr: "ov", token: 1 }]);
+    const t = createBackCloser(lone).open(() => {});
+    expect(lone.history.length).toBe(2);
+    expect(lone.history.state).toMatchObject({ rr: "ov", token: t });
   });
 
   it("a refused push (Safari's 100 per 30 s) leaves the overlay without an entry instead of throwing", () => {

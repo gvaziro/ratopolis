@@ -11,10 +11,11 @@ import { COMMISSIONS } from "@/game/data/commissions";
 import { RESOURCES } from "@/game/data/resources";
 import { UPGRADES, UPGRADE_ORDER } from "@/game/data/upgrades";
 import { ZONES } from "@/game/data/zones";
-import { buildingVisible, currentExpedition, expressCost, upgradeVisible } from "@/game/engine/actions";
+import { buildingVisible, currentExpedition, expeditionFraction, expressCost, upgradeVisible } from "@/game/engine/actions";
 import type { Derived } from "@/game/engine/derive";
 import {
   affordFraction,
+  atMaxLevel,
   buildingCost,
   canAfford,
   canMigrate,
@@ -105,6 +106,7 @@ function dryIcons(s: GameState, cost: Amounts): string {
   return out;
 }
 
+/** Plain mean of the per-resource shares: the express stage (its panel reads the same); expeditions are value-weighted. */
 function projectFrac(cost: Amounts, prog: Amounts): number {
   const list = entries(cost);
   return list.length ? list.reduce((a, [r, v]) => a + Math.min(1, (prog[r] ?? 0) / v), 0) / list.length : 0;
@@ -189,7 +191,8 @@ function projectName(s: GameState): string {
  */
 export function goalModel(s: GameState, d: Derived, full: ReadonlySet<ResId> = fullStores(s, d)): Goal[] {
   const out: Goal[] = [];
-  const maxed = (id: BuildingId) => BUILDINGS[id].maxLevel !== undefined && s.buildings[id] >= BUILDINGS[id].maxLevel!;
+  // the engine's cap: the boiler's two extra levels in «Гончарни» are still a goal
+  const maxed = (id: BuildingId) => atMaxLevel(s, id);
 
   // storage only when a visible goal is held back by a limit, or a store has been brim-full
   const wanted = new Set(full);
@@ -260,7 +263,8 @@ export function goalModel(s: GameState, d: Derived, full: ReadonlySet<ResId> = f
         sub: paidUp ? (go ? "всё собрано — в путь!" : "запасы есть, ждём крыс") : line.sub,
         warn: line.warn,
         eta: -2,
-        frac: round50(projectFrac(cost, prog)),
+        // value-weighted, as the map plaque and the scout steps (ENG-3, K5): cheap resources alone are not 80%
+        frac: round50(expeditionFraction(s, z)),
         tab: "map",
         target: `z_${z}`,
         short: paidUp ? `🐀 ${fmtInt(s.rats)}/${fmtInt(need)}` : line.short,

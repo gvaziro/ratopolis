@@ -8,10 +8,11 @@
  */
 import { memo, useMemo, useState } from "react";
 import { COMMISSIONS } from "@/game/data/commissions";
-import { EXPRESS_STAGE_LINES, EXPRESS_STAGES } from "@/game/data/meta";
+import { EXPRESS_STAGES } from "@/game/data/meta";
 import { commissionProgress } from "@/game/engine/progress";
 import { expressCost } from "@/game/engine/actions";
 import { entries, isComplete } from "@/game/engine/formulas";
+import { expressLineSet } from "@/game/engine/narrative";
 import { KEPT_STAGES_MAX } from "@/game/engine/state";
 import { useGame } from "@/game/store";
 import type { CommissionId, GameState, ResId } from "@/game/types";
@@ -21,7 +22,7 @@ import { Badge, BrassButton, Plate, cx } from "@/components/ui/kit";
 import { ContribRow, contribKey } from "./common";
 import KingPortrait from "./KingPortrait";
 import Locomotive from "./Locomotive";
-import { charterText, expressBonus } from "./metaText";
+import { charterText, expressBonus, expressStageLines } from "./metaText";
 
 interface ExpressModel {
   stage: number;
@@ -29,6 +30,11 @@ interface ExpressModel {
   /** «+X% ко всему» now, and what the next stage (or wagon after the coronation) adds. */
   bonus: string;
   next: string;
+  /** The badge once the next stage or wagon is built, and a wagon's multiplier («1.1»). */
+  after: string;
+  wagon: string;
+  /** Which set of 👤/🐀 stage lines this run's express reads (narrative.expressLineSet, as the stage news). */
+  lineSet: number;
   /** Stage progress in 2.5% steps (the locomotive's assembly animation). */
   frac: number;
   res: ResId[];
@@ -49,6 +55,9 @@ function expressModel(s: GameState): ExpressModel {
     wagons,
     bonus: bonus.total,
     next: bonus.next,
+    after: bonus.after,
+    wagon: bonus.wagon,
+    lineSet: expressLineSet(s),
     frac: Math.floor(frac * 40) / 40,
     res: list.map(([r]) => r),
     anyStock: list.some(([r, v]) => (progress[r] ?? 0) < v && s.res[r] > 0),
@@ -64,6 +73,7 @@ export default function ExpressPanel() {
   const [showStages, setShowStages] = useState(false);
   const { stage, wagons, frac } = m;
   const crowned = stage >= 10;
+  const lines = useMemo(() => expressStageLines(m.lineSet), [m.lineSet]);
 
   return (
     <div data-target="x_express" className="mb-4 rounded-lg">
@@ -80,13 +90,13 @@ export default function ExpressPanel() {
         </div>
         <p className="mb-2 text-[11px] leading-snug text-parchment-dim">
           {crowned
-            ? `Король коронован, но Лондон велик: следующий вагон добавит ещё +${m.next}% ко всему производству.`
+            ? `Король коронован, но Лондон велик: следующий вагон умножит всё производство (кроме 📜 и 💍) ещё на ×${m.wagon} — бонус экспресса станет +${m.after}%.`
             : `Этот этап добавит ещё +${m.next}% ко всему производству (кроме 📜 и 💍).${stage === 9 ? " Последний рывок — и коронация!" : ""}`}
           {m.kept ? ` Указ «Чертежи экспресса»: первые ${KEPT_STAGES_MAX} этапов переживут переселение.` : ""}
         </p>
 
-        {!crowned && EXPRESS_STAGE_LINES[stage] && (
-          <p className="mb-2 rounded border border-line/60 bg-black/20 px-2 py-1 text-[11px] italic leading-snug text-parchment">👤 {EXPRESS_STAGE_LINES[stage].human}</p>
+        {!crowned && lines[stage] && (
+          <p className="mb-2 rounded border border-line/60 bg-black/20 px-2 py-1 text-[11px] italic leading-snug text-parchment">👤 {lines[stage].human}</p>
         )}
 
         <div className="space-y-1.5">
@@ -130,10 +140,10 @@ export default function ExpressPanel() {
                   <span className="w-5 shrink-0 text-center font-mono tabular">{done ? "✓" : i + 1}</span>
                   <span className="min-w-0 flex-1">
                     {name}
-                    {(done || cur) && EXPRESS_STAGE_LINES[i] && (
+                    {(done || cur) && lines[i] && (
                       <span className="block text-[10px] font-normal italic leading-snug text-parchment-dim">
-                        👤 {EXPRESS_STAGE_LINES[i].human}
-                        {done && <span className="block">🐀 {EXPRESS_STAGE_LINES[i].rat}</span>}
+                        👤 {lines[i].human}
+                        {done && <span className="block">🐀 {lines[i].rat}</span>}
                       </span>
                     )}
                   </span>
@@ -159,7 +169,8 @@ interface CommissionModel {
   offered: CommissionId[];
   active: { id: CommissionId; cur: number; goal: number } | null;
   done: number;
-  charters: number;
+  /** charterText of the whole state: the «Город» set's ×1.06 included, as crownsForRun pays it (MigrationTab agrees). */
+  ch: ReturnType<typeof charterText>;
   tails: number;
 }
 
@@ -168,14 +179,14 @@ function Commissions() {
   const json = useSampled((s) => {
     const c = s.game.commissions;
     if (!c) return "";
-    const m: CommissionModel = { offered: c.offered, active: commissionProgress(s.game), done: c.done, charters: s.game.charters, tails: 1 + s.game.meta.migrations };
+    const m: CommissionModel = { offered: c.offered, active: commissionProgress(s.game), done: c.done, ch: charterText(s.game), tails: 1 + s.game.meta.migrations };
     return JSON.stringify(m);
   }, 3, Object.is);
   // «Отказаться» asks once more (the progress is lost); the question is about this very commission
   const [abandonAsk, setAbandonAsk] = useState<CommissionId | null>(null);
   if (!json) return null;
   const m = JSON.parse(json) as CommissionModel;
-  const ch = charterText({ charters: m.charters });
+  const ch = m.ch;
   return (
     <div className="mt-3">
       <Plate title="Поручения Короля" icon="📜" right={<Badge tone="good">Грамоты: ×{ch.mult}</Badge>}>

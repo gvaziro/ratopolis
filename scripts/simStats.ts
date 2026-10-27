@@ -22,7 +22,11 @@ export type Judge =
   | { k: "atLeast"; lo: number }
   | { k: "info" };
 
-/** How a value prints: minutes or seconds as m:ss, hours with 2 decimals, a share as %, a plain number, 1/0 as да/нет. */
+/**
+ * How a value prints: minutes or seconds as m:ss, hours with 2 decimals, a share as %, a plain number, 1/0 as да/нет.
+ * An even replicate count can put a median between two whole values (a yes/no split [1, 0] → 0.5, [3, 4] → 3.5): it
+ * prints as it is judged — «поровну», «3.5» — never rounded into a verdict it does not get.
+ */
 export type Unit = "min" | "sec" | "h" | "pct" | "num" | "int" | "bool";
 
 /** One check as a number (what replicates aggregate); `actual` is the single-run text, `target` the window shown. */
@@ -58,7 +62,8 @@ export function judgeValue(j: Judge, x: number | null | undefined): Verdict {
 
 /**
  * Median of replicate values; a missing value (null: the milestone was never reached) sorts as +∞, so a median that
- * lands on it is null too. Even counts average the two middle values. null for an empty list.
+ * lands on it is null too. Even counts average the two middle values (a yes/no tie is 0.5: not a «yes» for the judge,
+ * and fmtValue prints it «поровну»). null for an empty list.
  */
 export function median(xs: readonly (number | null)[]): number | null {
   if (!xs.length) return null;
@@ -136,9 +141,9 @@ export function fmtValue(x: number | null | undefined, unit: Unit): string {
     case "pct":
       return `${(x * 100).toFixed(0)}%`;
     case "int":
-      return String(Math.round(x));
+      return Math.abs(x - Math.round(x)) < 1e-9 ? String(Math.round(x)) : x.toFixed(1);
     case "bool":
-      return x >= 0.5 ? "да" : "нет";
+      return x >= 1 ? "да" : x <= 0 ? "нет" : "поровну";
     case "num": {
       const a = Math.abs(x);
       if (a >= 1e9) return (x / 1e9).toFixed(2) + "B";

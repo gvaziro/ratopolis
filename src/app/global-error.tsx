@@ -9,13 +9,17 @@ import { useEffect, useState } from "react";
 import { BRASS_BTN, GHOST_BTN, GnawedWire, SootFrame, downloadText } from "@/components/ui/crashKit";
 import "./globals.css";
 
-/** Mirrors SAVE_KEY in src/game/engine/save.ts (plus the dev-only `?slot=` suffix of store.ts saveKey()). */
+/**
+ * Mirrors SAVE_KEY in src/game/engine/save.ts plus the `?slot=` suffix of store.ts saveKey(): honoured in development,
+ * and in a production build only when the URL carries `dev` (store.devHandleAllowed, the REP-2 e2e setup).
+ */
 const SAVE_KEY = "ratropolis.save.v1";
 
 function saveKey(): string {
-  if (process.env.NODE_ENV === "production") return SAVE_KEY;
   try {
-    const slot = new URLSearchParams(window.location.search).get("slot");
+    const search = window.location.search;
+    if (process.env.NODE_ENV === "production" && !/(^|[?&])dev(=|&|$)/.test(search)) return SAVE_KEY;
+    const slot = new URLSearchParams(search).get("slot");
     return slot ? `${SAVE_KEY}:${slot}` : SAVE_KEY;
   } catch {
     return SAVE_KEY;

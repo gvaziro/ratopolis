@@ -3,7 +3,7 @@ import { EVENT_LINE_POOLS, EVENT_TIMING as T, TRAIN_CARS, TRAIN_VARIANT_ORDER } 
 import { RESOURCES } from "../data/resources";
 import { onFx } from "../fx";
 import { isHeld, useGame } from "../store";
-import type { Amounts, EngineCtx, Fx, GameState, ResId, Scene, TrainVariantId } from "../types";
+import type { Amounts, EngineCtx, Fx, GameState, ResId, Scene, TrainCarKind, TrainVariantId } from "../types";
 import { openZone } from "./actions";
 import { cloneState } from "./clone";
 import { derive, eventValue } from "./derive";
@@ -424,6 +424,41 @@ describe("ENG-9 (D, E): «Цирк Сэнгера» and «Гороховый с�
     expect(n.fog ?? 0).toBe(0);
   });
 
+  it("circus: sparkMul 0.5 halves every car's sparks on average (a one-spark car too); Хэтчетт's ×0.8 the same way", () => {
+    const s = metroState(79, { quiet: true });
+    const d = derive(s);
+    /** Mean sparks per car kind over `n` builds (the Cheddar car, which has none, left out). */
+    const meanSparks = (n: number, variant: TrainVariantId, dd = d): Partial<Record<TrainCarKind, number>> => {
+      const sum: Partial<Record<TrainCarKind, number>> = {};
+      const cars: Partial<Record<TrainCarKind, number>> = {};
+      for (let i = 0; i < n; i++) {
+        s.forceVariant = variant;
+        const sc = buildTrain(s, dd, "metro_train");
+        expect(sc.variant).toBe(variant);
+        for (const car of sc.cars) {
+          if (car.special) continue;
+          cars[car.kind] = (cars[car.kind] ?? 0) + 1;
+          sum[car.kind] = (sum[car.kind] ?? 0) + car.itemIds.filter((id) => sc.items[id].spark).length;
+        }
+      }
+      const out: Partial<Record<TrainCarKind, number>> = {};
+      for (const k of Object.keys(cars) as TrainCarKind[]) out[k] = (sum[k] ?? 0) / cars[k]!;
+      return out;
+    };
+    const circus = meanSparks(2000, "circus");
+    const plain = meanSparks(500, "normal");
+    for (const kind of ["engine", "third", "baggage"] as const) {
+      expect(plain[kind]).toBe(TRAIN_CARS[kind].sparks);
+      expect(circus[kind]! / (0.5 * TRAIN_CARS[kind].sparks)).toBeGreaterThan(0.9);
+      expect(circus[kind]! / (0.5 * TRAIN_CARS[kind].sparks)).toBeLessThan(1.1);
+    }
+    const hatchett = meanSparks(2000, "normal", { ...d, sparkMult: 0.8 });
+    for (const kind of ["engine", "first", "baggage"] as const) {
+      expect(hatchett[kind]! / (0.8 * TRAIN_CARS[kind].sparks)).toBeGreaterThan(0.9);
+      expect(hatchett[kind]! / (0.8 * TRAIN_CARS[kind].sparks)).toBeLessThan(1.1);
+    }
+  });
+
   it("from the Metro, fog every 20–30 min for 3 min: no suspicion, metro trains run as 'fog' with the lantern twice as often", () => {
     const s = metroState(78, { quiet: true });
     s.timers.fog = Infinity;
@@ -599,5 +634,15 @@ describe("ENG-9 (G): «Гул из глубины»", () => {
       }
     }
     expect(at).toBeGreaterThan(392);
+  });
+
+  it("once per save: a colony that has met the Thunder God (a metro train, in meta) hears no rumble on a later run", () => {
+    const s = burrow(false);
+    s.meta.seenEvents.push("metro_train");
+    const fx = ticks(s, 1000, true);
+    expect(s.time).toBeGreaterThan(T.rumbleAt + 60);
+    expect(fx.some((f) => f.k === "deepRumble")).toBe(false);
+    expect(s.flags.first_rumble).toBeFalsy();
+    expect(metroTeaser(s)).toBeNull();
   });
 });

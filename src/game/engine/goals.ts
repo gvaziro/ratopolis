@@ -1,5 +1,6 @@
 import { BUILDINGS, BUILDING_ORDER } from "../data/buildings";
 import { JOBS } from "../data/jobs";
+import { RESOURCES } from "../data/resources";
 import type { Amounts, BuildingId, GameState, JobId, ResId, ResMap } from "../types";
 import { buildingVisible } from "./actions";
 import { jobUnlocked, newbornJob } from "./core";
@@ -41,9 +42,11 @@ export {
   donorPool,
   expeditionBottleneck,
   expressBottleneck,
+  fasterShortfall,
   foragerOutput,
   foragersNeeded,
   jobFor,
+  jobsAfterMove,
   movableTo,
   neededSet,
   potentialRate,
@@ -53,6 +56,7 @@ export {
   projectName,
   projectNeed,
   projectShortfall,
+  shortfallAfterMove,
   slotMakerOf,
   upkeep,
   type Bottleneck,
@@ -104,12 +108,14 @@ function etaForCompare(b: Bottleneck | null): number {
 
 /**
  * Extra production of one more level of `id`, as the colony would run it: levelGain (produce effects, job bonuses on
- * the current workers, multipliers) plus its new job slots manned from the rats that can be spared (donorPool: surplus
- * foragers, the idle, crews whose output overflows), which the elder's «пустует» hint does next (so the first workshop
- * is worth its ⚙️, not nothing).
+ * the current workers, multipliers) plus its new job slots manned from the rats that can be spared (donorPool: the
+ * idle, crews whose output overflows, surplus foragers), which the elder's «пустует» hint does next (so the first
+ * workshop is worth its ⚙️, not nothing). Temporary buffs (a feast) are left out, as in potentialRates.
  */
 export function buildGain(s: GameState, d: Derived, id: BuildingId, rates: ResMap = potentialRates(s, d), needed?: Set<ResId>): Partial<Record<ResId, number>> {
   const gain = levelGain(s, d, id, 1);
+  // levelGain diffs live gross rates, a feast's ×5 and all; the potential rates it is added to leave such buffs out
+  if (d.temp !== 1) for (const r of Object.keys(gain) as ResId[]) if (!RESOURCES[r].excludeGlobal) gain[r] = gain[r]! / d.temp;
   const workforce = s.rats > 0 ? 1 - stunnedRats(s) / s.rats : 1;
   for (const e of BUILDINGS[id].effects) {
     if (e.t !== "slots") continue;
@@ -131,7 +137,7 @@ export function buildGain(s: GameState, d: Derived, id: BuildingId, rates: ResMa
     for (const [c, vc] of entries(JOBS[j].consumes)) eff = Math.min(eff, (Math.max(0, rates[c]) + Math.max(0, s.res[c]) / STOCK_HORIZON) / (rate * vc));
     eff = Math.max(0, Math.min(1, eff));
     for (const [c, vc] of entries(JOBS[j].consumes)) gain[c] = (gain[c] ?? 0) - rate * vc * eff;
-    for (const [r, v] of entries(JOBS[j].produces)) gain[r] = (gain[r] ?? 0) + rate * v * d.jobYield[j] * resMult(s, d, r, true) * eff;
+    for (const [r, v] of entries(JOBS[j].produces)) gain[r] = (gain[r] ?? 0) + rate * v * d.jobYield[j] * resMult(s, d, r, false) * eff;
   }
   return gain;
 }

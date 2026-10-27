@@ -9,7 +9,8 @@ import { usePhoneLayout } from "./layoutMode";
  * from the UI goes back over our own entry (only when the current entry is that overlay's), so open/close cycles never
  * grow history. Overlays stack: Back closes the topmost one. An overlay closed under another one leaves its entry
  * "dead"; it goes together with the live entry above it in one traversal (history.go(-n)), so no Back press is ever
- * spent on it.
+ * spent on it. An entry of ours that outlived its page load (reload or tab discard with an overlay open) is taken over
+ * by the next overlay instead of pushed over, so reloads do not grow history either.
  *
  * Our history moves never overlap: while a back() of ours is in flight a new overlay's push waits, and further steps
  * back are owed and taken in one traversal once it lands (browsers differ on a push or a second back() racing a
@@ -32,6 +33,8 @@ export interface BackEnv {
     readonly state: unknown;
     readonly length: number;
     pushState(data: unknown, unused: string): void;
+    /** Reuses a stale entry of ours left by an earlier page load (see open()). */
+    replaceState(data: unknown, unused: string): void;
     back(): void;
     go(delta: number): void;
   };
@@ -63,9 +66,12 @@ interface Entry {
 
 /** The state of the entry pushed for `token` (Next's own keys may sit beside ours). */
 function isOurs(state: unknown, token: number): boolean {
-  if (typeof state !== "object" || state === null) return false;
-  const s = state as { rr?: unknown; token?: unknown };
-  return s.rr === BACK_STATE.rr && s.token === token;
+  return hasMarker(state) && (state as { token?: unknown }).token === token;
+}
+
+/** The state carries our marker (whichever overlay, whichever page load pushed it). */
+function hasMarker(state: unknown): boolean {
+  return typeof state === "object" && state !== null && (state as { rr?: unknown }).rr === BACK_STATE.rr;
 }
 
 export function createBackCloser(env: BackEnv): BackCloser {
@@ -90,10 +96,20 @@ export function createBackCloser(env: BackEnv): BackCloser {
     const key = currentKey();
     return e.key !== null && key !== null ? key === e.key : isOurs(env.history.state, e.token);
   };
-  /** Push the entry of `e`; if the browser refuses (Safari: > 100 pushes in 30 s), `e` leaves the stack (Back leaves). */
+  /**
+   * Push the entry of `e`; if the browser refuses (Safari: > 100 pushes in 30 s), `e` leaves the stack (Back leaves).
+   * The bottom overlay takes over the current entry instead when it already carries our marker and no overlay of ours
+   * holds it: one left by an earlier page load (a reload, or a discarded phone tab restored, with an overlay open —
+   * Next keeps custom state on its initial load, and the absence report opens again right away), or one reached by
+   * Back/Forward after its overlay closed elsewhere. A push over it would leave a dead entry: one more wasted Back
+   * press per reload (perf-saves-2). Its other keys (Next's __NA and tree) stay.
+   */
   const push = (e: Entry) => {
     try {
-      env.history.pushState({ ...BACK_STATE, token: e.token }, "");
+      const state = env.history.state;
+      if (stack[0] === e && hasMarker(state) && env.history.length > 1)
+        env.history.replaceState({ ...(state as object), ...BACK_STATE, token: e.token }, "");
+      else env.history.pushState({ ...BACK_STATE, token: e.token }, "");
     } catch {
       stack.splice(stack.indexOf(e), 1);
       return;

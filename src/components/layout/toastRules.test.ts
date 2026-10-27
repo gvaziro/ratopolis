@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { CHARTER_MAX } from "@/game/data/commissions";
+import { RESOURCES } from "@/game/data/resources";
+import { SCOUT_NEAR_TEXT } from "@/game/engine/actions";
+import { fmt } from "@/lib/format";
 import {
   EARLY_SEC,
   MAX_QUEUED,
@@ -8,6 +11,7 @@ import {
   commissionDoneText,
   joinsMedalGroup,
   medalGroupText,
+  scoutToastText,
   toastCap,
   unlockRow,
   unlockTitle,
@@ -114,5 +118,18 @@ describe("commission-done toast", () => {
     expect(commissionDoneText("Почётный караул", 0)).toContain("Грамота уже в казне!");
     expect(commissionDoneText("Почётный караул", CHARTER_MAX)).not.toContain("Грамота");
     expect(commissionDoneText("Почётный караул", CHARTER_MAX)).toContain("Король доволен");
+  });
+});
+
+describe("scoutToastText (pacing-7)", () => {
+  it("steps 1–3 bring a piece of the map; the 90% step says «до цели рукой подать», as its news", () => {
+    for (const step of [1, 2, 3]) {
+      const t = scoutToastText({ res: "coins", amount: 1200, step });
+      expect(t).toBe(`Разведчики вернулись: +${fmt(1200)} ${RESOURCES.coins.icon} и кусок карты`);
+    }
+    const near = scoutToastText({ res: "coins", amount: 1200, step: 4 });
+    expect(near.startsWith(SCOUT_NEAR_TEXT)).toBe(true);
+    expect(near).toContain(`+${fmt(1200)} ${RESOURCES.coins.icon}`);
+    expect(near).not.toContain("кусок карты");
   });
 });

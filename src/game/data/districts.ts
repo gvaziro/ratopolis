@@ -6,7 +6,7 @@ export type { DistrictId } from "../types";
 /**
  * London on a map (v3 ENG-11): twelve districts, each with a fixed trait, its own filler headlines and a place on the
  * map of the city (Thames in the middle). The colony visits each once; after all twelve a second lap starts with the
- * same names («Сити II») and every trait ×1.25. The first six are the v1/v2 sequence (LEGACY_DISTRICT_SEQ), so old
+ * same names («Сити II») and every trait ×1.25 (×1.25² from the third lap on, no further). The first six are the v1/v2 sequence (LEGACY_DISTRICT_SEQ), so old
  * saves map their numeric meta.district onto them (save.ts MIGRATIONS).
  * Traits use the DistrictMods keys only (derive.ts, the event timers); ENG-11 retuned the first six so every quirk costs
  * something and every perk reaches a real bottleneck (GDD 10.4).
@@ -36,7 +36,7 @@ export interface DistrictInfo {
   /** «в Сити», «в Сити II» on the second lap. */
   loc: string;
   icon: string;
-  /** Effective trait (amplified ×1.25 per extra lap). */
+  /** Effective trait (amplified ×1.25 per extra lap, up to the third lap). */
   trait: DistrictTrait;
   /** 1 = the first walk across London, 2 = the second (every trait ×1.25), … */
   lap: number;
@@ -403,8 +403,26 @@ export const LEGACY_DISTRICT_SEQ: readonly DistrictId[] = [
 /** Districts per lap of London. */
 const LAP = DISTRICT_IDS.length;
 
+/**
+ * The highest run index a save may carry (save.ts clamps meta.district and the chronicle's entries to 0..this): a
+ * hand-edited or imported save with district 2e6 used to expand into a visited list that long — a 24 MB save over the
+ * localStorage quota, or a RangeError above 2^32 (perf-saves-6). 83 laps of London: no colony gets near it.
+ */
+export const MAX_DISTRICT = 999;
+
+/** A run index from a save: an integer in 0..MAX_DISTRICT (anything not a finite number → 0). */
+export function clampDistrict(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? Math.min(MAX_DISTRICT, Math.max(0, Math.floor(v))) : 0;
+}
+
 /** Trait amplification per extra lap. */
 const LAP_AMPLIFY = 1.25;
+/**
+ * The lap from which traits stop growing (ENG-13): ×1.25 per lap compounds without end, and from lap 6 on the 0.6
+ * express interval, then the 0.75 resource quirks, went to zero or below (and the humans' watch threshold under 0).
+ * Capped at the third lap (k = 1.5625) every amplified mod stays a sane, positive version of itself.
+ */
+const LAP_AMPLIFY_LAST = 3;
 
 /** Salt of the hash that orders the neighbours a migration offers (by the migration count; no RNG draw). */
 const OPTION_SALT = 1187;
@@ -425,11 +443,14 @@ export function legacyVisited(district: number): DistrictId[] {
   return Array.from({ length: n }, (_, i) => legacyDistrictId(i));
 }
 
-/** DistrictInfo of a district id on lap `lap` (1-based): the second lap carries «II» and traits ×1.25. */
+/**
+ * DistrictInfo of a district id on lap `lap` (1-based): the second lap carries «II» and traits ×1.25, the third ×1.25²;
+ * later laps keep the third lap's strength (LAP_AMPLIFY_LAST).
+ */
 export function districtInfoOf(id: DistrictId, lap = 1): DistrictInfo {
   const def = districtById(id);
   if (lap <= 1) return { id: def.id, name: def.name, loc: def.loc, icon: def.icon, trait: def.trait, lap: 1 };
-  const k = Math.pow(LAP_AMPLIFY, lap - 1);
+  const k = Math.pow(LAP_AMPLIFY, Math.min(lap, LAP_AMPLIFY_LAST) - 1);
   const t = def.trait;
   const n = lapNumeral(lap);
   const trait: DistrictTrait = {

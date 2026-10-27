@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { legacyDistrictId, MAX_DISTRICT } from "../data/districts";
 import type { EngineCtx, GameState } from "../types";
 import { openZone } from "./actions";
 import { derive } from "./derive";
@@ -7,6 +8,10 @@ import { deserialize as deserializeAny, exportString, importAny, importString, i
 import { createInitialState, SCHEMA_VERSION } from "./state";
 import { step, TICK } from "./step";
 import { metroState, playedState } from "./testkit";
+
+/** How serialize() writes ±Infinity (a JSON string the reviver turns back). */
+const INF_TOKEN = "__INF__";
+const NINF_TOKEN = "__-INF__";
 
 /** deserialize() for saves of this version: newer-version results fail the test. */
 function deserialize(str: string): GameState | null {
@@ -312,6 +317,43 @@ describe("save v2 (EN-7 / EN-8)", () => {
     };
     expect(migrate(structuredClone(raw), registry).meta.crowns).toBe(400);
     expect(migrate(structuredClone(raw)).meta.crowns).toBe((raw.meta as { crowns: number }).crowns);
+  });
+
+  it("a tampered district index loads bounded: a short visited list, a save that still fits (perf-saves-6)", () => {
+    const raw = JSON.parse(serialize(playedState())) as Record<string, unknown>;
+    const meta = raw.meta as Record<string, unknown>;
+    meta.district = 2e6;
+    meta.history = [{ district: 1e10, seconds: 3600, eRun: 2e6, crowns: 14, zones: {}, bestRating: "gold" }];
+    const m = deserialize(JSON.stringify(raw))!;
+    expect(m.meta.district).toBe(MAX_DISTRICT);
+    expect(m.meta.visited).toHaveLength(MAX_DISTRICT + 1);
+    expect(m.meta.districtId).toBe(m.meta.visited[MAX_DISTRICT]);
+    expect(m.meta.history[0].district).toBe(MAX_DISTRICT);
+    const str = serialize(m);
+    expect(str.length).toBeLessThan(100_000); // was 24 MB (and 2 s to write), over the localStorage quota
+    expect(deserialize(str)!.meta.visited).toEqual(m.meta.visited);
+
+    // garbage indexes: never a corrupt save (1e10 used to throw a RangeError), always a whole run index
+    for (const [bad, want] of [[1e10, MAX_DISTRICT], [INF_TOKEN, 0], [NINF_TOKEN, 0], [-5, 0], [2.7, 2]] as const) {
+      meta.district = bad;
+      const got = deserialize(JSON.stringify(raw));
+      expect(got, String(bad)).not.toBeNull();
+      expect(got!.meta.district, String(bad)).toBe(want);
+      expect(got!.meta.visited, String(bad)).toHaveLength(want + 1);
+    }
+  });
+
+  it("v2 → v3 with a tampered district: the migration builds a bounded list and names the chronicle's district", () => {
+    const raw = v2Raw();
+    const meta = raw.meta as Record<string, unknown>;
+    meta.district = 1e10;
+    meta.history = [{ district: 1e10, seconds: 3600, eRun: 2e6, crowns: 14, zones: {}, bestRating: "gold" }];
+    const m = deserialize(JSON.stringify(raw))!;
+    expect(m).not.toBeNull();
+    expect(m.meta.district).toBe(MAX_DISTRICT);
+    expect(m.meta.visited).toHaveLength(MAX_DISTRICT + 1);
+    expect(m.meta.history[0].districtId).toBe(legacyDistrictId(MAX_DISTRICT));
+    expect(m.meta.history[0].district).toBe(MAX_DISTRICT);
   });
 
   it("importAny takes both the export string and the raw save file", () => {

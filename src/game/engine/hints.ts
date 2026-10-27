@@ -24,6 +24,7 @@ import { crumbBalance, steamBudget, unitValue } from "./economy";
 import { vigilance } from "./events";
 import { atMaxLevel, buildingCost, buildingMaxLevel, canAfford, entries, expeditionCost, isComplete, lockedByCap, marketValue, remaining } from "./formulas";
 import {
+  autoFocusOn,
   crewTarget,
   crumbGross,
   currentProject,
@@ -35,6 +36,7 @@ import {
   projectName,
   projectNeed,
   projectShortfall,
+  shortfallAfterMove,
   slotMakerOf,
   STOCK_HORIZON,
   upkeep,
@@ -187,14 +189,20 @@ export function converterBottleneck(s: GameState, d: Derived, job: JobId): Conve
   if (!jobUnlocked(s, sup.job)) {
     return { job, eff, kind: "input", res: worst, text: `Не хватает ${icon}: поставщики ещё не открыты.`, supplier: sup.job, supplierLocked: true };
   }
-  const per = (JOBS[sup.job].produces[worst] ?? 0) * d.jobSpeed[sup.job] * d.jobYield[sup.job] * resMult(s, d, worst);
+  const per = (JOBS[sup.job].produces[worst] ?? 0) * d.jobSpeed[sup.job] * d.jobYield[sup.job] * resMult(s, d, worst, false);
   const need = Math.max(1, Math.ceil(missing / Math.max(1e-9, per)));
   let tail = `Нужно ещё ~${need} ${plural(need, ...sup.forms)}`;
   const slots = JOBS[sup.job].slots;
   let building: BuildingId | undefined;
   if (slots && s.jobs[sup.job] + need > d.slots[sup.job]) {
-    building = slots.building;
-    tail += ` — но мест нет: стройте «${BUILDINGS[slots.building].name}»`;
+    const max = buildingMaxLevel(s, slots.building);
+    if (!atMaxLevel(s, slots.building)) {
+      building = slots.building;
+      tail += ` — но мест нет: стройте «${BUILDINGS[slots.building].name}»`;
+    } else if (sup.job !== "stoker") tail += ` — но мест нет, а «${BUILDINGS[slots.building].name}» уже на пределе (${max} ур.)`;
+    // v3 (ENG-4): past the boiler cap steam is a fixed budget — the valve or a smaller crew, never another boiler
+    else if (s.steamPriority === "power") tail += ` — но котёл на пределе (${max} ур.), а клапан отдаёт пар прессам: поверните его «заводу» или снимите часть бригады`;
+    else tail += ` — но котёл на пределе (${max} ур.): пар — это бюджет, снимите часть бригады`;
   }
   return { job, eff, kind: "input", res: worst, text: `Не хватает ${icon}. ${tail}.`, supplier: sup.job, need, building };
 }
@@ -233,6 +241,8 @@ const SLOW_SEC = 240;
 const NEST_SEC = 120;
 /** The rebalance hint fires above this × the upkeep of potential gross 🍞 (and leaves AUTO_FOOD_MARGIN×). */
 const SURPLUS_MARGIN = 1.5;
+/** …and only when its move brings the goal's ETA below this share of what it is now (a 5% gain at least). */
+const REBALANCE_GAIN = 0.95;
 /** A converter crew starved below this share of its intake is not worth staffing yet (its inputs come first). */
 const MIN_CREW_EFF = 0.2;
 
@@ -266,7 +276,7 @@ class HintCtx {
   get bottleneck(): Bottleneck | null {
     return this.short[0] ?? null;
   }
-  /** Who can move into `target` (potential.donorPool: surplus foragers, the idle, crews whose output overflows). */
+  /** Who can move into `target` (potential.donorPool: the idle, crews whose output overflows, surplus foragers). */
   pool(target: JobId): Donor[] {
     let p = this._pools.get(target);
     if (!p) {
@@ -310,7 +320,7 @@ function* hintCandidates(s: GameState, d: Derived): Generator<Hint> {
   // thieves…) the player takes off by hand, so then the hint names the biggest such crew and only focuses it
   const deficit = d.food - s.gross.crumbs;
   if (byHand && (s.hungry || deficit > 1e-9) && jobUnlocked(s, "forager")) {
-    const per = (JOBS.forager.produces.crumbs ?? 0) * d.jobSpeed.forager * d.jobYield.forager * resMult(s, d, "crumbs") * workforce;
+    const per = (JOBS.forager.produces.crumbs ?? 0) * d.jobSpeed.forager * d.jobYield.forager * resMult(s, d, "crumbs", false) * workforce;
     const needed = Math.max(1, Math.ceil(Math.max(0, deficit) / Math.max(1e-9, per)));
     const why = `Крошки ${fmtRate(s.gross.crumbs - d.food)}. Голодная колония работает вполсилы и не растёт`;
     const movable = assignable(s, d, "forager");
@@ -362,7 +372,7 @@ function* hintCandidates(s: GameState, d: Derived): Generator<Hint> {
       // as many as «Сделать» really moves (it keeps the foragers the colony needs): the text matches the action
       const n = Math.min(3, g.movable(job));
       if (n < 1) continue;
-      const x = n * v * d.jobSpeed[job] * d.jobYield[job] * resMult(s, d, r) * workforce;
+      const x = n * v * d.jobSpeed[job] * d.jobYield[job] * resMult(s, d, r, false) * workforce;
       const icon = RESOURCES[r].icon;
       yield {
         id: `idle_job:${job}`,
@@ -380,8 +390,10 @@ function* hintCandidates(s: GameState, d: Derived): Generator<Hint> {
     }
   }
 
-  // 3b. the goal waits for an open job's resource while other rats work for nothing: foragers far above the upkeep
-  // (> SURPLUS_MARGIN×; they stay at AUTO_FOOD_MARGIN×), the idle, crews whose output overflows a full store
+  // 3b. the goal waits for an open job's resource while other rats work for nothing: the idle, crews whose output
+  // overflows a full store, foragers far above the upkeep (> SURPLUS_MARGIN×; they stay at AUTO_FOOD_MARGIN×, and
+  // while 🍞 is a cost of the goal only as many as make it faster: donorPool) — said only when the move really
+  // shortens the goal (REBALANCE_GAIN)
   const b = g.bottleneck;
   if (byHand && p && b && b.etaSec > SLOW_SEC) {
     const job = jobFor(s, d, b.res, g.rates);
@@ -390,19 +402,29 @@ function* hintCandidates(s: GameState, d: Derived): Generator<Hint> {
       const food = upkeep(s);
       const pool = g.pool(job).filter((x) => x.job !== "forager" || gross > SURPLUS_MARGIN * food);
       const n = movableTo(s, d, job, pool);
-      if (n >= 1) {
+      const after = n >= 1 ? shortfallAfterMove(s, d, job, pool, n) : null;
+      if (after && (after[0]?.etaSec ?? 0) < REBALANCE_GAIN * b.etaSec) {
         const icon = RESOURCES[b.res].icon;
         const main = pool.reduce((a, x) => (x.n > a.n ? x : a), pool[0]);
-        const why = main.job === "forager" ? `Крошек вдоволь (${fmtRate(gross)} при прокорме ${fmt(food)}/с)` : (SURPLUS_WHY[main.job] ?? "Крысы работают впустую");
+        const lead = main.job === "forager" ? `Крошек вдоволь (${fmtRate(gross)} при прокорме ${fmt(food)}/с)` : (SURPLUS_WHY[main.job] ?? "Крысы работают впустую");
         const who = pool.length === 1 ? crewAcc(main.job, n) : ratsAcc(n);
+        // the foragers come last in the pool: they move only past the free hands
+        const fed = n > pool.reduce((a, x) => a + (x.job === "forager" ? 0 : x.n), 0);
+        // the newborns follow the star only when the player set it and the star rules (core.newbornJob)
+        const follows = !autoFocusOn(s) && (s.assignMode === "focus" || !s.upgrades.rat_relay);
+        const why = follows
+          ? `Новорождённые тоже пойдут ${JOB_TO[job]}${fed ? ", а еды останется с запасом" : ""}`
+          : autoFocusOn(s)
+            ? `${fed ? "Еды останется с запасом, а новорождённых" : "Новорождённых"} Старейшина и дальше шлёт туда, где нужнее`
+            : `${fed ? "Еды останется с запасом, а новорождённые" : "Новорождённые"} пойдут по вашим долям`;
         yield {
           id: `rebalance:${job}`,
           icon: JOBS[job].icon,
-          text: `${why}, а ${icon} ${projectForText(p)} ${etaWords(b.etaSec)}: переведите ${n} ${who} ${JOB_TO[job]}`,
-          why: `Новорождённые тоже пойдут ${JOB_TO[job]}, а еды останется с запасом`,
+          text: `${lead}, а ${icon} ${projectForText(p)} ${etaWords(b.etaSec)}: переведите ${n} ${who} ${JOB_TO[job]}`,
+          why,
           tab: "jobs",
           target: `j_${job}`,
-          action: { kind: "assign", job, n, setFocus: true, from: pool.map((x) => x.job) },
+          action: { kind: "assign", job, n, ...(follows ? { setFocus: true } : {}), from: pool.map((x) => x.job) },
         };
       }
     }
@@ -454,12 +476,19 @@ function* hintCandidates(s: GameState, d: Derived): Generator<Hint> {
     let action: HintAction = { kind: "focus" };
     let tab: TabId = "jobs";
     let target = `j_${cb.supplier ?? job}`;
-    if (cb.building && buildingVisible(s, cb.building)) {
-      action = { kind: "buyBuilding", id: cb.building };
+    if (cb.building && buildingVisible(s, cb.building) && !atMaxLevel(s, cb.building)) {
       tab = "buildings";
       target = `b_${cb.building}`;
-    } else if (byHand && cb.kind === "input" && cb.supplier && !cb.supplierLocked && cb.need) {
-      action = { kind: "assign", job: cb.supplier, n: cb.need };
+      // «Сделать» only when the purchase can go through (else the button would do nothing)
+      const cost = buildingCost(cb.building, s.buildings[cb.building]);
+      if (canAfford(s, cost) && !lockedByCap(cost, d).length) action = { kind: "buyBuilding", id: cb.building };
+    } else if (cb.kind === "input" && cb.supplier && !cb.supplierLocked && cb.need) {
+      // the suppliers' slots are full and nothing builds more (the boiler at its cap, ENG-4): no step helps here — the
+      // Jobs tab line says why
+      if (!(d.slots[cb.supplier] > s.jobs[cb.supplier])) continue;
+      // as many as «Сделать» really moves (potential.donorPool), so the press is never a no-op
+      const n = byHand ? Math.min(cb.need, g.movable(cb.supplier)) : 0;
+      if (n >= 1) action = { kind: "assign", job: cb.supplier, n };
     }
     yield { id: `converter:${job}`, icon: JOBS[job].icon, text: `${JOBS[job].name}: ${cb.text}`, why: `Бригада работает на ${Math.round(cb.eff * 100)}%`, tab, target, action };
   }
@@ -568,7 +597,7 @@ function* crewHints(g: HintCtx, workforce: number, byHand: boolean): Generator<H
     for (const [c, vc] of entries(JOBS[job].consumes)) eff = Math.min(eff, (Math.max(0, g.rates[c]) + Math.max(0, s.res[c]) / STOCK_HORIZON) / (rate * vc));
     if (eff < MIN_CREW_EFF) continue;
     const out = outs[0];
-    const x = rate * (JOBS[job].produces[out] ?? 0) * d.jobYield[job] * resMult(s, d, out, true) * Math.min(1, eff);
+    const x = rate * (JOBS[job].produces[out] ?? 0) * d.jobYield[job] * resMult(s, d, out, false) * Math.min(1, eff);
     const where = BUILDINGS[slots.building].name;
     const text =
       s.jobs[job] <= 0
@@ -706,13 +735,26 @@ export function hintTaken(s: GameState, id: string): void {
 }
 
 /**
+ * The player was away — an offline catch-up, a long stalled frame — so the hint on screen was not being read: its
+ * stale clock starts again rather than muting it on the first look back (offline.simulateOffline, store.advance).
+ */
+export function resumeHintClock(s: GameState): void {
+  if (s.hintMemo.id) s.hintMemo.since = s.time;
+}
+
+/**
  * «Сделать» (store.applyHint, the newcomer bot): carry out the hint's action — assign (applyAssignHint, the foragers
- * the colony needs stay), contribute (keeping `keep`), build one level, invent — and note the hint as taken. Returns
- * whether anything changed hands.
+ * the colony needs stay), contribute (keeping `keep`), build one level, invent — and, when anything changed hands,
+ * note the hint as taken (a press that does nothing must not keep a dead hint from going stale). Returns whether
+ * anything changed hands.
  */
 export function applyHintAction(s: GameState, d: Derived, h: Hint, ctx: EngineCtx): boolean {
-  hintTaken(s, h.id);
-  const a = h.action;
+  const changed = doHintAction(s, d, h.action, ctx);
+  if (changed) hintTaken(s, h.id);
+  return changed;
+}
+
+function doHintAction(s: GameState, d: Derived, a: HintAction | undefined, ctx: EngineCtx): boolean {
   if (!a) return false;
   switch (a.kind) {
     case "assign": {
@@ -775,9 +817,10 @@ function storeLevelsFor(s: GameState, d: Derived, id: BuildingId, r: ResId, pric
 }
 
 /**
- * The store to suggest for r: visible, not maxed, its next level not itself above a cap (a store locked behind
- * itself), and at most STORE_LEVELS_MAX levels away from holding `price`. The cheapest way there by market value of
- * the levels it takes, a multiplier store (Склад в трубе, Винный погреб…) first on a tie; optionally only affordable.
+ * The store to suggest for r: visible, not maxed, none of the levels it takes above the caps of its time (a store
+ * locked behind itself, lockedOnTheWay), and at most STORE_LEVELS_MAX levels away from holding `price`. The cheapest
+ * way there by market value of the levels it takes, a multiplier store (Склад в трубе, Винный погреб…) first on a
+ * tie; optionally only affordable.
  */
 function cheapestStore(s: GameState, d: Derived, r: ResId, affordableOnly: boolean, price?: number): BuildingId | null {
   let best: BuildingId | null = null;
@@ -789,7 +832,7 @@ function cheapestStore(s: GameState, d: Derived, r: ResId, affordableOnly: boole
     if (lockedByCap(next, d).length > 0) continue;
     if (affordableOnly && !canAfford(s, next)) continue;
     const k = storeLevelsFor(s, d, id, r, price);
-    if (k > STORE_LEVELS_MAX) continue;
+    if (k > STORE_LEVELS_MAX || lockedOnTheWay(s, id, k)) continue;
     const v = marketValue(k > 1 ? buildingCost(id, s.buildings[id], k) : next);
     const mult = BUILDINGS[id].effects.some((e) => e.t === "capMult");
     if (v < bestV || (v === bestV && mult && !bestMult)) {
@@ -799,6 +842,18 @@ function cheapestStore(s: GameState, d: Derived, r: ResId, affordableOnly: boole
     }
   }
   return best;
+}
+
+/**
+ * A level between the next one and the k-th costs more than the stores hold by then (the levels before it bought):
+ * «ур. N+3» would be a dead end one level later, the store locked behind itself again.
+ */
+function lockedOnTheWay(s: GameState, id: BuildingId, k: number): boolean {
+  for (let L = 1; L < k; L++) {
+    const s2: GameState = { ...s, buildings: { ...s.buildings, [id]: s.buildings[id] + L } };
+    if (lockedByCap(buildingCost(id, s2.buildings[id]), derive(s2)).length > 0) return true;
+  }
+  return false;
 }
 
 /** «, когда упрётесь в лимит 🍞» for the cap flags, else «: <condition>». */

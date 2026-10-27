@@ -418,7 +418,9 @@ BACK_STATE = { rr: "ov" }
 
 ```ts
 isHeld(st: Pick<GameStore, "ceremony" | "crashed" | "saveIssue">): boolean   // ceremony || crashed || saveIssue !== null (ENG-5)
-creditShortHold(away: number): void       // ENG-5: deferTrainsForReturn → away/TICK неактивных тиков → «К путям!» сразу после
+creditShortHold(away: number): void       // ENG-5: deferTrainsForReturn → away/TICK неактивных тиков в одном клоне; trainSoon из зачёта не испускается, toastFor = −1, если зачёт его менял → «К путям!» на первом же тике с настоящим отсчётом, один раз
+rewarnTrains(): void                      // toastFor = −1: «К путям!» заново на следующем тике (creditHold после паузы > 0.5 с)
+catchUp(seconds, o?: { report?: boolean }) // report: false — зачёт без «Пока вас не было» (церемония дольше минуты при видимой вкладке)
 setFocus(job)                              // теперь ещё ставит flags.focus_manual (ENG-1: автофокус новорождённых выключается)
 setSteamPriority(p: SteamPriority): void   // ENG-4, PAN-1 «вентиль пара»
 migrate(to?: DistrictId): void             // ENG-11: район из migrationPreview().options (принимается любой свободный на этом круге); без аргумента — options[0]
@@ -433,7 +435,7 @@ devHandleAllowed(nodeEnv, search): boolean // window.__rr и ?slot= — в dev �
 ```ts
 type HoldCredit = "pause" | "ticks" | "catchUp";  SHORT_HOLD_SEC = 60
 holdCredit({ away, ceremony, scene }): HoldCredit   // pause: away ≤ 60 и (церемония или scene.interactive); ticks: away ≤ 60; иначе catchUp
-deferTrainsForReturn(s, away): number[]             // поезда (метро, экспресс) раньше s.time+away+15 → s.time+away+15+h·10 (хеш, не ГСЧ); свисток едет с ними; их «К путям!» придержан до releaseDeferredToast
+deferTrainsForReturn(s, away): number[]  // поезда (капсула до Метро, метро, экспресс) раньше s.time+away+15 → s.time+away+15+h·10 (хеш, не ГСЧ), кроме уже объявленного, что придёт не раньше конца зачёта + 1 с; свисток едет с ними; экипаж (крупный план / дождь через решётку) переносится так же, без тоста; «К путям!» самого раннего перенесённого придержан до releaseDeferredToast
 releaseDeferredToast(s, deferred): void
 ```
 `useGameLoop` переходит на `holdCredit` в ENG-5 (там же передышка 35 с после сцены). SCN-1 замораживает часы сцены, пока `isHeld` или вкладка скрыта; AUD-1 ставит звук на паузу по `isHeld`.
@@ -442,14 +444,14 @@ releaseDeferredToast(s, deferred): void
 ```ts
 // engine/hold.ts
 MIN_CREDIT_SEC = 0.5
-interface HoldStore { game: Pick<GameState, "scene">; creditShortHold(away); catchUp(seconds) }   // useGame.getState() подходит
-creditHold(st: HoldStore, away, ceremony, drivenScene = false): HoldCredit   // решает holdCredit и делает: pause — ничего, ticks — creditShortHold (> 0.5 с), catchUp — catchUp
+interface HoldStore { game: Pick<GameState, "scene">; creditShortHold(away); catchUp(seconds, o?: { report?: boolean }); rewarnTrains?() }   // useGame.getState() подходит
+creditHold(st, away, ceremony, drivenScene = false, wasHidden = true): HoldCredit   // pause — ничего (> 0.5 с: rewarnTrains), ticks — creditShortHold (> 0.5 с), catchUp — catchUp(away, { report: wasHidden })
 // engine/events.ts
 trainBreather(s): void              // в endScene: поезд метро / экспресс раньше s.time + 35 → s.time + 35, whistleUsedFor вместе с ним
 EVENT_TIMING.trainBreather = 35
 ```
 - `useGameLoop`: `hold()` запоминает, вёл ли интерфейс сцену (`scene.interactive`) в момент начала удержания; `release()` = `creditHold(store, away, былаЦеремония, вёлСцену)`. Тем же `creditHold(store, gap, false)` засчитывается «сон» вкладки без `visibilitychange` (разрыв кадров > 2 с): сцена на экране ждёт, поезд переносится. Ручных `advance(away/TICK)` в цикле больше нет.
-- `creditShortHold(away)` в сторе: `deferTrainsForReturn` → `advance(min(600, away/TICK), false)` → `releaseDeferredToast`; «К путям!» приходит на первом же тике после зачёта (тест: поезд через 15–25 с, `trainSoon` в 10 тиках).
+- `creditShortHold(away)` в сторе: `deferTrainsForReturn` → `min(600, away/TICK)` неактивных тиков → publish; «К путям!» приходит на первом же тике после зачёта с настоящим отсчётом (тест: `v3hold.test.ts`). `useGameLoop` передаёт в `creditHold`, была ли вкладка скрыта за удержание. `loadFromStorage` и `adopt` сбрасывают `toastFor`. «Гул из глубины» не играет, если `meta.seenEvents` уже содержит `metro_train`. Долгий кадр (> 10 тиков) в `advance` не считает подсказку прочитанной: `resumeHintClock` (как и `simulateOffline`).
 - Передышка вызывается в `endScene`, значит и в симуляторе, и в `abortScene`. Капсулы она не трогает. Симулятор считает `RunReport.unwarnedTrains` — поезда метро/экспрессы, перед которыми 31 с не было `trainSoon` (цель 0, печатается в строке «сцены» отчёта забега).
 - Тесты — `src/game/engine/v3events.test.ts` («ENG-5»: пауза на настоящем сторе, `creditShortHold(40)`, передышка после экспресса, `isHeld`).
 
@@ -489,12 +491,15 @@ jobFor(s, d, r, rates?): JobId | null      // куда поставить кры
 slotMakerOf(r): { job; building } | null
 crewTarget(s): number                       // экипаж экспедиции на карте, иначе порог её показа
 neededSet(s, d, rates?): Set<ResId>
-donorPool(s, d, target, rates?, needed?): Donor[]   // кого «Сделать» может забрать: собиратели сверх 1.3×, бездельники, бригады с переливом
+donorPool(s, d, target, rates?, needed?): Donor[]   // кого «Сделать» может забрать: бездельники, бригады с переливом, потом собиратели сверх 1.3× (пока 🍞 в цене цели — лишь сколько её ускоряет)
 movableTo(s, d, target, pool): number
+jobsAfterMove(s, target, pool, n): Record<JobId, number>; shortfallAfterMove(s, d, target, pool, n): Bottleneck[] | null
+fasterShortfall(a, b): boolean               // goals-1: сколько собирателей перевести, не сделав 🍞 самым медленным
 autoFocusOn(s); autoFocus(s, d, rates?): { job; reason }
 // engine/hints.ts
 HINT_STALE_SEC = 180; HINT_MUTE_SEC = 60; STORE_LEVELS_MAX = 3
 trackHint(s, d): Hint | null; hintTaken(s, id); applyHintAction(s, d, h, ctx): boolean
+resumeHintClock(s)                          // goals-5: часы подсказки с нуля после отлучки (offline.ts, store.advance при кадре > 10 тиков)
 crewAcc(job, n)                             // «6 собирателей», «22 барахольщика»
 // engine/actions.ts
 applyAssignHint(s, d, job, n, setFocus?, donors?)   // donors — по порядку; без них: собиратели сверх запаса еды, бездельники
@@ -630,7 +635,7 @@ Derived.sparkMult: number; Derived.royalExtraItems: number
 type DistrictId (12, DISTRICT_IDS в types.ts); DISTRICTS: Record<DistrictId, DistrictDef>   // {id, name, loc, icon, trait, fillers, landmark, pos:{x,y} 0..100, neighbors}
 DISTRICT_ORDER; LEGACY_DISTRICT_SEQ                       // старый маршрут + шесть новых (для старых сохранений)
 type DistrictInfo = { id; name; loc; icon; trait; lap };  type DistrictOption = DistrictInfo
-districtInfo(meta): DistrictInfo                          // текущий район (имя с «II» на втором круге, черта ×1.25)
+districtInfo(meta): DistrictInfo                          // текущий район (имя с «II» на втором круге, черта ×1.25; с третьего круга ×1.25², не сильнее)
 districtAt(meta, index); districtById(id); districtInfoOf(id, lap?); districtOptions(meta); districtFree(meta, id); legacyVisited(i); legacyDistrictId(i)
 migrationPreview(s).options: DistrictOption[]             // до двух вариантов, options[0] — по умолчанию (nextDistrict/nextTrait = options[0])
 migrate(s, now, ctx, to?: DistrictId)                     // + store.migrate(to?)
@@ -669,7 +674,18 @@ fillerPool(s): string[]; LATE_FILLER_MIGRATIONS = 4  // общие + зона + 
 - **Тексты.** «Жёлоб под тендером»; поручение «Королевская почта» 📯 → «Почётный караул» 🚆, «Сухие лапы» → «Шлюзовая вахта» («…во время ливня»); «Королевский выводок» I — «…и 50 🍞»; «Скряга» — «Переселиться, храня в казне 200 👑»; «Весь Лондон наш» — «Обжить шесть районов Лондона»; котёл и 3-й этап — «Леди Пемберли (дом №12) снова без чайника».
 - **Симулятор.** `--district id[@run]` (`SimOptions.district`, `forceDistrict`) навязывает району забег (по умолчанию 3-й), посещённый или нет; `scripts/sim-traits.ts` — абляция черт: забеги 1…n−1 один раз на повтор (снимок), затем забег n с каждой из 12 черт с того же снимка `--samples` раз (по умолчанию 3 повтора × 6 проб = 18 забегов на черту, ~33 мин на 4 потоках) (проба 0 — ГСЧ снимка, проба m — оба потока ГСЧ, игры и бота, пересеяны по m, одинаково для всех черт: парные забеги; `runOne` экспортирован); медиана коронации по повторам × пробам против «Тумана», плюс сдвиг среднего геометрического с 90% бутстреп-интервалом и парная медиана отношений. Пул потоков: сначала снимки, потом по задаче на повтор × пробу × район. Зачем пробы — GDD 15.17: от одного снимка «Туман» коронуется и за 30, и за 64 минуты. `SIM_OVERRIDES` `districts` подменяет моды черт. Бот по ходу абляции исправлен в четырёх местах (GDD 15.14, «После ENG-10/ENG-11»): `planJobs` при вентиле «works» проверяет входы плавилен и кузниц без спроса пресса и часов (как `economy.ts`); `supporter.brass = "smelter"` (кузнецы ставятся с плавильщиками); `chooseBuilding` держит 💍/📜, нужные этапу экспресса, от построек, которые их не делают (`kept`/`makes`/`keep`), и не кладёт их в `wishes`; `enablers` судит по устойчивому потоку (`flows(…, Infinity)`) и добавляет опоры цепочки из `BUNDLES`.
 - Тесты — `src/game/engine/v3content.test.ts` («ENG-11»); по смыслу изменены `v2contract` (черты: у района своя черта, второй круг «II» ×1.25), `v2depth` (Боро-маркет: «Сытость» ×1.5, 📜 ×0.75), `v2review` (порог Крысолова — Доки, 85).
-- **UI.** `ExpressPanel` пока читает `EXPRESS_STAGE_LINES[i]` (строки первого экспресса); правильно — `expressStageLine(i + 1, expressLineSet(s))` (UI REQUEST в отчёте ENG-10/11: поле `lineSet` в модели панели).
+- **UI.** `ExpressPanel` читает `expressStageLines(expressLineSet(s))` (`metaText.ts`): тот же набор строк, что и новость этапа.
+
+**Ревизия движка v3 (26.10.2026), дополнения контракта.**
+```ts
+// data/districts.ts
+MAX_DISTRICT = 999; clampDistrict(v: unknown): number   // perf-saves-6: save.ts зажимает meta.district и районы летописи в 0..999
+// черты растут ×1.25 за круг только до третьего круга (k ≤ 1.25², ENG-13): дальше интервал экспресса 0.6, минусы 0.75 и порог бдительности уходили в ноль и ниже
+// data/zones.ts
+zoneAdds(id: ZoneId, meta): string   // pacing-9: «что даёт» зона; у Вокзала без «…после первого Великого Переселения», когда колония уже переселялась
+// lib/useBackCloses.ts
+BackEnv.history.replaceState         // perf-saves-2: после перезагрузки с открытым оверлеем запись {rr:"ov"} занимается заново, а не дублируется
+```
 
 ### Мета-математика — `engine/metaMath.ts` (ENG-3, ENG-7)
 

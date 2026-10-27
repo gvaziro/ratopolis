@@ -263,8 +263,9 @@ function tickBackground(s: GameState, d: Derived, dt: number, ctx: EngineCtx): v
   }
 
   // «Гул из глубины» (ENG-9): once, the first quiet moment after 6:30 with ten rats, the Thunder God passes far below
-  // and the map's 4th tier gets its teaser (metroTeaser). No RNG draw, no timer touched.
-  if (!s.flags.first_rumble && !sceneUp && t >= T.rumbleAt && s.rats >= T.rumbleRats && !s.zones.metro) {
+  // and the map's 4th tier gets its teaser (metroTeaser). A colony that has met him (a metro train, kept in meta across
+  // migrations) needs no foreshadowing: it plays once per run until then. No RNG draw, no timer touched.
+  if (!s.flags.first_rumble && !sceneUp && t >= T.rumbleAt && s.rats >= T.rumbleRats && !s.zones.metro && !s.meta.seenEvents.includes("metro_train")) {
     s.flags.first_rumble = true;
     ctx.fx.push({ k: "deepRumble" });
     toast(ctx, DEEP_RUMBLE.toast, DEEP_RUMBLE.icon, "info");
@@ -587,10 +588,23 @@ interface FillOpts {
   S?: number;
   trinketPieces?: number;
   itemCount?: number;
+  /** Sparks of the car (default def.sparks); may be fractional (a variant's sparkMul): the expected count. */
   sparks?: number;
-  /** v3 (ENG-10): the spark count ×this, rounded (Полковник Хэтчетт's set: 0.8). */
+  /** v3 (ENG-10): the spark count ×this (Полковник Хэтчетт's set: 0.8). */
   sparkMult?: number;
   special?: "cheese";
+}
+
+/** hash01 salt of a car's spark rounding (+ the car index). */
+const SPARK_SALT = 0x5a00;
+
+/**
+ * The sparks a car gets for an expected count `raw`: floor(raw), plus one with p = its fraction by a hash of the scene
+ * seq and the car (no RNG draw), so a ×0.5 on a one-spark car halves its sparks on average instead of rounding back to 1.
+ */
+function sparkCount(raw: number, seq: number, carIndex: number): number {
+  const whole = Math.floor(raw);
+  return whole + (hash01(seq, SPARK_SALT + carIndex) < raw - whole ? 1 : 0);
 }
 
 function fillCar(s: GameState, d: Derived, sc: Scene, def: TrainCarDef, carIndex: number, window: [number, number], opts: FillOpts): void {
@@ -598,7 +612,8 @@ function fillCar(s: GameState, d: Derived, sc: Scene, def: TrainCarDef, carIndex
   const drops = opts.drops ?? def.drops;
   const S = opts.S ?? def.S;
   const count = opts.itemCount ?? def.items;
-  const sparks = Math.round((opts.sparks ?? def.sparks) * (opts.sparkMult ?? 1));
+  const rawSparks = (opts.sparks ?? def.sparks) * (opts.sparkMult ?? 1);
+  const sparks = sparkCount(rawSparks, sc.seq, carIndex);
   let nextId = sc.items.length;
   for (let k = 0; k < count; k++) {
     // 💍🔔 count as revealed from the Metro on (revealedRes), so 1st-class/baggage cars drop them before the first one is owned
@@ -614,8 +629,13 @@ function fillCar(s: GameState, d: Derived, sc: Scene, def: TrainCarDef, carIndex
     sc.items.push(item);
     ids.push(item.id);
   }
-  for (let k = 0; k < sparks; k++) {
-    const item: CatchItem = { id: nextId++, car: carIndex, res: "coal", value: 0, weight: 0, spark: true, t: window[0] + rand(s) * (window[1] - window[0]) };
+  // the sim RNG stream stays exactly as with the plain rounding: round(raw) moments are drawn (one the hash dropped is
+  // drawn all the same), a spark the hash adds above it (2.4 → 3) takes its moment from a hash
+  const drawn = Math.round(rawSparks);
+  for (let k = 0; k < Math.max(sparks, drawn); k++) {
+    const u = k < drawn ? rand(s) : hash01(sc.seq, SPARK_SALT + 0x80 + carIndex);
+    if (k >= sparks) continue;
+    const item: CatchItem = { id: nextId++, car: carIndex, res: "coal", value: 0, weight: 0, spark: true, t: window[0] + u * (window[1] - window[0]) };
     sc.items.push(item);
     ids.push(item.id);
   }
@@ -840,7 +860,7 @@ export function buildTrain(s: GameState, d: Derived, id: TrainId): Scene {
         drops: v.dropOverride?.[kind] ?? def.drops,
         S: def.S * v.sMul,
         itemCount: Math.max(1, Math.round(def.items * v.countMul)),
-        sparks: Math.round(def.sparks * v.sparkMul),
+        sparks: def.sparks * v.sparkMul,
         sparkMult,
       });
     } else {
@@ -1851,26 +1871,38 @@ export function offlineTrains(s: GameState, d: Derived, seconds: number, eta: nu
   return { count, loot };
 }
 
+/** Hash salts of deferTrainsForReturn (the metro train and the express keep the ones they had before the capsule). */
+const DEFER_SALT: Record<TrainId | "carriage", number> = { metro_train: 1, royal_express: 2, capsule: 3, carriage: 4 };
+
 /**
- * A short absence (≤ 60 s, store.creditShortHold) is credited as plain ticks, but a train due meanwhile must not play
- * out unattended (K1): every active metro/express timer below s.time + away + 15 moves to s.time + away + 15 + h·10
- * (h = a hash of the timer and s.time, no draw from the sim RNG). A whistle already used for that train moves with it.
- * Its «К путям!» is held back during the credit ticks (toastFor = the new time) so it comes right after them with the
- * real countdown: call releaseDeferredToast(s, deferred) once the credit ticks are done. Returns the new train times.
+ * A short absence (≤ 60 s, store.creditShortHold) is credited as plain ticks, but nothing may play out unattended
+ * meanwhile (K1): every active train timer (the capsule before the Metro, the metro train, the Royal Express) below
+ * s.time + away + 15 moves to s.time + away + 15 + h·10 (h = a hash of the timer and s.time, no draw from the sim RNG),
+ * and a whistle already used for that train moves with it. A train whose «К путям!» has already played and that is
+ * not due before the credit's end + 1 s keeps its time: its countdown kept running on screen, so a second-long alt-tab
+ * neither resets it nor undoes a paid whistle. The carriage (the close-up — the first one is the catch tutorial — or,
+ * from the Metro on, the grate rain) moves the same way, without a toast.
+ * The earliest train's «К путям!» is held back during the credit ticks (toastFor = its new time) so it comes right
+ * after them with the real countdown: call releaseDeferredToast(s, deferred) once the credit ticks are done.
+ * Returns the new train times (not the carriage's).
  */
 export function deferTrainsForReturn(s: GameState, away: number): number[] {
   const out: number[] = [];
-  const floor = s.time + Math.max(0, away) + 15;
-  const ids: TrainId[] = ["metro_train", "royal_express"];
-  ids.forEach((id, i) => {
+  const end = s.time + Math.max(0, away);
+  const floor = end + 15;
+  const later = (id: TrainId | "carriage") => floor + hash01(DEFER_SALT[id], Math.floor(s.time * 10)) * 10;
+  for (const id of TRAIN_IDS) {
     const at = s.timers[id];
-    if (!trainActive(s, id) || !Number.isFinite(at) || at >= floor) return;
-    const next = floor + hash01(i + 1, Math.floor(s.time * 10)) * 10;
+    if (!trainActive(s, id) || !Number.isFinite(at) || at >= floor) continue;
+    if (s.timers.toastFor === at && at >= end + 1) continue;
+    const next = later(id);
     if (s.timers.whistleUsedFor === at) s.timers.whistleUsedFor = next;
     s.timers[id] = next;
-    s.timers.toastFor = next;
     out.push(next);
-  });
+  }
+  if (Number.isFinite(s.timers.carriage) && s.timers.carriage < floor) s.timers.carriage = later("carriage");
+  const nt = nextTrain(s);
+  if (nt && out.includes(nt.at)) s.timers.toastFor = nt.at;
   return out;
 }
 

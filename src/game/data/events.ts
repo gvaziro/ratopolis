@@ -195,7 +195,7 @@ export const EVENT_TIMING = {
   /** ENG-9 «Гороховый суп»: from the Metro on, a fog of fogLength s every fogInterval s (a hash, not the RNG). */
   fogInterval: [1200, 1800],
   fogLength: 180,
-  /** ENG-9 «Гул из глубины»: the first quiet tick from this run time with at least rumbleRats rats (once ever per save). */
+  /** ENG-9 «Гул из глубины»: the first quiet tick from this run time with at least rumbleRats rats (once per run until the save has met a metro train: meta.seenEvents). */
   rumbleAt: 390,
   rumbleRats: 10,
 } as const;

@@ -26,8 +26,8 @@ import {
 import { cloneState, shareState } from "./engine/clone";
 import { abandonCommission } from "./engine/commissions";
 import { derive, type Derived } from "./engine/derive";
-import { clickPurse, clickShiny, deferTrainsForReturn, marketDeal, onZoneOpen, releaseDeferredToast, sceneAction, whistle } from "./engine/events";
-import { applyHintAction, trackHint, type Hint } from "./engine/hints";
+import { clickPurse, clickShiny, deferTrainsForReturn, marketDeal, onZoneOpen, sceneAction, whistle } from "./engine/events";
+import { applyHintAction, resumeHintClock, trackHint, type Hint } from "./engine/hints";
 import { simulateOffline, type OfflineReport } from "./engine/offline";
 import { deserialize, exportString, importAny, isNewerSave, SAVE_KEY, savedVersion, serialize } from "./engine/save";
 import { createInitialState, defaultMeta, newRun, SCHEMA_VERSION } from "./engine/state";
@@ -138,13 +138,19 @@ export interface GameStore {
   flushInitFx: () => void;
   /** Run `steps` fixed ticks (TICK s each) in one state update. */
   advance: (steps: number, active: boolean) => void;
-  /** Catch up a long absence (tab hidden > 60 s). */
-  catchUp: (seconds: number) => void;
   /**
-   * Credit a short hold (≤ 60 s, holdCredit "ticks", v3 ENG-5): trains due meanwhile are deferred behind a fresh
-   * «К путям!» (deferTrainsForReturn), then away/TICK plain ticks (inactive).
+   * Catch up a long absence (tab hidden > 60 s). `report: false` keeps «Пока вас не было» closed (a ceremony watched
+   * for over a minute is credited, but the player was there).
+   */
+  catchUp: (seconds: number, o?: { report?: boolean }) => void;
+  /**
+   * Credit a short hold (≤ 60 s, holdCredit "ticks", v3 ENG-5): trains and the carriage due meanwhile are deferred
+   * (deferTrainsForReturn), then away/TICK plain ticks (inactive). «К путям!» decided during them is not emitted: the
+   * first tick after the credit says it, with the real countdown.
    */
   creditShortHold: (away: number) => void;
+  /** Say «К путям!» again on the next tick (a pause under a ceremony: the toast's countdown ran on, the clock did not). */
+  rewarnTrains: () => void;
   noteInput: () => void;
   /** Write the save; false when it could not be written (blocked storage, quota) or saving is paused. */
   save: () => boolean;
@@ -228,6 +234,11 @@ function saveKey(): string {
 /** Fx produced by init() before any onFx listener exists; emitted once by flushInitFx(). */
 let initFx: Fx[] = [];
 let initUiFx: UiFx[] = [];
+
+/** Not per-tick chatter (auto clicks, births, small drops): what a batch of many ticks still emits. */
+function notChatter(f: Fx): boolean {
+  return !(f.k === "click" && f.auto) && f.k !== "birth" && !(f.k === "drop" && !f.big);
+}
 
 function isActive(lastInputAt: number): boolean {
   if (typeof document === "undefined") return false;
@@ -376,6 +387,8 @@ function loadFromStorage(key: string, now: number): Loaded {
     report = null;
     uiFx.push({ k: "toast", text: "Отчёт об отлучке потерян: летописец уронил перо", icon: "📜" });
   }
+  // a freshly loaded page has no «К путям!» on screen (a quick reload skips the catch-up): the first tick says it again
+  s.timers.toastFor = -1;
   s.lastSaved = now;
   return { game: s, report, issue: null, fx, uiFx };
 }
@@ -433,6 +446,8 @@ export const useGame = create<GameStore>((set, get) => {
 
   /** Replace the game with a loaded/restored one and resume play (runSeq: the HUD and colony remount). */
   const adopt = (game: GameState, report: OfflineReport | null = null) => {
+    // the toasts on screen belong to the colony being replaced: a train of this one gets its own «К путям!»
+    game.timers.toastFor = -1;
     set({ game, offlineReport: report, crashed: false, crashError: null, saveIssue: null, runSeq: get().runSeq + 1 });
   };
 
@@ -650,17 +665,20 @@ export const useGame = create<GameStore>((set, get) => {
         let d: Derived | null = null;
         for (let i = 0; i < steps; i++) d = step(s, TICK, { active }, ctx);
         // the elder's hint hysteresis (ENG-1): about once a second of play, never in a catch-up
-        if (d && s.settings.hints && Math.floor(s.time) !== Math.floor(prev.time) && steps <= 10) trackHint(s, d);
+        if (d && s.settings.hints && Math.floor(s.time) !== Math.floor(prev.time)) {
+          if (steps <= 10) trackHint(s, d);
+          else resumeHintClock(s); // a long stall: the hint was not being read (goals-5)
+        }
       } catch (e) {
         crash(e);
         return;
       }
       publish(prev, s);
       // a stalled frame (short hidden tab, GC) catches up many ticks at once: drop the per-tick chatter
-      emitFx(steps > 3 ? ctx.fx.filter((f) => !(f.k === "click" && f.auto) && f.k !== "birth" && !(f.k === "drop" && !f.big)) : ctx.fx);
+      emitFx(steps > 3 ? ctx.fx.filter(notChatter) : ctx.fx);
     },
 
-    catchUp: (seconds) => {
+    catchUp: (seconds, o) => {
       if (!get().ready || blocked()) return;
       const ctx: EngineCtx = { fx: [] };
       let s: GameState;
@@ -672,18 +690,38 @@ export const useGame = create<GameStore>((set, get) => {
         crash(e);
         return;
       }
-      set({ game: s, offlineReport: report && report.elapsed >= 60 ? report : get().offlineReport });
+      set({ game: s, offlineReport: report && report.elapsed >= 60 && o?.report !== false ? report : get().offlineReport });
       emitFx(ctx.fx);
     },
 
     creditShortHold: (away) => {
       if (!get().ready || blocked() || !(away > 0)) return;
-      let deferred: number[] = [];
+      const ctx: EngineCtx = { fx: [] };
+      const prev = get().game;
+      let s: GameState;
+      try {
+        s = cloneState(prev);
+        const toastBefore = s.timers.toastFor;
+        deferTrainsForReturn(s, away);
+        const steps = Math.min(600, Math.floor(away / TICK));
+        for (let i = 0; i < steps; i++) step(s, TICK, { active: false }, ctx);
+        // a «К путям!» decided during the credit (a deferred train's, or one due 15–30 s after it) would arrive with
+        // the countdown of its credit tick, up to 15 s too long: it is not emitted, and the first tick after the credit
+        // says it with the real one (once, for the earliest train). One said before the hold stays as it was.
+        if (s.timers.toastFor !== toastBefore) s.timers.toastFor = -1;
+      } catch (e) {
+        crash(e);
+        return;
+      }
+      publish(prev, s);
+      emitFx(ctx.fx.filter((f) => notChatter(f) && f.k !== "trainSoon"));
+    },
+
+    rewarnTrains: () => {
+      if (get().game.timers.toastFor === -1) return;
       mutate((s) => {
-        deferred = deferTrainsForReturn(s, away);
+        s.timers.toastFor = -1;
       });
-      get().advance(Math.min(600, Math.floor(away / TICK)), false);
-      if (deferred.length) mutate((s) => releaseDeferredToast(s, deferred));
     },
 
     noteInput: () => set({ lastInputAt: Date.now() }),

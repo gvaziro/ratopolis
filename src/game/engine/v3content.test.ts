@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { COMMISSIONS } from "../data/commissions";
 import { CURIOS, CURIO_CHANCE, CURIO_LIFE_ADD, CURIO_SETS, curioCandidates, curioMult, curioPerks, rollCurio } from "../data/curios";
-import { DISTRICTS, LEGACY_DISTRICT_SEQ, districtAt, districtFree, districtInfo, districtOptions } from "../data/districts";
+import { DISTRICTS, LEGACY_DISTRICT_SEQ, districtAt, districtFree, districtInfo, districtInfoOf, districtOptions } from "../data/districts";
 import { HEADLINES } from "../data/headlines";
 import { ACHIEVEMENTS, CORONATION_LINES, EDICTS, EXPRESS_STAGES, EXPRESS_STAGE_LINES, expressStageLine } from "../data/meta";
 import { BUILDINGS } from "../data/buildings";
@@ -335,6 +335,21 @@ describe("ENG-11 London on a map", () => {
     m.district = 1;
     m.migrations = 1;
     expect(districtOptions(m)[0].id).toBe("lambeth");
+  });
+
+  it("traits grow ×1.25 per lap only up to the third lap: every multiplier stays positive on lap 84 (ENG-13)", () => {
+    const amp = (id: DistrictId, lap: number) => districtInfoOf(id, lap).trait.mods;
+    expect(amp("westminster", 2).expressIntervalMult).toBeCloseTo(0.5);
+    expect(amp("westminster", 3).expressIntervalMult).toBeCloseTo(0.375);
+    for (const lap of [4, 6, 8, 84]) {
+      for (const id of DISTRICT_IDS) expect(amp(id, lap)).toEqual(amp(id, 3));
+      const big = amp("westminster", lap);
+      expect(big.expressIntervalMult).toBeGreaterThan(0.3);
+      expect(big.vigilanceFrom).toBeGreaterThan(10);
+      for (const id of DISTRICT_IDS) for (const v of Object.values(amp(id, lap).res ?? {})) expect(v).toBeGreaterThan(0.5);
+    }
+    // a save clamped to the last run index (MAX_DISTRICT) reads the third lap's strength
+    expect(districtAt({ visited: [] }, 999).trait.mods).toEqual(amp(districtAt({ visited: [] }, 999).id, 3));
   });
 
   it("a run's filler pool holds its own district's four lines and no other district's (index ≥ 6 too)", () => {

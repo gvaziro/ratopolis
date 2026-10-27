@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { BUILDINGS } from "@/game/data/buildings";
-import { currentExpedition } from "@/game/engine/actions";
+import { currentExpedition, expeditionFraction } from "@/game/engine/actions";
 import { derive } from "@/game/engine/derive";
-import { entries, expeditionCost } from "@/game/engine/formulas";
+import { entries, expeditionCost, unitValue } from "@/game/engine/formulas";
 import { buildNowPick, ETA_LONG_SEC } from "@/game/engine/goals";
-import { loadFixture } from "@/game/engine/testkit";
+import { loadFixture, metroState } from "@/game/engine/testkit";
 import { BUILDING_IDS, RES_IDS, type GameState } from "@/game/types";
 import { etaText, etaWords, goalModel, pillText, type Goal } from "./goalModel";
 
@@ -97,6 +97,24 @@ describe("goalModel (COL-2 «Цели колонии» 2.0)", () => {
     const row = goals.find((g) => g.key === `exp:${zone}`);
     expect(row?.sub).toContain("склад полон");
     expect(row?.contribute).toEqual({ kind: "expedition", zone, res: expect.arrayContaining([r]) });
+  });
+
+  it("the expedition ring is value-weighted, as the map plaque and the scout steps (pacing-5, ENG-3 K5)", () => {
+    // the Terminal with every line paid but the coins (8M 🪙, worth most of it) at 10%: the plain mean says ~82%
+    const s = metroState(99, { quiet: true });
+    s.revealed.exp_terminal = true;
+    const zone = currentExpedition(s);
+    expect(zone).toBe("terminal");
+    if (!zone) return;
+    const cost = entries(expeditionCost(s, zone));
+    expect(cost.length).toBeGreaterThan(2);
+    const [top] = [...cost].sort(([ra, a], [rb, b]) => b * unitValue(rb) - a * unitValue(ra))[0];
+    s.projects[zone] = Object.fromEntries(cost.map(([r, v]) => [r, r === top ? v * 0.1 : v]));
+    const plain = cost.reduce((a, [r, v]) => a + Math.min(1, (s.projects[zone]![r] ?? 0) / v), 0) / cost.length;
+    const weighted = expeditionFraction(s, zone);
+    expect(plain - weighted).toBeGreaterThan(0.3);
+    const row = goalModel(s, derive(s)).find((g) => g.key === `exp:${zone}`);
+    expect(row?.frac).toBe(Math.round(weighted * 50) / 50);
   });
 
   it("after the coronation lists the next wagon and the King's commission", () => {

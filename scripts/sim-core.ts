@@ -933,8 +933,11 @@ export class Bot {
     this.updateWeights(s, d, cur.all, proj);
     cur = this.value(s, d, rats0);
 
-    // project rush: everything goes to the expedition/express once it is within reach
-    const eta = proj ? this.etaWith(s, proj.rem, {}, cur.all) : Infinity;
+    // project rush: everything goes to the expedition/express once it is within reach. v3 (ENG-13): the passive player
+    // counts on its steady income only — the trains come when they come. With the expected train income in the ETA
+    // (3–5× what a passive colony's auto-collect really brought near the Terminal) its rush began 10+ min early, and
+    // it bought nothing for 6–7 min before the Terminal (the «ожидание новой цели» of seeds 777 and 3)
+    const eta = proj ? this.etaWith(s, proj.rem, {}, this.kind === "passive" ? cur.f : cur.all) : Infinity;
     const ratsOk = !proj || proj.rats <= Math.max(s.rats, d.housing);
     // the passive player only holds resources back when the project is minutes away (it checks in once a minute)
     const scoreRush = this.kind === "active" && this.lastTop !== null && this.lastTop.score > eta * 1.5;

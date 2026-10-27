@@ -14,11 +14,13 @@ import { isActive, noteHidden, noteVisible, useGame } from "./store";
  * The game clock is *held* while the tab is hidden or a ceremony is open (store.ceremony: the coronation show, the
  * migration card): nothing ticks, saves stand for the moment the hold began, and once the tab is visible with no
  * ceremony open the held time is credited by engine/hold.creditHold (v3 ENG-5, K1):
- * - above 60 s as an absence (catch-up and its report);
+ * - above 60 s as an absence (catch-up; its report only if the tab was hidden at some point of the hold: a ceremony
+ *   watched for over a minute is credited silently);
  * - up to 60 s with a ceremony, or with a scene UI driving a scene (alt-tab mid-train), as a pause: nothing is credited,
- *   the scene waits exactly where it was (SCN-1 froze its clock) and an event due meanwhile waits for the player;
- * - up to 60 s otherwise as store.creditShortHold: a train due meanwhile is deferred behind a fresh «К путям!», then
- *   plain ticks.
+ *   the scene waits exactly where it was (SCN-1 froze its clock), an event due meanwhile waits for the player, and a
+ *   «К путям!» said before the hold is said again with the real countdown;
+ * - up to 60 s otherwise as store.creditShortHold: a train (the capsule too) or a carriage due meanwhile is deferred,
+ *   then plain ticks; «К путям!» comes on the first tick after them.
  */
 export function useGameLoop(): void {
   useEffect(() => {
@@ -38,6 +40,8 @@ export function useGameLoop(): void {
     let heldForCeremony = false;
     /** A scene UI was driving a scene when the current hold began (a short alt-tab mid-train is a pause). */
     let heldForScene = false;
+    /** The tab was hidden at some point of the current hold (a long one then opens «Пока вас не было»). */
+    let heldHidden = false;
 
     const halted = () => {
       const st = useGame.getState();
@@ -48,6 +52,7 @@ export function useGameLoop(): void {
     const hold = (at: number) => {
       const st = useGame.getState();
       if (st.ceremony) heldForCeremony = true;
+      if (document.visibilityState === "hidden") heldHidden = true;
       if (heldAt !== null) return;
       heldForScene = !!st.game.scene?.interactive;
       heldAt = at;
@@ -60,10 +65,12 @@ export function useGameLoop(): void {
       const away = (Date.now() - heldAt) / 1000;
       const ceremony = heldForCeremony;
       const scene = heldForScene;
+      const hidden = heldHidden;
       heldAt = null;
       heldForCeremony = false;
       heldForScene = false;
-      if (!halted()) creditHold(useGame.getState(), away, ceremony, scene);
+      heldHidden = false;
+      if (!halted()) creditHold(useGame.getState(), away, ceremony, scene, hidden);
       noteVisible();
       last = performance.now();
       lastWall = Date.now();

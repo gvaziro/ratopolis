@@ -13,7 +13,7 @@ import { BUILDING_ORDER, BUILDINGS } from "@/game/data/buildings";
 import { ZONE_ORDER, ZONES } from "@/game/data/zones";
 import { buildingVisible } from "@/game/engine/actions";
 import { paybackSeconds } from "@/game/engine/economy";
-import { maxAffordable } from "@/game/engine/formulas";
+import { atMaxLevel, maxAffordable } from "@/game/engine/formulas";
 import { onUiFx } from "@/game/fx";
 import { derivedOf, useGame } from "@/game/store";
 import type { BuildingId, BuyMode, GameState, ZoneId } from "@/game/types";
@@ -55,7 +55,7 @@ function layoutOf(s: GameState): Layout {
         ids.push(id);
         levels += s.buildings[id];
         maxN = Math.max(maxN, maxAffordable(s, id));
-        if (def.effects.some((e) => e.t === "produce") && s.buildings[id] < (def.maxLevel ?? Infinity)) {
+        if (def.effects.some((e) => e.t === "produce") && !atMaxLevel(s, id)) {
           const t = paybackSeconds(s, d, id, 1);
           if (t < bestT) {
             bestT = t;

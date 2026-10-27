@@ -12,7 +12,7 @@ import { BUILDINGS } from "@/game/data/buildings";
 import { RESOURCES } from "@/game/data/resources";
 import { ZONES } from "@/game/data/zones";
 import { nextMilestone, resMult } from "@/game/engine/derive";
-import { buildingCost, canAfford, entries, timeToAfford } from "@/game/engine/formulas";
+import { atMaxLevel, buildingCost, canAfford, entries, timeToAfford } from "@/game/engine/formulas";
 import { emitUiFx, onFx } from "@/game/fx";
 import { derivedOf, useGame } from "@/game/store";
 import { BUILDING_IDS, ZONE_IDS, type Amounts, type BuildingId, type ResId, type ZoneId } from "@/game/types";
@@ -161,7 +161,8 @@ function ChamberTip({ id, onHold, onClose }: { id: BuildingId; onHold: (on: bool
   const affordable = okS === "1";
   const eta = Number(etaS);
   const cost = listS ? listS.split(",").map((p) => p.split(":") as [ResId, string]) : [];
-  const maxed = BUILDINGS[id].maxLevel !== undefined && level >= (BUILDINGS[id].maxLevel ?? 0);
+  // the engine's cap (the boiler goes to 14 in «Гончарни»), not the static maxLevel
+  const maxed = useGame((s) => atMaxLevel(s.game, id));
   // the same multiplied output the engine adds and the building card shows (tier/global/temp/hunger)
   const out = useGame(
     useShallow((s) => {

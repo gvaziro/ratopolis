@@ -21,7 +21,7 @@ import { check } from "@/game/engine/conditions";
 import { hasFreeSlot } from "@/game/engine/core";
 import { idleRats, stunnedRats, resMult, type Derived } from "@/game/engine/derive";
 import { crumbBalance, steamBudget, unitValue } from "@/game/engine/economy";
-import { buildingCost, entries, expeditionCost, remaining } from "@/game/engine/formulas";
+import { atMaxLevel, buildingCost, entries, expeditionCost, remaining } from "@/game/engine/formulas";
 import { newbornTarget } from "@/game/engine/goals";
 import { converterBottleneck, inputRunway, jobValuePerRat } from "@/game/engine/hints";
 import { derivedOf, useGame } from "@/game/store";
@@ -389,7 +389,7 @@ function goalsShortOf(s: GameState, r: ResId): string[] {
   const out: string[] = [];
   for (const id of BUILDING_ORDER) {
     const def = BUILDINGS[id];
-    if (!buildingVisible(s, id) || s.buildings[id] >= (def.maxLevel ?? Infinity)) continue;
+    if (!buildingVisible(s, id) || atMaxLevel(s, id)) continue;
     if ((buildingCost(id, s.buildings[id])[r] ?? 0) > s.res[r] + 1e-9) out.push(`«${def.name}»`);
   }
   for (const id of UPGRADE_ORDER) {

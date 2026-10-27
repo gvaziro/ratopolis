@@ -13,8 +13,8 @@ import { RESOURCES } from "@/game/data/resources";
 import { JOB_PLURAL } from "@/game/data/sources";
 import { ZONES } from "@/game/data/zones";
 import { milestoneMult, milestonesReached, resMult, type Derived } from "@/game/engine/derive";
-import { buildingCostFor, levelGain, milestoneInfo, unitValue } from "@/game/engine/economy";
-import { affordFraction, buildingCost, buyCount, entries } from "@/game/engine/formulas";
+import { levelGain, milestoneInfo, unitValue } from "@/game/engine/economy";
+import { affordFraction, entries } from "@/game/engine/formulas";
 import { onFx } from "@/game/fx";
 import { derivedOf, useGame } from "@/game/store";
 import type { BuildingId, BuyMode, GameState, JobId, ResId } from "@/game/types";
@@ -22,6 +22,7 @@ import { useSampled } from "@/game/useSampled";
 import { fmt } from "@/lib/format";
 import { Badge, Bar, BrassButton, Ring, Stamp, cx } from "@/components/ui/kit";
 import { isFresh } from "./alerts";
+import { cardPurchase } from "./cardBuy";
 import { CostView, HoverTip, WaitView, costItems, floatAt, squash, waitInfo, type CostItem, type WaitInfo } from "./common";
 import { useNarrow } from "./sheetSlot";
 import { BuildingThumb, flyThumb } from "./Thumb";
@@ -135,23 +136,10 @@ function pureProducer(id: BuildingId): boolean {
   return BUILDINGS[id].effects.every((e) => e.t === "produce");
 }
 
-/** Levels a click buys in this mode and their price: ×1, ×10 (always 10, honest), Макс (as many as affordable). */
-function purchase(s: GameState, id: BuildingId, mode: BuyMode): { k: number; ok: boolean; raw: ReturnType<typeof buildingCost> } {
-  const lv = s.buildings[id];
-  const room = (BUILDINGS[id].maxLevel ?? Infinity) - lv;
-  if (room <= 0) return { k: 0, ok: false, raw: {} };
-  if (mode === 10) {
-    const k = Math.min(10, room);
-    return { k, ok: buyCount(s, id, 10) === k, raw: buildingCostFor(s, id, k) };
-  }
-  const can = buyCount(s, id, mode);
-  const k = Math.max(1, Math.min(can || 1, room));
-  return { k, ok: can > 0, raw: buildingCost(id, lv, k) };
-}
-
 function cardModel(s: GameState, d: Derived, id: BuildingId, mode: BuyMode): CardModel {
   const lv = s.buildings[id];
-  const { k, ok, raw } = purchase(s, id, mode);
+  // up to the engine's cap (buildingMaxLevel: the boiler goes to 14 in «Гончарни»), never the static maxLevel alone
+  const { k, ok, raw } = cardPurchase(s, id, mode);
   const maxed = k === 0;
 
   const out: CardModel["out"] = [];
@@ -194,7 +182,7 @@ function cardModel(s: GameState, d: Derived, id: BuildingId, mode: BuyMode): Car
 
 /** «+1.04 🍞/с за +1 ур.» and «★ ×2 · 🎩 ×1.2» when the levels cross a milestone (PA-3). */
 function gainKey(s: GameState, id: BuildingId, mode: BuyMode): string {
-  const { k } = purchase(s, id, mode);
+  const { k } = cardPurchase(s, id, mode);
   if (k <= 0) return "";
   const gain = entries(levelGain(s, derivedOf(s), id, k))
     .filter(([, v]) => v > 1e-9)

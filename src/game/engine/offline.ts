@@ -3,6 +3,7 @@ import { RES_IDS } from "../types";
 import { gainAll } from "./core";
 import { derive } from "./derive";
 import { offlineTrains, rescheduleAfterAbsence, sceneAction, sweepShiny } from "./events";
+import { resumeHintClock } from "./hints";
 import { step } from "./step";
 
 export interface OfflineReport {
@@ -67,6 +68,8 @@ export function simulateOffline(s: GameState, elapsedSec: number, ctx: EngineCtx
   }
   // keep a few headlines from the absence (the coronation opens its overlay)
   for (const fx of sink.fx) if (fx.k === "medal" || fx.k === "zoneOpen" || fx.k === "coronation") ctx.fx.push(fx);
+  // the elder's hint was not being read while away (ENG-1 hysteresis, goals-5)
+  resumeHintClock(s);
   return {
     elapsed: elapsedSec,
     simulated: t,

@@ -1,10 +1,13 @@
 /**
  * Flood control for the toast stack (v3 SHL-1), kept pure so vitest can pin it down: how many toasts fit, which ones
  * show, how a held toast queues instead of pushing others out, the one-line unlock rows, the grouped early medals and
- * the King's charter wording. Toasts.tsx wires these to the fx buses and the DOM.
+ * the King's charter and the scouts' wording. Toasts.tsx wires these to the fx buses and the DOM.
  */
+import { RESOURCES } from "@/game/data/resources";
+import { SCOUT_NEAR_TEXT } from "@/game/engine/actions";
 import { charterAtCap } from "@/game/engine/metaMath";
-import { plural } from "@/lib/format";
+import type { ResId } from "@/game/types";
+import { fmt, plural } from "@/lib/format";
 
 /** «The first ten minutes of play» (run time, s): fewer toasts at once and early medals grouped. */
 export const EARLY_SEC = 600;
@@ -128,4 +131,13 @@ export function commissionDoneText(name: string, chartersBefore: number): string
   return charterAtCap({ charters: chartersBefore })
     ? `Поручение Короля исполнено: «${name}». Король доволен — казна грамот и так полна`
     : `Поручение Короля исполнено: «${name}». Грамота уже в казне!`;
+}
+
+/**
+ * The scouts' toast: steps 1–3 bring a piece of the map, the 90% step (v3 ENG-3) has its own line, as its news does
+ * (actions.SCOUT_NEAR_TEXT) — «Разведчики: до цели рукой подать! Принесли +1.2K 🪙».
+ */
+export function scoutToastText(fx: { res: ResId; amount: number; step: number }): string {
+  const loot = `+${fmt(fx.amount)} ${RESOURCES[fx.res].icon}`;
+  return fx.step === 4 ? `${SCOUT_NEAR_TEXT}! Принесли ${loot}` : `Разведчики вернулись: ${loot} и кусок карты`;
 }

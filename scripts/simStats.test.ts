@@ -69,6 +69,23 @@ describe("simStats (ENG-2 replicate medians)", () => {
     expect(fmtAggregate(x)).toBe("50:18 (42:24–50:18), 1 нет");
   });
 
+  it("an even replicate count prints a split median as it is judged, never «да … FAIL» (goals-8)", () => {
+    const yes = { k: "atLeast", lo: 1 } as const;
+    const offline = (v: number) => check("офлайн 8 ч", v, { judge: yes, unit: "bool", target: "да" });
+    const [split] = aggregateChecks([[offline(1)], [offline(0)]]);
+    expect(split.median).toBe(0.5);
+    expect(split.verdict).toBe("FAIL");
+    expect(fmtValue(split.median, "bool")).toBe("поровну");
+    expect(fmtAggregate(split)).toBe("поровну (нет–да)");
+    const [both] = aggregateChecks([[offline(1)], [offline(1)]]);
+    expect([fmtValue(both.median, "bool"), both.verdict]).toEqual(["да", "PASS"]);
+    // int checks: [3, 4] judged ≥ 4 is a 3.5 that fails — it reads 3.5, not «4»
+    const trains = (v: number) => check("варианты поездов", v, { judge: { k: "atLeast", lo: 4 }, unit: "int", target: "≥ 4" });
+    const [half] = aggregateChecks([[trains(3)], [trains(4)]]);
+    expect([fmtValue(half.median, "int"), half.verdict]).toEqual(["3.5", "FAIL"]);
+    expect(fmtValue(4, "int")).toBe("4");
+  });
+
   it("relMove: the baseline diff of sim-matrix (> 10% marks a regression)", () => {
     expect(relMove(2.9, 2.63)).toBeCloseTo(0.1027, 3);
     expect(relMove(2.7, 2.63)).toBeLessThan(0.1);

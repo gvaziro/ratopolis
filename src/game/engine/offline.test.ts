@@ -104,4 +104,12 @@ describe("offline progress", () => {
     expect(simulateOffline(s, 3, { fx: [] })).toBeNull();
     expect(s.time).toBe(s0.time);
   });
+
+  it("time away does not age the elder's hint: its clock restarts on return (goals-5)", () => {
+    const s = structuredClone(s0);
+    s.hintMemo = { id: "housing", since: s.time - 170, muted: "", mutedUntil: 0 };
+    simulateOffline(s, 3600, { fx: [] });
+    expect(s.hintMemo.id).toBe("housing");
+    expect(s.hintMemo.since).toBe(s.time);
+  });
 });

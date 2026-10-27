@@ -4,7 +4,7 @@ import type { EngineCtx, GameState, JobId } from "../types";
 import { applyReveals, openZone, setFocus } from "./actions";
 import { derive } from "./derive";
 import { onZoneOpen } from "./events";
-import { buildingCost } from "./formulas";
+import { buildingCost, lockedByCap } from "./formulas";
 import {
   autoFocus,
   buildNowPick,
@@ -18,7 +18,7 @@ import {
   potentialRates,
   projectBottleneck,
 } from "./goals";
-import { applyHintAction, HINT_MUTE_SEC, HINT_STALE_SEC, hintTaken, nextHint, storageHintFor, STORE_LEVELS_MAX, trackHint } from "./hints";
+import { applyHintAction, HINT_MUTE_SEC, HINT_STALE_SEC, hintTaken, nextHint, resumeHintClock, storageHintFor, STORE_LEVELS_MAX, trackHint } from "./hints";
 import { createInitialState } from "./state";
 import { fixtureNames, loadFixture, ticks } from "./testkit";
 
@@ -149,25 +149,110 @@ describe("the elder 2.0 (ENG-1)", () => {
     expect(full.text).toBe("⚙️ делают только механики, мест 3/3 — стройте ещё «Жестяная мастерская»");
   });
 
-  it("(b) 9 foragers on a full pantry, 3 pickpockets, 🪙 holding the Sewers up → rebalance:pickpocket, n ≥ 4", () => {
+  /** Fixture (b): 9 foragers on a full pantry, 3 pickpockets, 2 scavengers; `crumbsPaid`: the Sewers' 🍞 is in. */
+  function rebalanceColony(crumbsPaid: boolean): GameState {
     const s = burrow(14, 10, { forager: 9, pickpocket: 3, scavenger: 2 });
+    if (crumbsPaid) s.projects.sewers = { crumbs: 4400 }; // + the full pantry: no 🍞 left to make
+    s.res.crumbs = derive(s).caps.crumbs;
+    return s;
+  }
+
+  it("(b) 9 foragers on a full pantry, 3 pickpockets, 🪙 holding the Sewers up (its 🍞 paid) → rebalance:pickpocket, n ≥ 4", () => {
+    const s = rebalanceColony(true);
     const d = derive(s);
-    s.res.crumbs = d.caps.crumbs;
+    const focus = s.focus;
     expect(expeditionBottleneck(s, d, "sewers")!.res).toBe("coins");
     const h = nextHint(s, d)!;
     expect(h.id).toBe("rebalance:pickpocket");
-    expect(h.action).toMatchObject({ kind: "assign", job: "pickpocket", setFocus: true });
+    expect(h.action).toMatchObject({ kind: "assign", job: "pickpocket", from: ["forager"] });
     const n = h.action?.kind === "assign" ? h.action.n : 0;
     expect(n).toBeGreaterThanOrEqual(4);
     expect(h.text).toMatch(/^Крошек вдоволь \(\+2\.7\/с при прокорме 0\.56\/с\), а 🪙 для «Канализации» копить ≈ \d+ ч: переведите \d+ собирател(я|ей) в карманники$/);
-    // «Сделать»: the rats move, the newborns follow, the focus is not «manual»
+    // the auto focus is on: a star the hint set would never steer a newborn, so it sets none and says so (goals-4)
+    expect(h.action).not.toHaveProperty("setFocus");
+    expect(h.why).toBe("Еды останется с запасом, а новорождённых Старейшина и дальше шлёт туда, где нужнее");
     applyHintAction(s, d, h, { fx: [] });
     expect(s.jobs.pickpocket).toBe(3 + n);
     expect(s.jobs.forager).toBe(9 - n);
-    expect(s.focus).toBe("pickpocket");
+    expect(s.focus).toBe(focus);
     expect(s.flags.focus_manual).toBeUndefined();
     // the colony is still fed above 1.3× its upkeep
     expect(s.jobs.forager).toBeGreaterThanOrEqual(foragersNeeded(s, derive(s), 1.3));
+  });
+
+  it("(b′) the rebalance moves the star only when the newborns follow it, and its why-line says what they do (goals-4)", () => {
+    // the player's own star: it moves to the pickpockets, and the newborns go there
+    const s = rebalanceColony(true);
+    s.flags.focus_manual = true;
+    const h = nextHint(s, derive(s))!;
+    expect(h.action).toMatchObject({ kind: "assign", job: "pickpocket", setFocus: true });
+    expect(h.why).toBe("Новорождённые тоже пойдут в карманники, а еды останется с запасом");
+    applyHintAction(s, derive(s), h, { fx: [] });
+    expect(s.focus).toBe("pickpocket");
+    expect(newbornTarget(s, derive(s))).toMatchObject({ job: "pickpocket", auto: false });
+    // ratios: the sliders deal the newborns, the star is not theirs
+    const r = rebalanceColony(true);
+    r.upgrades.rat_relay = true;
+    r.assignMode = "ratios";
+    const hr = nextHint(r, derive(r))!;
+    expect(hr.id).toBe("rebalance:pickpocket");
+    expect(hr.action).not.toHaveProperty("setFocus");
+    expect(hr.why).toBe("Еды останется с запасом, а новорождённые пойдут по вашим долям");
+  });
+
+  it("(b″) while 🍞 is a cost of the Sewers only the foragers that make it sooner move, and the auto focus agrees (goals-1)", () => {
+    const s = rebalanceColony(false);
+    let d = derive(s);
+    const before = expeditionBottleneck(s, d, "sewers")!;
+    expect(before.res).toBe("coins");
+    expect(projectBottleneck(s, d, { crumbs: 4500 })!.etaSec).toBeLessThan(before.etaSec); // 🍞 is a cost, not the slowest
+    const h = nextHint(s, d)!;
+    expect(h.id).toBe("rebalance:pickpocket");
+    const n = h.action?.kind === "assign" ? h.action.n : 0;
+    // the whole surplus above 1.3× the upkeep (6) would make 🍞 the slowest: 128 min → 216 min
+    expect(n).toBeGreaterThanOrEqual(1);
+    expect(n).toBeLessThan(9 - foragersNeeded(s, d, 1.3));
+    expect(h.text).toContain(`переведите ${n} собирател`);
+    applyHintAction(s, d, h, { fx: [] });
+    d = derive(s);
+    const after = expeditionBottleneck(s, d, "sewers")!;
+    expect(after.etaSec).toBeLessThan(0.95 * before.etaSec);
+    expect(after.res).not.toBe("crumbs");
+    // no tug of war: the newborns do not go straight back to the foragers, the hint does not come back
+    expect(newbornTarget(s, d).job).not.toBe("forager");
+    expect(nextHint(s, d)?.id).not.toBe("rebalance:pickpocket");
+    // one forager more would not have made the Sewers any sooner
+    const t = rebalanceColony(false);
+    t.jobs.forager -= n + 1;
+    t.jobs.pickpocket += n + 1;
+    expect(expeditionBottleneck(t, derive(t), "sewers")!.etaSec).toBeGreaterThanOrEqual(after.etaSec - 1e-6);
+  });
+
+  it("a purse's feast (×5 for 30 s) moves no rats and shortens no ETA (goals-2)", () => {
+    const s = burrow(23, 12, { forager: 18, pickpocket: 3, scavenger: 2 });
+    s.res.crumbs = 100;
+    const plain = derive(s);
+    const look = (d: ReturnType<typeof derive>) => {
+      const h = nextHint(s, d);
+      return {
+        hint: h && { id: h.id, text: h.text, action: h.action },
+        newborn: newbornTarget(s, d),
+        eta: expeditionBottleneck(s, d, "sewers")!.etaSec,
+        crumbs: potentialRate(s, d, "crumbs"),
+        feed: foragersNeeded(s, d, 1.3),
+        pick: buildNowPick(s, d)?.id ?? null,
+      };
+    };
+    const calm = look(plain);
+    expect(calm.hint?.id).toBe("rebalance:pickpocket");
+    s.buffs.feastUntil = s.time + 30;
+    s.buffs.frenzyUntil = s.time + 30;
+    const feast = derive(s);
+    expect(feast.temp).toBe(7.5);
+    const during = look(feast);
+    expect(during).toEqual({ ...calm, eta: during.eta, crumbs: during.crumbs });
+    expect(during.eta).toBeCloseTo(calm.eta, 6);
+    expect(during.crumbs).toBeCloseTo(calm.crumbs, 9);
   });
 
   it("(c) with the crew there and a nest costing more than 120 s of income, the elder does not ask for housing", () => {
@@ -211,10 +296,12 @@ describe("the elder 2.0 (ENG-1)", () => {
     const h = storageHintFor(s, d, "crumbs", 2560);
     expect(h.buildingId).toBe("sewer_warehouse");
     expect(h.text).toBe(`${BUILDINGS.sewer_warehouse.icon} ${BUILDINGS.sewer_warehouse.name} ур. 1`);
-    // no suggestion ever asks a store for more than 3 levels or names a level locked behind a cap
+    // no suggestion ever asks a store for more than 3 levels or names a level locked behind a cap — the next one or
+    // any on the way (goals-6: pantry 5, stash 3, 2.56K 🍞 once read «Склад в трубе ур. 3» with its level 2 locked)
+    let multi = 0;
     for (const pantry of [0, 2, 5, 9, 13, 20]) {
-      for (const stash of [0, 4]) {
-        for (const price of [150, 500, 2560, 1e4, 1e5, 1e7]) {
+      for (const stash of [0, 3, 4]) {
+        for (const price of [150, 500, 1500, 2560, 4000, 1e4, 1e5, 1e7]) {
           s.buildings.pantry = pantry;
           s.buildings.stash = stash;
           s.flags.hit_crumb_cap = true;
@@ -222,11 +309,21 @@ describe("the elder 2.0 (ENG-1)", () => {
           const x = storageHintFor(s, dd, "crumbs", price);
           const m = /ур\. (\d+)/.exec(x.text);
           if (!m || !x.buildingId) continue;
-          expect(Number(m[1]) - s.buildings[x.buildingId], `${pantry}/${stash}/${price}`).toBeLessThanOrEqual(STORE_LEVELS_MAX);
-          expect(buildingCost(x.buildingId, s.buildings[x.buildingId]).crumbs ?? 0).toBeLessThanOrEqual(dd.caps.crumbs);
+          const id = x.buildingId;
+          const to = Number(m[1]);
+          expect(to - s.buildings[id], `${pantry}/${stash}/${price}`).toBeLessThanOrEqual(STORE_LEVELS_MAX);
+          if (to - s.buildings[id] > 1) multi++;
+          for (let L = s.buildings[id]; L < to; L++) {
+            const at = derive({ ...s, buildings: { ...s.buildings, [id]: L } });
+            expect(lockedByCap(buildingCost(id, L), at), `${pantry}/${stash}/${price}: ${id} ур. ${L + 1}`).toEqual([]);
+          }
         }
       }
     }
+    expect(multi).toBeGreaterThan(0); // the sweep does reach multi-level advice
+    s.buildings.pantry = 5;
+    s.buildings.stash = 3;
+    expect(storageHintFor(s, derive(s), "crumbs", 2560).text).not.toBe(`${BUILDINGS.sewer_warehouse.icon} ${BUILDINGS.sewer_warehouse.name} ур. 3`);
   });
 
   it("5. the contribution keeps back the price of the building that starts a missing resource", () => {
@@ -290,6 +387,49 @@ describe("the elder 2.0 (ENG-1)", () => {
     hintTaken(s, "rebalance:pickpocket");
     s.time = t0 + 300;
     expect(trackHint(s, d)?.id).toBe("rebalance:pickpocket");
+  });
+
+  it("hysteresis: time away (an offline catch-up) does not count as a hint left alone (goals-5)", () => {
+    const s = burrow(14, 10, { forager: 9, pickpocket: 3, scavenger: 2 });
+    const d = derive(s);
+    s.res.crumbs = d.caps.crumbs;
+    const first = trackHint(s, d)!.id;
+    s.time += 900; // a 15-min absence: no trackHint meanwhile
+    resumeHintClock(s); // what offline.simulateOffline / store.advance do after it
+    expect(trackHint(s, d)?.id).toBe(first);
+    expect(s.hintMemo.muted).not.toBe(first);
+    // read for 3 minutes more, it is muted as usual
+    s.time += HINT_STALE_SEC + 1;
+    expect(trackHint(s, d)?.id).not.toBe(first);
+  });
+
+  it("a starved converter's suppliers that cannot be moved are only pointed at; a press that moves nobody keeps the stale clock (goals-3)", () => {
+    // the Cellars push: foragers at 1.33× the upkeep, no idle rats, 🪙 not full — nobody can join the scavengers
+    const s = burrow(40, 25, { forager: 7, pickpocket: 26, scavenger: 4, mechanic: 3 });
+    openZone(s, "sewers", { fx: [] });
+    onZoneOpen(s, "sewers");
+    s.buildings.workshop = 1;
+    s.buildings.stash = 5;
+    Object.assign(s.res, { buttons: 0, wire: 0, crumbs: 50, coins: 10 });
+    s.convEff.mechanic = 0.3;
+    s.gross.crumbs = 0.3 * 7;
+    const d = derive(s);
+    const h = nextHint(s, d)!;
+    expect(h.id).toBe("converter:mechanic");
+    expect(h.action).toEqual({ kind: "focus" });
+    expect(h.target).toBe("j_scavenger");
+    // a stale «Сделать» (the v2 «assign 5») changes nothing: the hint's clock runs on
+    const dead: typeof h = { ...h, action: { kind: "assign", job: "scavenger", n: 5 } };
+    s.hintMemo.id = h.id;
+    s.hintMemo.since = 0;
+    s.time = 170;
+    expect(applyHintAction(s, d, dead, { fx: [] })).toBe(false);
+    expect(s.hintMemo.since).toBe(0);
+    // with 3 idle rats to send the same press moves them and restarts the clock
+    s.rats = 43;
+    expect(applyHintAction(s, derive(s), dead, { fx: [] })).toBe(true);
+    expect(s.jobs.scavenger).toBe(7);
+    expect(s.hintMemo.since).toBe(170);
   });
 
   it("(h) the goal widget comes with the first visitors", () => {

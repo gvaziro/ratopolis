@@ -14,7 +14,6 @@ import { memo } from "react";
 import { sfx } from "@/audio/sfx";
 import { districtInfo, districtInfoOf, type DistrictInfo } from "@/game/data/districts";
 import { humanClock } from "@/game/engine/formulas";
-import { suspicionInfo } from "@/game/engine/hints";
 import { derivedOf, useGame } from "@/game/store";
 import { useSampled } from "@/game/useSampled";
 import { cx } from "@/components/ui/kit";
@@ -23,6 +22,7 @@ import { fmt, fmtInt, fmtRate, fmtTime } from "@/lib/format";
 import { humanActivity, humanDate, pad } from "./clock";
 import FloatTip from "./FloatTip";
 import HudStyles from "./HudStyles";
+import { suspicionTipModel } from "./suspicionTip";
 
 export default function Header() {
   const calm = useGame((s) => s.game.settings.reducedMotion);
@@ -261,18 +261,12 @@ function Suspicion() {
   );
 }
 
-/** Concrete numbers from suspicionInfo: the rate, the time left until the Ratcatcher, what brings it down. Mounted only while open. */
+/**
+ * Concrete numbers from suspicionInfo: the rate, the time left until the Ratcatcher, what brings it down, and what
+ * the humans' vigilance takes from the trains' loot (v3 ENG-8, before the train). Mounted only while open.
+ */
 function SuspicionTip() {
-  const info = useSampled((s) => {
-    const i = suspicionInfo(s.game, derivedOf(s.game));
-    return {
-      pct: Math.floor(i.pct),
-      perMin: i.perMin,
-      threshold: i.threshold,
-      eta: i.etaSec === null ? -1 : Math.round(i.etaSec),
-      reducers: i.reducers.map((r) => `${r.label} ${r.amount}`).join(", "),
-    };
-  }, 2);
+  const info = useSampled((s) => suspicionTipModel(s.game, derivedOf(s.game)), 2);
   // the Ratcatcher is on his way (etaSec 0) or the threshold is reached
   const coming = info.pct >= info.threshold || info.eta === 0;
   return (
@@ -298,6 +292,7 @@ function SuspicionTip() {
       <span className="mt-1 block text-parchment-dim">
         Чем выше, тем чаще заглядывает Кот, а на {info.threshold}% является Крысолов с дудочкой.
       </span>
+      <span className={cx("mt-1 block", info.lost ? "font-bold text-danger-light" : "text-parchment-dim")}>{info.vig}.</span>
       {!coming && info.pct >= info.threshold - 20 && <span className="block text-danger-light">Наверху уже шепчутся о крысолове!</span>}
     </span>
   );

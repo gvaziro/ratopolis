@@ -270,13 +270,14 @@ export const BUILDINGS: Record<BuildingId, BuildingDef> = {
     cost: { wire: 6000, gears: 1000, coal: 150 },
     growth: 1.25,
     // v3 (ENG-4, K4): a cap makes steam a budget (24 stokers × 3 × 1.5 × 1.25 = 135 💨/s); district boilerMaxDelta adds
+    // (Гончарни +2): read the cap with formulas.buildingMaxLevel(s, "boiler") / atMaxLevel, never this field alone
     maxLevel: 12,
     effects: [
       { t: "slots", job: "stoker", amt: 2 },
       { t: "steamCap", amt: 100 },
     ],
     unlock: { all: [{ zone: "metro" }, { resEver: "coal", gte: 150 }] },
-    desc: "+2 места кочегара; буфер 💨 +100 за уровень (макс. 12).",
+    desc: "+2 места кочегара; буфер 💨 +100 за уровень (макс. 12, в Гончарнях — 14).",
     flavor: "Леди Пемберли (дом №12) снова без чайника. Теперь он свистит для крыс.",
   },
   brass_foundry: {

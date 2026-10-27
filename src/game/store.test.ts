@@ -56,6 +56,22 @@ describe("store", () => {
     expect(useGame.getState().game.scene?.phase).toBe("haul");
     expect(useGame.getState().lastInputAt).toBe(0);
   });
+
+  it("a long stalled frame restarts the elder's hint clock instead of ageing it (goals-5)", () => {
+    const s = loadFixture("v3-run1-60min");
+    s.settings.hints = true;
+    s.scene = null;
+    useGame.setState({ game: s, ready: true });
+    useGame.getState().advance(10, false); // a normal frame: the top hint is noted
+    const { id, since } = useGame.getState().game.hintMemo;
+    expect(id).not.toBe("");
+    useGame.getState().advance(10, false);
+    expect(useGame.getState().game.hintMemo).toMatchObject({ id, since }); // still the same hint, still ageing
+    useGame.getState().advance(400, false); // a 40 s stall: nobody read the hint
+    const g = useGame.getState().game;
+    if (g.hintMemo.id === id) expect(g.hintMemo.since).toBe(g.time);
+    expect(g.hintMemo.since).toBeGreaterThan(since);
+  });
 });
 
 describe("store: plain clone and structural sharing (v3 ENG-6)", () => {
@@ -98,30 +114,6 @@ describe("store: plain clone and structural sharing (v3 ENG-6)", () => {
     expect(kept).toBe(quiet);
   });
 
-  it("advance(1) on the late colony costs well under v2's structuredClone + step (loose bench; 0.45–0.6 measured)", () => {
-    const ctx: EngineCtx = { fx: [] };
-    let v2 = loadFixture("v3-run1-150min");
-    const v2Advance = () => {
-      const s = structuredClone(v2);
-      step(s, TICK, { active: true }, ctx);
-      ctx.fx.length = 0;
-      v2 = s;
-    };
-    adopt(loadFixture("v3-run1-150min"));
-    const v3Advance = () => useGame.getState().advance(1, true);
-    const time = (fn: () => void, n: number) => {
-      const t0 = performance.now();
-      for (let i = 0; i < n; i++) fn();
-      return performance.now() - t0;
-    };
-    time(v2Advance, 100);
-    time(v3Advance, 100);
-    let a = 0;
-    let b = 0;
-    for (let round = 0; round < 3; round++) {
-      a += time(v2Advance, 100);
-      b += time(v3Advance, 100);
-    }
-    expect(b / a).toBeLessThan(0.8);
-  });
+  // the wall-clock benches (advance(1) against v2's structuredClone + step) are in store.bench.slow.test.ts: timing
+  // ratios flake in the parallel fast suite (perf-saves-1)
 });

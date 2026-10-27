@@ -19,13 +19,11 @@ import { COMMISSIONS } from "@/game/data/commissions";
 import { EVENT_LINES } from "@/game/data/events";
 import { HEADLINES } from "@/game/data/headlines";
 import { ACHIEVEMENTS, EXPRESS_STAGES } from "@/game/data/meta";
-import { RESOURCES } from "@/game/data/resources";
 import { ZONES } from "@/game/data/zones";
 import { onFx, onUiFx, type UiFx } from "@/game/fx";
 import { useGame, type TabId } from "@/game/store";
 import type { AchievementId, Fx, RecordKey, SceneEventId, ZoneId } from "@/game/types";
 import { cx } from "@/components/ui/kit";
-import { fmt } from "@/lib/format";
 import { isPhoneLayout, isShortLayout, matchesQuery, usePhoneLayout } from "@/lib/layoutMode";
 import { applySwUpdate, SW_UPDATE_TARGET } from "@/components/ui/swClient";
 import HudStyles from "./HudStyles";
@@ -38,6 +36,7 @@ import {
   joinsMedalGroup,
   medalGroupText,
   medalGroupTitle,
+  scoutToastText,
   toastCap,
   unlockRow,
   unlockTitle,
@@ -253,7 +252,8 @@ export default function Toasts() {
           const map = !!useGame.getState().game.revealed.tab_map;
           push({
             icon: "🧭",
-            text: `Разведчики вернулись: +${fmt(fx.amount)} ${RESOURCES[fx.res].icon} и кусок карты`,
+            // the 90% step (v3 ENG-3) has its own line: «до цели рукой подать»
+            text: scoutToastText(fx),
             tone: "good",
             ms: TOAST_MS + 1500,
             go: map ? { tab: "map", target: `z_${fx.zone}` } : undefined,

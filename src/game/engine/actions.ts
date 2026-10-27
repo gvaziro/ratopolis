@@ -290,12 +290,9 @@ const SMART_FILL: JobId[] = ["stoker", "smelter", "smith", "mechanic", "scholar"
 const SMART_SUM: JobId[] = ["mechanic", "stoker", "smelter", "smith", "scholar"];
 /** Open jobs that take the rest (step 4). */
 const SMART_OPEN: JobId[] = ["pickpocket", "scavenger", "forager"];
-/** Jobs without inputs (their output counts as supply as is), in JOB_IDS order. */
-const NO_INPUT_JOBS: JobId[] = JOB_IDS.filter((j) => Object.keys(JOBS[j].consumes).length === 0);
-/** Each converter's inputs as [res, per worker] pairs (what entries(consumes) gives), hoisted out of the fill loop. */
-const SMART_INPUTS = Object.fromEntries(
-  SMART_FILL.map((j) => [j, (Object.entries(JOBS[j].consumes) as [ResId, number | undefined][]).filter((e): e is [ResId, number] => e[1] !== undefined)]),
-) as Record<JobId, [ResId, number][]>;
+// The job tables below are read from JOBS on every call, never snapshotted at import: the sim's SIM_OVERRIDES retune
+// JOBS[id].consumes after this module loads (scripts/sim-core.ts applyOverrides), and a stale copy would fill
+// converters against the old inputs while the supply sums read the new ones (perf-saves-5).
 
 /**
  * The supply of one converter input as a sum over the jobs that touch it: `base` (buildings) + Σ jobs[add]·addPw
@@ -347,10 +344,12 @@ export function smartAssign(s: GameState, d: Derived): void {
     left -= n;
   }
   // 3. converters, limited by input supply (supply from producers so far + buildings)
+  // jobs without inputs (their output counts as supply as is), in JOB_IDS order
+  const noInput = JOB_IDS.filter((j) => Object.keys(JOBS[j].consumes).length === 0);
   const terms: Partial<Record<ResId, SupplyTerms>> = {};
   const termsOf = (r: ResId): SupplyTerms => {
     const t: SupplyTerms = { base: passive(r), add: [], addPw: [], conv: [], convPw: [], convUse: [], convSpeed: [] };
-    for (const j of NO_INPUT_JOBS) {
+    for (const j of noInput) {
       if (JOBS[j].produces[r] === undefined) continue;
       t.add.push(j);
       t.addPw.push(perWorker(j, r));
@@ -379,7 +378,8 @@ export function smartAssign(s: GameState, d: Derived): void {
   const scavengerOpen = jobUnlocked(s, "scavenger");
   for (const j of SMART_FILL) {
     if (!jobUnlocked(s, j)) continue;
-    const inputs = SMART_INPUTS[j];
+    // its inputs as [res, per worker] pairs (what entries(consumes) gives), hoisted out of the fill loop
+    const inputs = (Object.entries(JOBS[j].consumes) as [ResId, number | undefined][]).filter((e): e is [ResId, number] => e[1] !== undefined);
     const speed = d.jobSpeed[j];
     while (left > 0 && jobs[j] < d.slots[j]) {
       let failed: ResId | null = null;

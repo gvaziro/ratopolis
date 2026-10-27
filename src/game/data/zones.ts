@@ -70,9 +70,25 @@ export const ZONES: Record<ZoneId, ZoneDef> = {
     sky: "Фасад вокзала с часами, дым экспресса",
     humanLine: "Кто-то забыл чемодан",
     ratLine: "Упал сундук сокровищ размером с собор",
-    adds: "+200 жилья, 💍, Королевский экспресс, Крысиный экспресс и коронация",
+    // v3 (ENG-3): the Крысиный экспресс waits for a Great Migration; zoneAdds() drops the note once the colony has one
+    adds: "+200 жилья, 💍, Королевский экспресс; Крысиный экспресс и коронация — после первого Великого Переселения",
   },
 };
+
+/** The migrations express_plan's blueprint waits for (its {migrations: 1} unlock part, ENG-3; zones.test.ts checks). */
+const EXPRESS_MIGRATIONS = 1;
+
+/** The Terminal's «adds» once that gate is met. */
+const TERMINAL_ADDS_MIGRATED = "+200 жилья, 💍, Королевский экспресс, Крысиный экспресс и коронация";
+
+/**
+ * What a zone brings, as the map card shows it (MapTab). The Terminal's static `adds` names the migration gate of the
+ * Крысиный экспресс, so a first run is not promised a coronation it cannot reach (pacing-9); after the first Great
+ * Migration the note goes.
+ */
+export function zoneAdds(id: ZoneId, meta: Pick<Meta, "migrations">): string {
+  return id === "terminal" && meta.migrations >= EXPRESS_MIGRATIONS ? TERMINAL_ADDS_MIGRATED : ZONES[id].adds;
+}
 
 export const ZONE_ORDER: ZoneId[] = ["burrow", "sewers", "cellars", "metro", "terminal"];
 

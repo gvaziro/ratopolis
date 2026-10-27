@@ -41,7 +41,9 @@ export interface Bottleneck {
  * Per-second production of every resource IGNORING storage caps: plain producers (jobs without inputs, buildings) with
  * their multipliers, then the converters in the economy's order, each limited by what is left of its inputs per second
  * plus its stock spread over STOCK_HORIZON (3 mechanics on an empty 🔘 store do not count as full speed). Inputs are
- * net of what the converters burn; 🍞 is net of the food upkeep, 🧀 of the cheese diet.
+ * net of what the converters burn; 🍞 is net of the food upkeep, 🧀 of the cheese diet. Temporary buffs (a purse's
+ * feast ×5, the frenzy) are left out, as in the economy's grossNoTemp: a 30-s feast must neither move rats off the
+ * foragers nor shorten an ETA.
  */
 export function potentialRates(s: GameState, d: Derived): ResMap {
   const workforce = s.rats > 0 ? 1 - stunnedRats(s) / s.rats : 1;
@@ -58,7 +60,7 @@ export function potentialRates(s: GameState, d: Derived): ResMap {
     for (const [r, v] of entries(d.buildingOut[id])) base[r] += v;
   }
   const out = zeroRes();
-  for (const r of RES_IDS) if (base[r] > 0) out[r] = base[r] * resMult(s, d, r, true);
+  for (const r of RES_IDS) if (base[r] > 0) out[r] = base[r] * resMult(s, d, r, false);
   for (const j of CONVERTERS) {
     const n = s.jobs[j];
     if (n <= 0) continue;
@@ -70,7 +72,7 @@ export function potentialRates(s: GameState, d: Derived): ResMap {
     }
     e = Math.max(0, Math.min(1, e));
     for (const [c, vc] of entries(JOBS[j].consumes)) out[c] -= rate * vc * e;
-    for (const [r, v] of entries(JOBS[j].produces)) out[r] += rate * v * d.jobYield[j] * resMult(s, d, r, true) * e;
+    for (const [r, v] of entries(JOBS[j].produces)) out[r] += rate * v * d.jobYield[j] * resMult(s, d, r, false) * e;
   }
   out.crumbs -= UPKEEP_PER_RAT * s.rats;
   out.cheese -= d.cheeseFood;
@@ -95,10 +97,10 @@ export function crumbGross(s: GameState, d: Derived, rates: ResMap = potentialRa
   return rates.crumbs + upkeep(s);
 }
 
-/** What one more forager adds to the gross 🍞 per second (multipliers and stunned rats included). */
+/** What one more forager adds to the gross 🍞 per second (multipliers and stunned rats included, temporary buffs not). */
 export function foragerOutput(s: GameState, d: Derived): number {
   const workforce = s.rats > 0 ? 1 - stunnedRats(s) / s.rats : 1;
-  return (JOBS.forager.produces.crumbs ?? 0) * d.jobSpeed.forager * d.jobYield.forager * resMult(s, d, "crumbs") * workforce;
+  return (JOBS.forager.produces.crumbs ?? 0) * d.jobSpeed.forager * d.jobYield.forager * resMult(s, d, "crumbs", false) * workforce;
 }
 
 /** Foragers needed so that the potential gross 🍞 is at least `margin` × upkeep (the rest of the 🍞 counts as it is). */
@@ -252,17 +254,15 @@ export interface Donor {
 
 /**
  * Rats that can leave their job for `target` without hurting the colony (v3 ENG-1, the elder's «Сделать»), in the
- * order they are taken: the foragers above AUTO_FOOD_MARGIN × the upkeep, the idle, then open crews (scavengers,
- * pickpockets) whose every output overflows a full store the project does not need — as many as keep that output's
- * net rate (converters fed) at or above zero. Never the target itself.
+ * order they are taken: the idle, open crews (scavengers, pickpockets) whose every output overflows a full store the
+ * project does not need — as many as keep that output's net rate (converters fed) at or above zero — then the
+ * foragers above AUTO_FOOD_MARGIN × the upkeep. While 🍞 is itself one of the project's costs those foragers are not
+ * free hands: only as many as make the project faster once the free hands are in `target` too (foragersWorthMoving),
+ * so a move never turns 🍞 into the slower resource. Never the target itself.
  */
 export function donorPool(s: GameState, d: Derived, target: JobId, rates: ResMap = potentialRates(s, d), needed: Set<ResId> = neededSet(s, d, rates)): Donor[] {
   const out: Donor[] = [];
   const workforce = s.rats > 0 ? 1 - stunnedRats(s) / s.rats : 1;
-  if (target !== "forager") {
-    const f = Math.max(0, s.jobs.forager - foragersNeeded(s, d, AUTO_FOOD_MARGIN, rates));
-    if (f > 0) out.push({ job: "forager", n: f });
-  }
   const idle = idleRats(s);
   if (idle > 0 && target !== "idle") out.push({ job: "idle", n: idle });
   for (const j of ["scavenger", "pickpocket"] as const) {
@@ -270,13 +270,93 @@ export function donorPool(s: GameState, d: Derived, target: JobId, rates: ResMap
     let spare = s.jobs[j];
     for (const [r, v] of entries(JOBS[j].produces)) {
       const full = Number.isFinite(d.caps[r]) && s.res[r] >= 0.99 * d.caps[r];
-      const per = v * d.jobSpeed[j] * d.jobYield[j] * resMult(s, d, r, true) * workforce;
+      const per = v * d.jobSpeed[j] * d.jobYield[j] * resMult(s, d, r, false) * workforce;
       spare = !full || needed.has(r) || !(per > 0) ? 0 : Math.min(spare, Math.floor(Math.max(0, rates[r]) / per));
       if (spare <= 0) break;
     }
     if (spare > 0) out.push({ job: j, n: spare });
   }
+  if (target !== "forager") {
+    const surplus = Math.max(0, s.jobs.forager - foragersNeeded(s, d, AUTO_FOOD_MARGIN, rates));
+    const f = surplus > 0 && needed.has("crumbs") ? foragersWorthMoving(s, d, target, out, surplus) : surplus;
+    if (f > 0) out.push({ job: "forager", n: f });
+  }
   return out;
+}
+
+/**
+ * Of `max` surplus foragers, the fewest that make the current project fastest (fasterShortfall) when they move into
+ * `target` after the free hands (`free`: the idle, overflowing crews); 0 when no forager helps — 🍞 is already the
+ * slowest, or `target` makes nothing the project waits for. Called while 🍞 is one of the project's costs. The ETAs
+ * are a falling curve (what `target` makes) against a rising one (🍞), so the scan stops at the first forager that no
+ * longer helps.
+ */
+function foragersWorthMoving(s: GameState, d: Derived, target: JobId, free: readonly Donor[], max: number): number {
+  const p = currentProject(s);
+  if (!p) return max;
+  const { need, paid } = projectNeed(s, p);
+  const pool = [...free, { job: "forager" as JobId, n: max }];
+  const freeN = free.reduce((a, x) => a + x.n, 0);
+  const after = (k: number): Bottleneck[] => {
+    const s2: GameState = { ...s, jobs: jobsAfterMove(s, target, pool, freeN + k) };
+    return projectShortfall(s2, d, need, paid, potentialRates(s2, d));
+  };
+  let best = after(0);
+  let k = 0;
+  while (k < max) {
+    const next = after(k + 1);
+    if (!fasterShortfall(next, best)) break;
+    best = next;
+    k++;
+  }
+  return k;
+}
+
+/**
+ * The jobs after `n` rats moved from `pool` (in its order, never out of `target` itself) into `target` — what
+ * applyAssignHint does with the same donors, the room in `target` aside.
+ */
+export function jobsAfterMove(s: GameState, target: JobId, pool: readonly Donor[], n: number): Record<JobId, number> {
+  const jobs = { ...s.jobs };
+  let left = Math.max(0, Math.floor(n));
+  for (const x of pool) {
+    if (left <= 0) break;
+    if (x.job === target) continue;
+    const take = Math.min(left, x.n);
+    if (x.job !== "idle") jobs[x.job] -= take;
+    jobs[target] += take;
+    left -= take;
+  }
+  return jobs;
+}
+
+/**
+ * The current project's shortfall (slowest first, at the potential rates) after `n` rats move from `pool` into
+ * `target` (jobsAfterMove): what a move hint promises. null without a project.
+ */
+export function shortfallAfterMove(s: GameState, d: Derived, target: JobId, pool: readonly Donor[], n: number): Bottleneck[] | null {
+  const p = currentProject(s);
+  if (!p) return null;
+  const { need, paid } = projectNeed(s, p);
+  const s2: GameState = { ...s, jobs: jobsAfterMove(s, target, pool, n) };
+  return projectShortfall(s2, d, need, paid, potentialRates(s2, d));
+}
+
+/**
+ * Shortfall `a` finishes the project sooner than `b` (both from projectShortfall of the same project): compared
+ * slowest first, the first ETA that differs by more than a hair is lower in `a`. So rats moved towards the slowest
+ * resource help while it stays the slowest, then the next slowest decides — and a never-produced resource that starts
+ * being made is always a gain.
+ */
+export function fasterShortfall(a: readonly Bottleneck[], b: readonly Bottleneck[]): boolean {
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const x = a[i]?.etaSec ?? 0;
+    const y = b[i]?.etaSec ?? 0;
+    if (x === y || Math.abs(x - y) <= 1e-9 * Math.max(1, Math.abs(y))) continue;
+    return x < y;
+  }
+  return false;
 }
 
 /** How many rats a move into `target` can take now: its room, at most the donor pool. */

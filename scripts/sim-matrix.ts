@@ -209,8 +209,9 @@ interface BaselineFile {
 async function main() {
   const o = parseArgs(process.argv.slice(2));
   const t0 = Date.now();
-  // longest jobs first: the active bot plays three runs, the passive one, the newcomer the shortest
-  const queue: Job[] = o.bots.flatMap((bot) => o.seeds.map((seed) => ({ seed, bot })));
+  // longest jobs first (whatever order --bots gives): the active bot plays three runs, the passive one, the newcomer
+  // the shortest
+  const queue: Job[] = [...o.bots].sort((a, b) => BOTS.indexOf(a) - BOTS.indexOf(b)).flatMap((bot) => o.seeds.map((seed) => ({ seed, bot })));
   const results: JobResult[] = [];
   const width = Math.min(o.workers, queue.length);
   await Promise.all(
@@ -269,6 +270,16 @@ async function main() {
   console.log(
     `\n${n} ${plural(n, "сид", "сида", "сидов")} × ${o.bots.length} ${plural(o.bots.length, "бот", "бота", "ботов")} за ${(wall / 1000).toFixed(0)} с (${width} ${plural(width, "процесс", "процесса", "процессов")}; самый долгий прогон ${(longest / 1000).toFixed(0)} с); мимо цели: ${misses}`,
   );
+  // ENG-2's «≤ 1.6× one seed» is bound by CPU, not by the queue: the matrix never beats Σ runs / processes (nor its
+  // longest run), and one seed takes about its longest run — so say how far this machine is from it
+  const busy = results.reduce((a, r) => a + r.ms, 0);
+  if (n > 1 && width > 0 && longest > 0) {
+    const floor = Math.max(longest, busy / width);
+    const need = Math.ceil(busy / (1.6 * longest));
+    console.log(
+      `Быстрее ${(floor / 1000).toFixed(0)} с на ${width} ${plural(width, "процессе", "процессах", "процессах")} не выйдет (сумма прогонов ${(busy / 1000).toFixed(0)} с; загрузка ${Math.round((100 * busy) / (width * wall))}%); ≤ 1.6× одного сида — от ${need} ${plural(need, "процесса", "процессов", "процессов")}`,
+    );
+  }
 
   let moved = 0;
   if (o.baseline) {

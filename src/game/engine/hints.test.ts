@@ -15,6 +15,7 @@ import {
   suspicionInfo,
 } from "./hints";
 import { createInitialState } from "./state";
+import { metroState } from "./testkit";
 
 /** A small colony with the first visitors, fed and housed, every free job manned and rates positive. */
 function colony(rats: number, nests: number): GameState {
@@ -113,6 +114,34 @@ describe("nextHint", () => {
     expect(b.supplier).toBe("scavenger");
     expect(b.need).toBeGreaterThanOrEqual(1);
     expect(b.text).toMatch(/^Не хватает ➰\. Нужно ещё ~\d+ барахольщик/);
+  });
+
+  it("4′. steam-starved smelters and smiths at the boiler cap are never told to build a boiler (pacing-1)", () => {
+    const s = metroState(7, { quiet: true });
+    Object.assign(s.buildings, { boiler: 12, brass_foundry: 60, rail_forge: 30, coal_chute: 30 });
+    Object.assign(s.res, { coal: 1e6, coins: 1e7, buttons: 1e6, brass: 1e5, wire: 1e9, gears: 1e9, steam: 0 });
+    s.rats = 400;
+    Object.assign(s.jobs, { forager: 156, coal_miner: 60, stoker: 24, smelter: 110, smith: 50 });
+    Object.assign(s.convEff, { smelter: 0.5, smith: 0.5, stoker: 1 });
+    s.gross.crumbs = 1000;
+    const d = derive(s);
+    expect(d.slots.stoker).toBe(24);
+    const cb = converterBottleneck(s, d, "smelter")!;
+    expect(cb).toMatchObject({ kind: "input", res: "steam", supplier: "stoker" });
+    expect(cb.building).toBeUndefined();
+    expect(cb.text).toMatch(/^Не хватает 💨\. Нужно ещё ~\d+ кочегаров — но котёл на пределе \(12 ур\.\): пар — это бюджет, снимите часть бригады\.$/);
+    s.steamPriority = "power";
+    expect(converterBottleneck(s, d, "smelter")!.text).toContain("а клапан отдаёт пар прессам: поверните его «заводу» или снимите часть бригады");
+    // nothing the elder could press helps: the converter rule stays quiet, the next rule speaks
+    const h = nextHint(s, d)!;
+    expect(h.id).not.toMatch(/^converter:/);
+    expect(h.action).not.toEqual({ kind: "buyBuilding", id: "boiler" });
+    // below the cap the boiler is still the answer
+    s.buildings.boiler = 11;
+    s.jobs.stoker = 22;
+    s.jobs.forager += 2;
+    const d11 = derive(s);
+    expect(converterBottleneck(s, d11, "smelter")!.building).toBe("boiler");
   });
 
   it("5. the expedition can take a real contribution → contribute", () => {

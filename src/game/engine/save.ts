@@ -1,5 +1,5 @@
 import { TROPHY_CURIO } from "../data/curios";
-import { legacyVisited } from "../data/districts";
+import { clampDistrict, legacyDistrictId, legacyVisited } from "../data/districts";
 import { CURIO_IDS, DISTRICT_IDS, EDICT_IDS, RES_IDS, SEAL_IDS, TRAIN_VARIANT_IDS, ZONE_IDS, COMMISSION_IDS, type DistrictId, type GameState } from "../types";
 import { abortScene } from "./offline";
 import { createInitialState, SCHEMA_VERSION } from "./state";
@@ -69,14 +69,15 @@ export const MIGRATIONS: Record<number, SaveMigration> = {
     // ENG-11: the numeric district of the old sequence becomes the list of districts visited
     const meta = raw.meta;
     if (isPlain(meta)) {
-      const d = fin(meta.district) ? Math.max(0, Math.floor(meta.district)) : 0;
+      // clamped before the list is built: a tampered index must not expand into millions of entries (perf-saves-6)
+      const d = clampDistrict(meta.district);
       const visited = legacyVisited(d);
       meta.district = d;
       meta.visited = visited;
       meta.districtId = visited[visited.length - 1];
       // history entries keep their index; their districtId is the same sequence
       if (Array.isArray(meta.history))
-        for (const h of meta.history) if (isPlain(h) && fin(h.district) && h.districtId === undefined) h.districtId = legacyVisited(h.district).pop();
+        for (const h of meta.history) if (isPlain(h) && fin(h.district) && h.districtId === undefined) h.districtId = legacyDistrictId(clampDistrict(h.district));
       // ENG-10: the two v2 trophies are the first exhibits of «Кунсткамера Короля»
       if (Array.isArray(meta.trophies) && !Array.isArray(meta.curios))
         meta.curios = meta.trophies.map((t) => (typeof t === "string" ? TROPHY_CURIO[t] : undefined)).filter((id) => id !== undefined);
@@ -233,13 +234,14 @@ function sanitize(s: GameState): void {
   }
   m.history = m.history
     .filter((h) => isPlain(h) && fin(h.district) && fin(h.seconds) && fin(h.eRun) && fin(h.crowns))
-    .map((h) => ({ ...h, zones: isPlain(h.zones) ? h.zones : {}, bestRating: RATINGS.has(h.bestRating) ? h.bestRating : "none" }))
+    .map((h) => ({ ...h, district: clampDistrict(h.district), zones: isPlain(h.zones) ? h.zones : {}, bestRating: RATINGS.has(h.bestRating) ? h.bestRating : "none" }))
     .slice(-20);
   if (!RATINGS.has(m.bestRating)) m.bestRating = "none";
   // saves from before lifetime.wagons: at least this run's wagons
   m.lifetime.wagons = Math.max(fin(m.lifetime.wagons) ? m.lifetime.wagons : 0, s.express.wagons);
 
-  // v3: districts, curios
+  // v3: districts, curios (the index clamped first: a list rebuilt from a huge one would not fit in a save)
+  m.district = clampDistrict(m.district);
   m.visited = m.visited.filter((id) => DISTRICTS.has(id));
   if (m.visited.length !== m.district + 1) m.visited = legacyVisited(m.district);
   m.districtId = m.visited[m.visited.length - 1] as DistrictId;

@@ -145,22 +145,4 @@ describe("smartAssign (v3 ENG-6): same jobs as v2", () => {
   });
 });
 
-describe("smartAssign (v3 ENG-6): cost", () => {
-  /** Mean ms per call over `n` calls (after a warm-up), each on a fresh copy. */
-  function bench(fn: (s: GameState, d: Derived) => void, s0: GameState, n: number): number {
-    const d = derive(s0);
-    const copies = Array.from({ length: n + 20 }, () => structuredClone(s0));
-    for (let i = 0; i < 20; i++) fn(copies[i], d);
-    const t0 = performance.now();
-    for (let i = 20; i < n + 20; i++) fn(copies[i], d);
-    return (performance.now() - t0) / n;
-  }
-
-  it("is several times cheaper than v2 on the late colony (loose guard: ≥ 2×, < 2 ms)", () => {
-    const s = late();
-    const v2 = bench(smartAssignV2, s, 60);
-    const v3 = bench(smartAssign, s, 60);
-    expect(v3).toBeLessThan(v2 / 2);
-    expect(v3).toBeLessThan(2);
-  });
-});
+// the cost bench (v3 ≥ 2× cheaper than v2 on the late colony) is wall-clock: it lives in smartAssign.slow.test.ts

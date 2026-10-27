@@ -16,7 +16,7 @@ import { ZONES } from "@/game/data/zones";
 import { buildingVisible } from "@/game/engine/actions";
 import { check, describeCond } from "@/game/engine/conditions";
 import type { Derived } from "@/game/engine/derive";
-import { buildingCost, canAfford, entries, lockedByCap, timeToAfford } from "@/game/engine/formulas";
+import { buildingCost, buildingMaxLevel, canAfford, entries, lockedByCap, timeToAfford } from "@/game/engine/formulas";
 import { resourceSources, storageHintFor } from "@/game/engine/hints";
 import { emitUiFx } from "@/game/fx";
 import { derivedOf, useGame } from "@/game/store";
@@ -122,7 +122,7 @@ function storeOptions(s: GameState, d: Derived, r: ResId, price: number): { opts
   let soon: BuildingId | null = null;
   const consider = (id: BuildingId, k: number) => {
     const L = s.buildings[id];
-    if (k > STORE_STEPS_MAX || L + k > (BUILDINGS[id].maxLevel ?? Infinity)) return;
+    if (k > STORE_STEPS_MAX || L + k > buildingMaxLevel(s, id)) return;
     if (lockedByCap(buildingCost(id, L), d).length > 0) return;
     opts.push({ id, level: L + k });
   };
