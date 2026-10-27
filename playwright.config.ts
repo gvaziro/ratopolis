@@ -18,12 +18,12 @@ export default defineConfig({
   forbidOnly: CI,
   timeout: 90_000,
   expect: { timeout: 10_000 },
-  reporter: CI ? [["list"], ["html", { open: "never" }]] : [["list"]],
+  reporter: CI ? [["github"], ["list"], ["html", { open: "never" }]] : [["list"]],
   use: {
     baseURL: `http://localhost:${PORT}`,
     channel: CI ? undefined : "msedge",
     locale: "ru-RU",
-    trace: "retain-on-failure",
+    trace: CI ? "on-first-retry" : "retain-on-failure",
   },
   projects: [
     { name: "desktop", use: { viewport: { width: 1440, height: 900 } } },
