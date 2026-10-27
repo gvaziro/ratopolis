@@ -71,11 +71,21 @@ test("a fresh colony: grate clicks, vagrants, a metro train to the haul card", a
     // nothing lies over the grate's centre
     const hit = await page.evaluate(([px, py]) => !!document.elementFromPoint(px, py)?.closest('[aria-label^="Решётка водостока"]'), [x, y]);
     expect(hit, "elementFromPoint at the grate's centre hits the grate").toBe(true);
+    // locator clicks re-check actionability each time: if something covers the grate, the error names it
+    const centre = { x: box!.width / 2, y: box!.height / 2 };
     for (let i = 0; i < 15; i++) {
-      await page.mouse.click(x, y);
+      await grate.click({ position: centre, timeout: 5_000 });
       await page.waitForTimeout(60);
     }
-    await expect.poll(() => rr(page, (st) => st.game.rats), { message: "vagrants arrive", timeout: 20_000 }).toBeGreaterThan(0);
+    const seen = await page.evaluate(
+      ([px, py]) => {
+        const g = (window as unknown as { __rr: { getState(): { game: { res: { crumbs: number }; stats: { clicks?: number } } } } }).__rr.getState().game;
+        const el = document.elementFromPoint(px, py);
+        return `crumbs=${g.res.crumbs.toFixed(1)} clicks=${g.stats.clicks ?? "?"} at-centre=${el?.tagName}.${(el?.getAttribute("class") ?? "").slice(0, 60)}`;
+      },
+      [x, y],
+    );
+    await expect.poll(() => rr(page, (st) => st.game.rats), { message: `vagrants arrive (${seen})`, timeout: 20_000 }).toBeGreaterThan(0);
     const tabs = page.getByRole("tablist", { name: "Разделы колонии" });
     await expect(tabs).toBeVisible();
     await expect(tabs).toBeInViewport({ ratio: 1 });
