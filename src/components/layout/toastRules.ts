@@ -14,6 +14,12 @@ export const MEDAL_MERGE_MS = 5000;
 export const MAX_QUEUED = 6;
 /** Unlock rows shown under «Открыто: N новинок»: desktop, phones. */
 export const UNLOCK_ROWS = { desk: 3, phone: 2 } as const;
+/**
+ * Window event Toasts sends when a medal banner actually comes on screen (it waits for scenes, dialogs and the zone
+ * paper): `detail.count` medals on it. Effects that belong to the banner (FxLayer's confetti) can key on it instead
+ * of the engine's medal fx, which may arrive under a running train.
+ */
+export const MEDAL_SHOWN_EVENT = "rr-medal-shown";
 
 /** How many toasts may be on screen at once. */
 export function toastCap(o: { phone: boolean; compact: boolean; early: boolean }): number {

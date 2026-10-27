@@ -299,7 +299,7 @@ describe("ENG-11 London on a map", () => {
     const d = derive(next);
     expect(d.districtRes.coins).toBe(1.5);
     expect(d.purseFreq).toBe(1.5);
-    expect(d.suspicionMult).toBe(1.3);
+    expect(d.suspicionMult).toBe(1.2);
     expect(districtInfo(next.meta).loc).toBe("в Сити");
   });
 

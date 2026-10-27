@@ -91,7 +91,7 @@ function CrashPanel({ detail, onRecovered }: { detail: string | null; onRecovere
 
   return (
     <div
-      className="fixed inset-0 z-[200] flex items-start justify-center overflow-y-auto bg-soot p-4 sm:items-center"
+      className="fixed inset-0 z-[200] flex items-start justify-center overflow-y-auto bg-soot pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(1rem,env(safe-area-inset-top))] sm:items-center"
       role="alertdialog"
       aria-modal="true"
       aria-labelledby={titleId}

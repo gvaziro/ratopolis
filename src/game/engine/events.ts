@@ -1485,7 +1485,9 @@ function startCat(s: GameState, d: Derived, ctx: EngineCtx): void {
   const warn = T.catWarn + (s.upgrades.bell_the_cat ? 3 : 0);
   const sc = newScene(s, "cat", "warn", warn);
   const hp = Math.ceil(Math.min(40, 15 + 3 * s.stats.catsBeaten) * (s.upgrades.bell_the_cat ? 0.7 : 1));
-  sc.taps = { count: 1, hp, duration: catFightSec(hp) };
+  // v3 (ENG-9, SCN-4 review): a tough cat's fight lasts until its last counterable lunge has played out
+  const dur = catFightSec(hp);
+  sc.taps = { count: 1, hp, duration: dur };
   s.flags.first_cat = true;
   s.timers.catForcedAt = Infinity;
   s.timers.cat = s.time + T.catCheck;
@@ -1931,14 +1933,18 @@ export function catHits(plain: number, perfect: number): number {
   return Math.max(0, plain) + CAT_COUNTER_HITS * Math.max(0, perfect);
 }
 
+/** Seconds the cat fight runs past the last lunge's counter window: the knock-back and «БАЦ!» of that counter play out. */
+export const CAT_FIGHT_TAIL = 0.5;
+
 /**
  * How long the fight with a cat of `hp` lasts (s): T.catFight (10), or — for a tough cat — long enough to beat it by
- * counters alone: the ceil(hp / CAT_COUNTER_HITS)-th lunge at its latest (+0.15) and its counter window, rounded up
- * to a whole second. A 40-hp cat: 14 lunges → 16 s; up to 27 hp (9 lunges) the fight stays 10 s.
+ * counters alone: the ceil(hp / CAT_COUNTER_HITS)-th lunge at its latest (+0.15), its counter window and
+ * CAT_FIGHT_TAIL, rounded up to a whole second (SCN-4 review). A 40-hp cat: 14 lunges → 16 s; 25–27 hp (9 lunges)
+ * 11 s; up to 24 hp (8 lunges) the fight stays 10 s.
  */
 export function catFightSec(hp: number): number {
   const lunges = Math.ceil(Math.max(1, hp) / CAT_COUNTER_HITS);
-  return Math.max(T.catFight, Math.ceil(0.6 + 1.1 * (lunges - 1) + 0.15 + CAT_COUNTER_WINDOW));
+  return Math.max(T.catFight, Math.ceil(0.6 + 1.1 * (lunges - 1) + 0.15 + CAT_COUNTER_WINDOW + CAT_FIGHT_TAIL));
 }
 
 /**

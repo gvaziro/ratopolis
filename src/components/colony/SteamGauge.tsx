@@ -4,7 +4,7 @@
  * Brass steam manometer (top-right of the colony). The needle follows steam / buffer with a spring;
  * when the press and the clock tower are starved (steamEff < 0.5) the red zone shakes and «Нет пара!» blinks.
  * Hover or tap opens the breakdown: stock, who makes steam, who burns it, the machines' efficiency and the fix.
- * On phones the dial shrinks to 44 px and the label shows only while starving.
+ * On phones (layoutMode: narrow or held sideways) the dial shrinks to 44 px and the label shows only while starving.
  */
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cx } from "@/components/ui/kit";
@@ -15,6 +15,7 @@ import { steamBreakdown } from "@/game/engine/hints";
 import { derivedOf, useGame, type TabId } from "@/game/store";
 import { useSampled } from "@/game/useSampled";
 import { fmt, fmtInt, plural } from "@/lib/format";
+import { usePhoneLayout } from "@/lib/layoutMode";
 import { onCamera } from "./camera";
 import { colonyPaused } from "./registry";
 
@@ -192,6 +193,8 @@ export const SteamGauge = memo(function SteamGauge() {
   const starving = useGame((s) => s.game.steamEff < 0.5 && derivedOf(s.game).steamNeed > 0);
   const label = useSampled((s) => `${fmt(s.game.res.steam)} / ${fmt(derivedOf(s.game).caps.steam)}`, 3, Object.is);
   const rm = useGame((s) => s.game.settings.reducedMotion);
+  // phones, portrait or held sideways (a 260 px tall colony has no room for the big dial and its labels)
+  const phone = usePhoneLayout();
   const needle = useRef<SVGGElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState(false);
@@ -278,10 +281,10 @@ export const SteamGauge = memo(function SteamGauge() {
         onClick={() => setPinned((p) => !p)}
         aria-expanded={pinned}
         aria-label={`Давление пара ${label}${starving ? ", пара не хватает" : ""}. Подробнее`}
-        className="flex cursor-help flex-row-reverse items-center gap-1 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-brass-light md:flex-col md:gap-0"
+        className={cx("flex cursor-help items-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-brass-light", phone ? "flex-row-reverse gap-1" : "flex-col")}
       >
         <span className={cx("relative block", starving && !rm && "cv-vibrate")}>
-          <svg viewBox="-40 -40 80 80" className="h-11 w-11 drop-shadow-[0_3px_6px_rgba(0,0,0,.55)] md:h-[72px] md:w-[72px]">
+          <svg viewBox="-40 -40 80 80" className={cx("drop-shadow-[0_3px_6px_rgba(0,0,0,.55)]", phone ? "h-11 w-11" : "h-[72px] w-[72px]")}>
             <circle r="37" fill="url(#cv-gauge-rim)" stroke="#2a1a0c" strokeWidth="1.5" />
             <circle r="30" fill="#f1e6cc" stroke="#7d5f2c" strokeWidth="1.5" />
             <path d={arc(25, A0, A0 + 45)} stroke="#c4453a" strokeWidth="6" fill="none" className={starving ? "cv-blink" : undefined} />
@@ -291,9 +294,11 @@ export const SteamGauge = memo(function SteamGauge() {
               return <line key={i} x1="0" y1="-29" x2="0" y2={i % 5 === 0 ? -21 : -25} stroke="#2a1a0c" strokeWidth={i % 5 === 0 ? 1.6 : 0.9} transform={`rotate(${a})`} />;
             })}
             {/* mobile-8: too small to read on the 44 px phone dial */}
-            <text y="13" fontSize="7" textAnchor="middle" fill="#5c4520" className="font-display max-md:hidden" fontWeight="700">
-              ПАР
-            </text>
+            {!phone && (
+              <text y="13" fontSize="7" textAnchor="middle" fill="#5c4520" className="font-display" fontWeight="700">
+                ПАР
+              </text>
+            )}
             <g ref={needle} transform={`rotate(${A0})`}>
               <path d="M-1.6 4L0 -27L1.6 4z" fill="#8b1e1e" />
             </g>
@@ -308,7 +313,7 @@ export const SteamGauge = memo(function SteamGauge() {
           </svg>
         </span>
         {/* phones: the labels sit left of the 44 px dial (only while starving); desktop: under the dial */}
-        <span className={cx("flex flex-col items-end md:items-center", !starving && "hidden md:flex")}>
+        <span className={cx("flex flex-col", phone ? "items-end" : "items-center", phone && !starving && "hidden")}>
           <span className="mt-0.5 rounded bg-soot-2/80 px-1.5 font-mono text-[10px] text-steam tabular">{label}</span>
           {starving && <span className="cv-blink mt-0.5 rounded border border-danger bg-soot-2/90 px-1.5 font-display text-xs font-bold text-danger-light">Нет пара!</span>}
         </span>

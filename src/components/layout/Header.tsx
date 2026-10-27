@@ -4,9 +4,11 @@
  * The masthead: title, the human clock with the district chip (md+), rats, suspicion, crowns, sound and settings.
  * One compact row (~44 px); on phones the title shrinks to a crest, the date and the chip hide (the clock's tooltip
  * still names the district and its trait). v3 (SHL-3): short screens (a phone in landscape) keep the crest only and
- * drop the 44-px minimum; the notch pads the top. With «Размер текста» above 100% the right group never shrinks — the
- * title (below lg), then on phones under 400 px the crest, the weekday and the rats' «/max» give way, and the clock
- * clips last, so ⚙ always stays on screen.
+ * drop the 44-px minimum; the notch pads the top. The right group never shrinks, so ⚙ always stays on screen; the
+ * left part gives way by container queries, which measure in the header's own (zoomed) pixels and so follow
+ * «Размер текста» as well as the screen: the title's name, then the date, the weekday and the crest, and the time
+ * itself goes only when not even «17:30» fits (never clipped mid-digit). A header under 368 px (a 360-px phone, any
+ * phone with the text enlarged) also drops the rats' «/max» (the tooltip has it).
  */
 import { memo } from "react";
 import { sfx } from "@/audio/sfx";
@@ -24,21 +26,22 @@ import HudStyles from "./HudStyles";
 
 export default function Header() {
   const calm = useGame((s) => s.game.settings.reducedMotion);
-  // «Размер текста» above 100% on a phone under 400 px: the crest and some air give way so the clock keeps its time
-  const tight = useGame((s) => s.game.settings.textScale > 1);
   return (
     <header
       className={cx(
         // safe area: the notch pads the top (viewport-fit=cover); short screens drop the 44-px minimum (the buttons keep 40)
-        "relative z-30 flex min-h-11 shrink-0 items-center gap-x-2 gap-y-0.5 border-b border-brass-dark/70 bg-gradient-to-b from-panel-2 via-panel to-soot-2 px-2 pb-0.5 pt-[max(2px,env(safe-area-inset-top))] shadow-[inset_0_1px_0_rgba(232,201,131,.14),0_2px_8px_rgba(0,0,0,.45)] short:min-h-0 short:pb-0 short:pt-[env(safe-area-inset-top)] sm:gap-x-3 sm:px-4",
+        "@container/hdr relative z-30 flex min-h-11 shrink-0 items-center gap-x-2 gap-y-0.5 border-b border-brass-dark/70 bg-gradient-to-b from-panel-2 via-panel to-soot-2 px-2 pb-0.5 pt-[max(2px,env(safe-area-inset-top))] shadow-[inset_0_1px_0_rgba(232,201,131,.14),0_2px_8px_rgba(0,0,0,.45)] short:min-h-0 short:pb-0 short:pt-[env(safe-area-inset-top)] sm:gap-x-3 sm:px-4",
         calm && "hud-calm",
       )}
     >
       <HudStyles />
-      <Title tight={tight} />
-      <Clock />
-      {/* the right group never shrinks: the clock gives way (it clips) so ⚙ stays on screen at any text scale */}
-      <div className={cx("ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2.5", tight && "max-[399px]:gap-1")}>
+      {/* the left part takes the room the right group leaves and decides what of the title and the clock fits in it */}
+      <div className="@container/left flex min-w-0 flex-1 items-center gap-x-2 sm:gap-x-3">
+        <Title />
+        <Clock />
+      </div>
+      {/* the right group never shrinks: the left part gives way so ⚙ stays on screen at any text scale */}
+      <div className="flex shrink-0 items-center gap-1.5 @max-[368px]/hdr:gap-1 sm:gap-2.5">
         <Rats />
         <Suspicion />
         <Crowns />
@@ -55,12 +58,13 @@ export default function Header() {
 
 /* ------------------------------------------------------------ title */
 
-const Title = memo(function Title({ tight }: { tight: boolean }) {
+const Title = memo(function Title() {
   return (
-    <div className={cx("flex shrink-0 items-center gap-2", tight && "max-[399px]:hidden")}>
+    // the crest goes when the left part could not keep «17:30» beside it
+    <div className="flex shrink-0 items-center gap-2 @max-[76px]/left:hidden">
       <Crest />
-      {/* the name gives way first: on short screens, and below lg while «Размер текста» is above 100% */}
-      <div className={cx("hidden flex-col leading-none short:hidden", tight ? "lg:flex" : "sm:flex")}>
+      {/* the name gives way first: on short screens, and wherever it would squeeze the clock below «Вт · 17:30» */}
+      <div className="hidden flex-col leading-none @min-[344px]/left:flex short:hidden">
         <span className="hud-brass-text font-display text-[17px] font-bold tracking-wide lg:text-lg">Ratropolis Underground</span>
         <span className="mt-0.5 font-display text-[10px] font-semibold uppercase tracking-[0.28em] text-parchment-dim">Крысиный мегаполис</span>
       </div>
@@ -105,8 +109,6 @@ function Clock() {
   const districtId = useGame((s) => districtInfo(s.game.meta).id);
   const lap = useGame((s) => districtInfo(s.game.meta).lap);
   const district = districtInfoOf(districtId, lap);
-  // «Размер текста» above 100% on a narrow phone: the weekday gives way (the tooltip still names it)
-  const tight = useGame((s) => s.game.settings.textScale > 1);
   const day = Math.floor(totalMin / 1440);
   const m = totalMin - day * 1440;
   const hh = Math.floor(m / 60);
@@ -127,20 +129,23 @@ function Clock() {
       </span>
     </span>
   );
+  // The column is the `clock` container and carries the clock's monospace font, so its `ch` is one character of the
+  // line: the date shows from 23.5 ch («Вт, 18 окт 1887 · 07:14»), the weekday from 10.5 ch («Вт · 07:14»), and
+  // the time hides rather than clip below 5 ch (the tooltip still has all of it).
   return (
-    <div className="flex min-h-10 min-w-0 shrink flex-col justify-center overflow-hidden leading-none">
+    <div className="@container/clock flex min-h-10 min-w-0 flex-1 flex-col justify-center overflow-hidden font-mono text-[12px] leading-none sm:text-[13px]">
       {/* the column clips (SHL-3): the focus rings of the clock and the chip are drawn inside their boxes */}
-      <FloatTip tip={tip} className="min-w-0 rounded-sm focus-visible:-outline-offset-2" width={260}>
-        <span className="flex min-h-5 min-w-0 cursor-default items-center whitespace-nowrap font-mono text-[12px] tabular text-parchment max-md:min-h-10 sm:text-[13px]">
-          <span className={cx("text-brass-light", tight && "max-[399px]:hidden")}>{d.wd}</span>
-          <span className="hidden sm:inline">
+      <FloatTip tip={tip} className="min-w-0 max-w-full self-start rounded-sm focus-visible:-outline-offset-2" width={260}>
+        <span className="flex min-h-5 min-w-0 cursor-default items-center whitespace-nowrap tabular text-parchment max-md:min-h-10">
+          <span className="text-brass-light @max-[10.5ch]/clock:hidden">{d.wd}</span>
+          <span className="hidden @min-[23.5ch]/clock:inline">
             , {d.date} {d.month} {d.year}
           </span>
-          <span className={cx("text-brass-dark", tight && "max-[399px]:hidden")}>&nbsp;·&nbsp;</span>
-          <span className="font-bold">{time}</span>
+          <span className="text-brass-dark @max-[10.5ch]/clock:hidden">&nbsp;·&nbsp;</span>
+          <span className="font-bold @max-[5ch]/clock:invisible">{time}</span>
         </span>
       </FloatTip>
-      <DistrictChip district={district} className="min-w-0 max-md:hidden" />
+      <DistrictChip district={district} className="min-w-0 max-w-full self-start max-md:hidden" />
     </div>
   );
 }
@@ -190,8 +195,6 @@ function Rats() {
   const hungry = useGame((s) => s.game.hungry);
   const growing = useGame((s) => !!s.game.flags.vagrants && s.game.rats < derivedOf(s.game).housing && s.game.res.crumbs > 0 && !s.game.hungry);
   const birth = useGame((s) => derivedOf(s.game).birthRate);
-  // «Размер текста» above 100% on a narrow phone: «/max» gives way (the tooltip has it)
-  const tight = useGame((s) => s.game.settings.textScale > 1);
   const full = rats >= housing;
   const tip = (
     <span className="block">
@@ -209,7 +212,8 @@ function Rats() {
         <span aria-hidden>{hungry ? "😟" : "🐀"}</span>
         <span>
           <span className={cx("font-bold", hungry ? "text-danger-light" : full ? "text-gaslight" : "text-parchment")}>{fmtInt(rats)}</span>
-          <span className={cx("text-parchment-dim", tight && "max-[399px]:hidden")}>/{fmtInt(housing)}</span>
+          {/* a header under 368 px (a 360-px phone, any phone with the text enlarged): «/max» gives way (the tooltip has it) */}
+          <span className="text-parchment-dim @max-[368px]/hdr:hidden">/{fmtInt(housing)}</span>
         </span>
         {growing && <span className="hidden text-[10px] text-good sm:inline">({fmtRate(birth)})</span>}
       </span>
@@ -243,7 +247,7 @@ function Suspicion() {
         <span aria-hidden className={cx(alarm && "hud-throb inline-block")}>
           👁
         </span>
-        <span className="relative hidden h-2 w-10 overflow-hidden rounded-full bg-black/50 shadow-[inset_0_1px_2px_rgba(0,0,0,.7)] min-[400px]:block md:w-14">
+        <span className="relative hidden h-2 w-10 overflow-hidden rounded-full bg-black/50 shadow-[inset_0_1px_2px_rgba(0,0,0,.7)] @min-[400px]/hdr:block md:w-14">
           <span
             className={cx("absolute inset-y-0 left-0 rounded-full transition-[width] duration-300", alarm && "hud-alarm")}
             style={{ width: `${pct}%`, background: `linear-gradient(90deg, #8fbf5a, ${color})` }}
@@ -286,7 +290,7 @@ function SuspicionTip() {
       ) : (
         info.eta > 0 && (
           <span className="block">
-            <b className="font-mono tabular">≈ {fmtTime(info.eta)}</b> до Крысолова
+            <b className="whitespace-nowrap font-mono tabular">≈ {fmtTime(info.eta)}</b> до Крысолова
           </span>
         )
       )}

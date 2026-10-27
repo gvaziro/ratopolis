@@ -43,9 +43,10 @@ export function clockAt(at: number): string {
   return d.toDateString() === new Date().toDateString() ? hm : `${p2(d.getDate())}.${p2(d.getMonth() + 1)} ${hm}`;
 }
 
-/** «1 крыса», «3 крысы», «12 крыс»; a compact «1.2K» reads «…тысячи», so it takes the «крыс» form. */
+/** «1 крыса», «3 крысы», «12 крыс» (a no-break space: the count never parts from its noun); a compact «1.2K» reads
+ * «…тысячи», so it takes the «крыс» form. */
 export function ratsLabel(n: number): string {
-  return `${fmtInt(n)} ${Math.abs(n) < 1000 ? plural(n, "крыса", "крысы", "крыс") : "крыс"}`;
+  return `${fmtInt(n)} ${Math.abs(n) < 1000 ? plural(n, "крыса", "крысы", "крыс") : "крыс"}`;
 }
 
 /* ------------------------------------------------------------ art */

@@ -19,7 +19,7 @@ import { useGame } from "@/game/store";
 import type { Scene } from "@/game/types";
 import { fmt, fmtInt, plural } from "@/lib/format";
 import { ChoiceButton, Countdown, flourish, HazardStyles, piperStakes, useReduced, useTimeUp, type PiperStakes } from "./HazardKit";
-import { act, clamp, EMOJI_FONT, fonts, hash01, makeClock, reducedNow, sceneHeld } from "./sceneUtils";
+import { act, clamp, EMOJI_FONT, fonts, hash01, makeClock, reducedNow, sceneHeld, sceneNow } from "./sceneUtils";
 
 const FLY = 3.2; // seconds a note needs to reach the burrow
 const WIN_SHARE = 0.8;
@@ -144,7 +144,7 @@ function PiperWarn({ scene }: { scene: Scene }) {
             hotkey="2"
             sub={
               <b>
-                Лопнуть {fmtInt(needed)} из {fmtInt(count)} {plural(count, "ноты", "нот", "нот")} за {fmtInt(fightSec)} с
+                Лопнуть {fmtInt(needed)} из {fmtInt(count)} {plural(count, "ноты", "нот", "нот")} за {fmtInt(fightSec)}&nbsp;с
               </b>
             }
             sub2={
@@ -380,7 +380,7 @@ function PiperFight({ scene }: { scene: Scene }) {
       const r = canvas.getBoundingClientRect();
       aim.x = e.clientX - r.left;
       aim.y = e.clientY - r.top;
-      aim.until = performance.now() + (e.pointerType === "mouse" ? 1e9 : 350);
+      aim.until = sceneNow() + (e.pointerType === "mouse" ? 1e9 : 350);
     };
     const onLeave = () => {
       aim.until = 0;
@@ -513,7 +513,7 @@ function PiperFight({ scene }: { scene: Scene }) {
       g.globalAlpha = 1;
 
       // the aimed note's hit ring
-      if (performance.now() < aim.until) {
+      if (sceneNow() < aim.until) {
         const R = hitR();
         let best: Note | null = null;
         let bestD = R * 2;

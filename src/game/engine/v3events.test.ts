@@ -12,6 +12,7 @@ import {
   buildTrain,
   CAT_COUNTER_HITS,
   CAT_COUNTER_WINDOW,
+  CAT_FIGHT_TAIL,
   catFightSec,
   catHits,
   catLungeAt,
@@ -475,10 +476,14 @@ describe("ENG-9 (F): the cat counter", () => {
     expect(CAT_COUNTER_HITS).toBe(3);
     expect(catHits(4, 3)).toBe(13);
     // a tough cat's fight lasts until the lunge that a counters-only win needs (14 for 40 hp: the 14th peaks ≤ 15.05 s)
+    // and half a second past its counter window (SCN-4 review)
     expect(catFightSec(15)).toBe(10);
-    expect(catFightSec(27)).toBe(10);
+    expect(catFightSec(24)).toBe(10);
+    expect(catFightSec(27)).toBe(11);
     expect(catFightSec(40)).toBe(16);
-    for (const hp of [15, 28, 33, 40]) expect(catLungeAt(9, Math.ceil(hp / 3) - 1) + CAT_COUNTER_WINDOW).toBeLessThanOrEqual(catFightSec(hp));
+    for (const hp of [15, 24, 27, 28, 33, 40]) {
+      expect(catLungeAt(9, Math.ceil(hp / 3) - 1) + CAT_COUNTER_WINDOW + CAT_FIGHT_TAIL).toBeLessThanOrEqual(catFightSec(hp));
+    }
     {
       const s = metroState(6, { quiet: true });
       s.stats.catsBeaten = 9;

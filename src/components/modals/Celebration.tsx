@@ -256,7 +256,7 @@ export default function Celebration({ onClose }: { onClose: () => void }) {
   return (
     <div
       ref={rootRef}
-      className="fixed inset-0 z-[60] flex flex-col overflow-hidden bg-soot/95 text-parchment"
+      className="fixed inset-0 z-[60] flex flex-col overflow-hidden bg-soot/95 pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-parchment"
       role="dialog"
       aria-modal="true"
       aria-label="Коронация Крысиного Короля"
@@ -331,52 +331,55 @@ export default function Celebration({ onClose }: { onClose: () => void }) {
 
       {!reduced && <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 z-20 h-full w-full" aria-hidden />}
 
-      {/* the finale card */}
+      {/* the finale card; short screens (a phone in landscape, SHL-3) lay it out wide: the portrait beside the words */}
       {finale && (
-        <div className="absolute inset-0 z-40 flex overflow-y-auto bg-soot/55 p-4" style={reduced ? undefined : { animation: "rh-reveal .5s ease-out both" }}>
+        <div className="absolute inset-0 z-40 flex overflow-y-auto bg-soot/55 p-4 short:p-2" style={reduced ? undefined : { animation: "rh-reveal .5s ease-out both" }}>
           <div
             ref={cardRef}
-            className="relative m-auto w-full max-w-sm rounded-xl border-2 border-[#d4af37] bg-gradient-to-b from-[#3b2c12] via-panel-2 to-panel px-4 pb-4 pt-6 text-center shadow-[0_0_60px_rgba(212,175,55,.35),0_20px_40px_rgba(0,0,0,.7)]"
+            className="relative m-auto w-full max-w-sm rounded-xl border-2 border-[#d4af37] bg-gradient-to-b from-[#3b2c12] via-panel-2 to-panel px-4 pb-4 pt-6 text-center shadow-[0_0_60px_rgba(212,175,55,.35),0_20px_40px_rgba(0,0,0,.7)] short:grid short:max-w-2xl short:grid-cols-[auto_minmax(0,1fr)] short:items-center short:gap-x-6 short:px-6 short:pb-3 short:pt-4"
           >
             <Rivets />
             {/* one line at 375 px: the paper's name joins from sm; the crown (-top-7) clears it by the wrapper's mt-8 */}
-            <p className="whitespace-nowrap font-display text-[10px] uppercase tracking-[0.16em] text-brass sm:text-[11px] sm:tracking-[0.2em]">
+            <p className="whitespace-nowrap font-display text-[10px] uppercase tracking-[0.16em] text-brass short:col-span-2 sm:text-[11px] sm:tracking-[0.2em]">
               Экстренный выпуск<span className="max-sm:hidden"> · Крысиные Ведомости</span>
             </p>
-            <div className="relative mx-auto mt-8 w-28 sm:w-36 short:w-20">
+            <div className="relative mx-auto mt-8 w-28 sm:w-36 short:w-24">
               <div className="absolute -top-7 left-1/2 z-10 w-14 -translate-x-1/2" style={reduced ? undefined : { animation: "rh-crown .9s cubic-bezier(.3,1.4,.5,1) .15s both" }}>
                 <CrownArt />
               </div>
               <KingPortrait tails={tails} gilded={gilded} crowned={false} />
             </div>
-            <h2 className="mt-2 font-display text-2xl font-bold text-[#f3d77a]">Коронация свершилась!</h2>
-            <p className="mt-2 min-h-[3.2em] font-display text-lg italic leading-snug text-parchment" aria-label={LINE}>
-              «{LINE.slice(0, typed)}
-              {typed < LINE.length && <span className="text-brass">▍</span>}
-              {typed >= LINE.length && "»"}
-            </p>
-            <p className="mt-1 text-xs text-parchment-dim">На борту экспресса — вся колония: {fmtInt(rats)} {rats < 1000 ? plural(rats, "хвост", "хвоста", "хвостов") : "хвостов"}.</p>
-            {showButton && (
-              <BrassButton
-                data-hail
-                size="lg"
-                className="mt-4 min-h-12 w-full"
-                onClick={onClose}
-                style={reduced ? undefined : { animation: "rh-reveal .35s ease-out both" }}
-              >
-                Да здравствует Крысиный Король!
-              </BrassButton>
-            )}
-            {/* a repeat coronation: the whole ride on request (the card covers the header, so it lives here) */}
-            {repeat && !ride && !reduced && (
-              <button
-                type="button"
-                className="mt-2 inline-flex min-h-10 items-center rounded-md px-3 font-display text-sm text-brass-light underline decoration-brass-dark underline-offset-4 hover:bg-panel-3/60 hover:text-gaslight"
-                onClick={replay}
-              >
-                Полная церемония ›
-              </button>
-            )}
+            {/* the words: plain children of the card, or its second column on short screens */}
+            <div className="contents short:flex short:min-w-0 short:flex-col short:items-center">
+              <h2 className="mt-2 font-display text-2xl font-bold text-[#f3d77a] short:mt-0">Коронация свершилась!</h2>
+              <p className="mt-2 min-h-[3.2em] font-display text-lg italic leading-snug text-parchment" aria-label={LINE}>
+                «{LINE.slice(0, typed)}
+                {typed < LINE.length && <span className="text-brass">▍</span>}
+                {typed >= LINE.length && "»"}
+              </p>
+              <p className="mt-1 text-xs text-parchment-dim">На борту экспресса — вся колония: {fmtInt(rats)}&nbsp;{rats < 1000 ? plural(rats, "хвост", "хвоста", "хвостов") : "хвостов"}.</p>
+              {showButton && (
+                <BrassButton
+                  data-hail
+                  size="lg"
+                  className="mt-4 min-h-12 w-full short:mt-3"
+                  onClick={onClose}
+                  style={reduced ? undefined : { animation: "rh-reveal .35s ease-out both" }}
+                >
+                  Да здравствует Крысиный Король!
+                </BrassButton>
+              )}
+              {/* a repeat coronation: the whole ride on request (the card covers the header, so it lives here) */}
+              {repeat && !ride && !reduced && (
+                <button
+                  type="button"
+                  className="mt-2 inline-flex min-h-10 items-center rounded-md px-3 font-display text-sm text-brass-light underline decoration-brass-dark underline-offset-4 hover:bg-panel-3/60 hover:text-gaslight short:mt-1"
+                  onClick={replay}
+                >
+                  Полная церемония ›
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

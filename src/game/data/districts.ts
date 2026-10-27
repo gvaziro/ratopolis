@@ -101,6 +101,8 @@ export function amplifyMods(m: DistrictMods, k: number): DistrictMods {
  * The traits of the v1/v2 sequence (index = old meta.district). v3 (ENG-11) retune: the market's perk is a richer
  * «Сытость» and its quirk costs 📜; the potteries raise the boiler cap and slow the metro; the mansions pay in 💍;
  * Big Ben's quirk costs 📜 and lets the humans watch from 40 👁 (v2 quirks were extra paid events: no cost at all).
+ * The forced-trait ablation (scripts/sim-traits.ts, GDD 15.17) softened three quirks that bit the late 💍 bottleneck
+ * hardest: the mansions' 💍 −25% → −15%, the City's suspicion ×1.3 → ×1.2, Chelsea's express interval ×1.3 → ×1.2.
  */
 export const DISTRICT_TRAITS: DistrictTrait[] = [
   { name: "Туман", icon: "🌫️", perk: "Ничего особенного — только туман гуще похлёбки", quirk: "Никаких сюрпризов", mods: {} },
@@ -129,8 +131,8 @@ export const DISTRICT_TRAITS: DistrictTrait[] = [
     name: "Особняки",
     icon: "🎩",
     perk: "🪙 ×1.5, кошельки вдвое чаще",
-    quirk: "Дворецкие запирают шкатулки: 💍 −25%",
-    mods: { res: { coins: 1.5, trinkets: 0.75 }, purseFreqMult: 2 },
+    quirk: "Дворецкие запирают шкатулки: 💍 −15%",
+    mods: { res: { coins: 1.5, trinkets: 0.85 }, purseFreqMult: 2 },
   },
   {
     name: "Биг-Бен",
@@ -249,8 +251,8 @@ export const DISTRICTS: Record<DistrictId, DistrictDef> = {
       name: "Банки",
       icon: "🏦",
       perk: "🪙 ×1.5, кошельки в полтора раза чаще",
-      quirk: "Клерки бдительны: подозрение растёт ×1.3",
-      mods: { res: { coins: 1.5 }, purseFreqMult: 1.5, suspicionMult: 1.3 },
+      quirk: "Клерки бдительны: подозрение растёт ×1.2",
+      mods: { res: { coins: 1.5 }, purseFreqMult: 1.5, suspicionMult: 1.2 },
     },
     fillers: [
       "Сити: Банк Англии пересчитал золото. Дважды. Крысы сочувствуют",
@@ -337,8 +339,8 @@ export const DISTRICTS: Record<DistrictId, DistrictDef> = {
       name: "Мастерские художников",
       icon: "🎨",
       perk: "📜 ×1.5, кошельки в полтора раза чаще",
-      quirk: "Королевский экспресс реже (интервал ×1.3)",
-      mods: { res: { blueprints: 1.5 }, purseFreqMult: 1.5, expressIntervalMult: 1.3 },
+      quirk: "Королевский экспресс реже (интервал ×1.2)",
+      mods: { res: { blueprints: 1.5 }, purseFreqMult: 1.5, expressIntervalMult: 1.2 },
     },
     fillers: [
       "Челси: художник рисует Темзу в тумане. Туман позирует бесплатно",

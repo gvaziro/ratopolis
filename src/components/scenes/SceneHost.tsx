@@ -205,6 +205,9 @@ const ENABLED = "button:not([disabled]), a[href], [tabindex]:not([tabindex='-1']
 
 const shown = (el: Element) => el.getClientRects().length > 0;
 
+/** The scene's body chunk is still on its way (BodySkeleton): its [data-autofocus] control is not there yet. */
+const bodyLoading = (dlg: HTMLElement) => !!dlg.querySelector("[data-scene-body] [aria-busy='true']");
+
 /** Where a keyboard player's focus goes in the dialog: [data-autofocus] in the body, then anywhere, then the first enabled button. */
 function focusTarget(dlg: HTMLElement): HTMLElement | null {
   const body = dlg.querySelector("[data-scene-body]") ?? dlg;
@@ -232,7 +235,7 @@ function useSceneFocus(ref: RefObject<HTMLDivElement | null>, seq: number, phase
     const lost = () => !document.activeElement || document.activeElement === document.body;
     // focus that falls to <body> mid-phase (a focused button unmounted: the hook's bar, a swept pile) comes back
     const iv = window.setInterval(() => {
-      if (dlg && keyboardUsed() && !sceneHeld() && lost()) focusTarget(dlg)?.focus({ preventScroll: true });
+      if (dlg && keyboardUsed() && !sceneHeld() && lost() && !bodyLoading(dlg)) focusTarget(dlg)?.focus({ preventScroll: true });
     }, 100);
     return () => {
       window.clearInterval(iv);
@@ -283,20 +286,20 @@ function useSceneFocus(ref: RefObject<HTMLDivElement | null>, seq: number, phase
   useLayoutEffect(() => {
     const dlg = ref.current;
     if (!dlg || !keyboardUsed()) return;
-    // the body chunk may still be on its way: look again for a moment
     let tries = 0;
     let t = 0;
     const place = () => {
       const active = document.activeElement;
       if (active && active !== document.body && dlg.contains(active) && shown(active)) return;
-      // a ceremony over the scene keeps its own focus
-      if (sceneHeld()) {
-        if (++tries < 40) t = window.setTimeout(place, 50);
+      // a ceremony over the scene keeps its own focus; while the body chunk is on its way the focus waits for the
+      // phase's own control (not the header's market chip): look again for a moment
+      if (sceneHeld() || bodyLoading(dlg)) {
+        if (++tries < 100) t = window.setTimeout(place, 50);
         return;
       }
       const target = focusTarget(dlg);
       target?.focus({ preventScroll: true });
-      if ((!target || document.activeElement !== target) && ++tries < 40) t = window.setTimeout(place, 50);
+      if ((!target || document.activeElement !== target) && ++tries < 100) t = window.setTimeout(place, 50);
     };
     place();
     return () => window.clearTimeout(t);

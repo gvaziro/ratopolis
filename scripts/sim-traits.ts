@@ -1,11 +1,12 @@
 /**
- * npx tsx scripts/sim-traits.ts [--seed 12345] [--replicates 3] [--run 3] [--districts all|id,id,…] [--tol 0.12] [--detail]
+ * npx tsx scripts/sim-traits.ts [--seed 12345] [--replicates 3] [--run 3] [--districts all|id,id,…] [--tol 0.12] [--detail] [--threads N]
  *
  * v3 (ENG-11) forced-trait ablation: the active bot plays runs 1…run−1 as usual (one bot RNG stream per replicate,
  * seed ^ k·0x9e37, as balance-sim --replicates), then run `run` is replayed from that same snapshot once per district
  * with the district forced (sim-core forceDistrict). Prints each trait's coronation median (min–max) and its shift
- * against «Туман» (Уайтчепел, no mods); the acceptance is every median within ±tol. Replicates run in worker
- * threads. SIM_OVERRIDES (JSON, sim-core applyOverrides: `districts`, `curios`, …) patches the data for tuning.
+ * against «Туман» (Уайтчепел, no mods); the acceptance is every median within ±tol. The geometric-mean shift is printed
+ * too (for information): «Туман» itself is bimodal on 12345 (the Terminal opens at 8–26 min), so a median of a few
+ * replicates swings by ±15% on its own. Replicates run in worker threads. SIM_OVERRIDES (JSON, sim-core applyOverrides: `districts`, `curios`, …) patches the data for tuning.
  */
 import os from "node:os";
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
@@ -25,6 +26,8 @@ interface Args {
   tol: number;
   /** Print every replicate's coronation and its slowest express stages with the binding resource. */
   detail: boolean;
+  /** Worker threads at once (default availableParallelism − 1). */
+  threads: number;
 }
 
 /** One forced run: its coronation (s into the run, null: none) and the express stages that took longest. */
@@ -35,7 +38,7 @@ interface Forced {
 type ReplicateResult = Partial<Record<DistrictId, Forced>>;
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { seed: 12345, replicates: 3, run: 3, districts: [...DISTRICT_IDS], tol: 0.12, detail: false };
+  const a: Args = { seed: 12345, replicates: 3, run: 3, districts: [...DISTRICT_IDS], tol: 0.12, detail: false, threads: Math.max(1, (os.availableParallelism?.() ?? os.cpus().length) - 1) };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     const v = argv[i + 1];
@@ -43,6 +46,7 @@ function parseArgs(argv: string[]): Args {
     else if (k === "--replicates" && v) a.replicates = Math.max(1, Math.min(16, Math.floor(Number(v)) || 1));
     else if (k === "--run" && v) a.run = Math.max(2, Math.min(8, Math.floor(Number(v)) || 3));
     else if (k === "--tol" && v) a.tol = Math.max(0, Number(v) || 0.12);
+    else if (k === "--threads" && v) a.threads = Math.max(1, Math.floor(Number(v)) || 1);
     else if (k === "--detail") {
       a.detail = true;
       continue;
@@ -109,6 +113,11 @@ function replicate(args: Args, k: number): ReplicateResult {
   return out;
 }
 
+/** Geometric mean (coronation times are shifted by multipliers). */
+function geoMean(xs: number[]): number {
+  return Math.exp(xs.reduce((a, x) => a + Math.log(x), 0) / xs.length);
+}
+
 function median(xs: number[]): number {
   const a = [...xs].sort((x, y) => x - y);
   const m = Math.floor(a.length / 2);
@@ -117,7 +126,7 @@ function median(xs: number[]): number {
 
 async function runAll(args: Args): Promise<ReplicateResult[]> {
   const n = args.replicates;
-  const width = Math.max(1, Math.min(n, (os.availableParallelism?.() ?? os.cpus().length) - 1));
+  const width = Math.max(1, Math.min(n, args.threads));
   const results: ReplicateResult[] = new Array(n);
   let next = 0;
   const one = (k: number) =>
@@ -144,9 +153,13 @@ async function main() {
   const results = await runAll(args);
   const rows = args.districts.map((id) => {
     const xs = results.map((r) => r[id]?.cor).filter((x): x is number => typeof x === "number");
-    return { id, xs, med: xs.length === results.length ? median(xs) : null };
+    const all = xs.length === results.length;
+    return { id, xs, med: all ? median(xs) : null, geo: all ? geoMean(xs) : null };
   });
-  const base = rows.find((r) => r.id === "whitechapel")?.med ?? null;
+  const fog = rows.find((r) => r.id === "whitechapel");
+  const base = fog?.med ?? null;
+  const baseGeo = fog?.geo ?? null;
+  const pct = (x: number | null) => (x === null ? "—" : `${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)}%`);
   console.log(`=== Абляция черт районов (ENG-11): забег ${args.run}, сид ${args.seed}, повторов ${args.replicates}, допуск ±${Math.round(args.tol * 100)}% ===`);
   let fails = 0;
   for (const r of rows) {
@@ -155,8 +168,10 @@ async function main() {
     const ok = shift !== null && Math.abs(shift) <= args.tol + 1e-9;
     if (!ok) fails++;
     const range = r.xs.length ? `${fmtMin(Math.min(...r.xs))}–${fmtMin(Math.max(...r.xs))}` : "—";
-    const sh = shift === null ? "—" : `${shift >= 0 ? "+" : ""}${(shift * 100).toFixed(1)}%`;
-    console.log(`${r.id.padEnd(14)} ${t.icon} ${t.name.padEnd(22)} коронация ${fmtMin(r.med).padStart(6)} (${range})  ${sh.padStart(7)}  ${ok ? "PASS" : "FAIL"}`);
+    const geoShift = baseGeo !== null && r.geo !== null ? r.geo / baseGeo - 1 : null;
+    console.log(
+      `${r.id.padEnd(14)} ${t.icon} ${t.name.padEnd(22)} коронация ${fmtMin(r.med).padStart(6)} (${range})  ${pct(shift).padStart(7)}  ${ok ? "PASS" : "FAIL"}  (среднее геом. ${fmtMin(r.geo)}, ${pct(geoShift)})`,
+    );
     if (args.detail) results.forEach((x, k) => console.log(`    повтор ${k}: ${fmtMin(x[r.id]?.cor)}  дольше всего: ${x[r.id]?.slow || "—"}`));
   }
   console.log(`\n${fails ? `FAIL: ${fails}` : "PASS: все черты"} в пределах ±${Math.round(args.tol * 100)}% от «Тумана»; ${((Date.now() - t0) / 1000).toFixed(0)} с`);

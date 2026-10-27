@@ -76,12 +76,13 @@ export default function Ceremony({ data, onClose }: { data: MigrationFx; onClose
   const anim = (css: string) => (reduced ? undefined : { animation: css });
 
   return (
-    <div className="fixed inset-0 z-[60] flex overflow-y-auto bg-soot/95 p-3 text-parchment" role="dialog" aria-modal="true" aria-label="Великое Переселение" style={anim("rh-reveal .35s ease-out both")}>
+    <div className="fixed inset-0 z-[60] flex overflow-y-auto bg-soot/95 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] pt-[max(0.75rem,env(safe-area-inset-top))] text-parchment" role="dialog" aria-modal="true" aria-label="Великое Переселение" style={anim("rh-reveal .35s ease-out both")}>
       <HazardStyles />
       <style>{MIG_CSS}</style>
-      <div className="m-auto flex w-full max-w-md flex-col items-stretch gap-3">
+      {/* short screens (a phone in landscape, SHL-3): the front page and the card side by side, both on screen at once */}
+      <div className="m-auto flex w-full max-w-md flex-col items-stretch gap-3 short:max-w-3xl short:flex-row short:items-center">
         {/* the front page */}
-        <div className="relative rotate-[-1deg] rounded-sm border border-[#8a7a5a] bg-[#eadcc0] px-4 pb-3 pt-2 text-[#2a2018] shadow-[0_18px_40px_rgba(0,0,0,.7)]" style={anim("mo-drop .7s cubic-bezier(.3,1.3,.5,1) both")}>
+        <div className="relative rotate-[-1deg] rounded-sm border border-[#8a7a5a] bg-[#eadcc0] px-4 pb-3 pt-2 text-[#2a2018] shadow-[0_18px_40px_rgba(0,0,0,.7)] short:w-[42%] short:shrink-0" style={anim("mo-drop .7s cubic-bezier(.3,1.3,.5,1) both")}>
           <div className="flex items-baseline justify-between border-b-2 border-double border-[#2a2018] pb-1 font-serif text-[10px] uppercase tracking-widest">
             <span>Крысиные Ведомости</span>
             <span>{data.weekday}, 05:00</span>
@@ -102,7 +103,7 @@ export default function Ceremony({ data, onClose }: { data: MigrationFx; onClose
         </div>
 
         {/* crowns and the portrait */}
-        <div ref={cardRef} className="relative rounded-xl border-2 border-[#d4af37] bg-gradient-to-b from-[#3b2c12] via-panel-2 to-panel px-4 pb-4 pt-5 text-center shadow-[0_0_50px_rgba(212,175,55,.3)]" style={anim("rh-reveal .5s ease-out .5s both")}>
+        <div ref={cardRef} className="relative rounded-xl border-2 border-[#d4af37] bg-gradient-to-b from-[#3b2c12] via-panel-2 to-panel px-4 pb-4 pt-5 text-center shadow-[0_0_50px_rgba(212,175,55,.3)] short:min-w-0 short:flex-1 short:pb-3 short:pt-4" style={anim("rh-reveal .5s ease-out .5s both")}>
           <Rivets />
           <div className="flex items-center justify-center gap-4">
             <div className="w-24 shrink-0 sm:w-28">
@@ -119,8 +120,8 @@ export default function Ceremony({ data, onClose }: { data: MigrationFx; onClose
             </div>
           </div>
           <p className="mt-3 rounded border border-line/60 bg-soot/50 px-2 py-1.5 text-xs leading-snug text-parchment">
-            За забег: {fmt(sum.eRun)} 🪙 · {fmtInt(sum.trains)} {plural(sum.trains, "поезд", "поезда", "поездов")} · лучший улов {rating?.icon ? `${rating.icon} ${rating.name}` : "—"} · {fmtInt(sum.rats)}{" "}
-            {plural(sum.rats, "хвост", "хвоста", "хвостов")} · {fmtDuration(Math.round(sum.seconds))}
+            За забег: {fmt(sum.eRun)} 🪙 · {fmtInt(sum.trains)}&nbsp;{plural(sum.trains, "поезд", "поезда", "поездов")} · лучший улов {rating?.icon ? `${rating.icon} ${rating.name}` : "—"} · {fmtInt(sum.rats)}&nbsp;
+            {plural(sum.rats, "хвост", "хвоста", "хвостов")} · <span className="whitespace-nowrap">{fmtDuration(Math.round(sum.seconds))}</span>
           </p>
           <p className="mt-2 text-xs text-parchment-dim">
             {trait.icon} {trait.name}: {trait.perk} · {trait.quirk}

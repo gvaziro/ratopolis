@@ -4,7 +4,8 @@
  * Common frame of every event close-up: header with the event name and the two-scale lines
  * ("👤 Человек видит / 🐀 Крысы видят", typed letter by letter), a 1 s "Наверху" cut-in and the keyframes
  * used by all scene components.
- * v3: a «пауза» badge while the game is held by a ceremony, a crash or a save issue (SCN-1; a hidden tab needs none);
+ * v3: a «пауза» badge while the game is held by a ceremony, a crash or a save issue (SCN-1; a hidden tab needs none),
+ * and the typed lines wait for the release;
  * on short screens (a phone in landscape) a one-row header, so the close-up keeps the height (SCN-5).
  */
 import { useEffect, useState, type ReactNode } from "react";
@@ -15,6 +16,7 @@ import type { SceneEventId } from "@/game/types";
 import { useShortLayout } from "@/lib/layoutMode";
 import { cx } from "@/components/ui/kit";
 import { setPeekHost } from "./MarketPopup";
+import { sceneHeld } from "./sceneClock";
 
 /** Keyframes shared by the scene components (prefixed rr- to stay out of everyone's way). */
 const KEYFRAMES = `
@@ -57,6 +59,8 @@ export function Typewriter({ text, delay = 0, speed = 26, instant, onDone }: { t
     let iv = 0;
     const start = window.setTimeout(() => {
       iv = window.setInterval(() => {
+        // SCN-1: the line waits (and keeps quiet) while the game is held
+        if (sceneHeld()) return;
         i++;
         setN(i);
         if (i % 3 === 1 && text[i - 1] !== " ") sfx.typewriter();
@@ -120,18 +124,23 @@ function IntroCutIn({ id }: { id: SceneEventId }) {
   );
 }
 
-/** «⏸ пауза» while a ceremony, a crash or a save issue holds the game (the scene clock stands still meanwhile). */
+/**
+ * «⏸ пауза» while a ceremony, a crash or a save issue holds the game (the scene clock stands still meanwhile). Below
+ * sm only the ⏸ shows (the word stays for screen readers), so the scene title keeps its room at 360 px.
+ */
 function PauseBadge({ reduced }: { reduced: boolean }) {
   const held = useGame(isHeld);
   if (!held) return null;
   return (
     <span
       data-decor=""
-      className="rounded border border-gaslight/70 bg-black/40 px-1.5 py-0.5 font-display text-[11px] font-bold uppercase tracking-widest text-gaslight"
+      className="rounded border border-gaslight/70 bg-black/40 px-1.5 py-0.5 font-display text-[11px] font-bold uppercase tracking-widest text-gaslight max-sm:tracking-normal"
       style={reduced ? undefined : { animation: "rr-blink 1.6s steps(1) infinite" }}
       role="status"
+      title="Пауза"
     >
-      ⏸ пауза
+      <span aria-hidden>⏸</span>
+      <span className="max-sm:sr-only"> пауза</span>
     </span>
   );
 }

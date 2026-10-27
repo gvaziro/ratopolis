@@ -95,7 +95,7 @@ function CatWarn({ scene }: { scene: Scene }) {
             hotkey="2"
             sub={
               <b>
-                {fmtInt(hp)} {plural(hp, "удар", "удара", "ударов")} лапе за {fmtInt(fightSec)} с, пока она не дотянулась
+                {fmtInt(hp)} {plural(hp, "удар", "удара", "ударов")} лапе за {fmtInt(fightSec)}&nbsp;с, пока она не дотянулась
               </b>
             }
             sub2={

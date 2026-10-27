@@ -31,6 +31,7 @@ import { applySwUpdate, SW_UPDATE_TARGET } from "@/components/ui/swClient";
 import HudStyles from "./HudStyles";
 import {
   EARLY_SEC,
+  MEDAL_SHOWN_EVENT,
   UNLOCK_ROWS,
   addToast,
   commissionDoneText,
@@ -587,7 +588,8 @@ function Toast({
       className={cx(
         // .ui-zoom: «Размер текста» reaches the toasts; the width is divided back so the footprint stays the same
         "ui-zoom pointer-events-none relative flex w-full max-w-[calc(360px/var(--ui-zoom,1))] shrink-0 gap-2 overflow-hidden rounded-md border pl-2.5 pr-1 text-[13px] leading-snug shadow-[0_6px_18px_rgba(0,0,0,.55)] md:w-[calc(340px/var(--ui-zoom,1))]",
-        row ? "items-center py-0.5" : "items-start py-1.5",
+        // the phone train row: 40-px controls + 1-px padding + the border = 44 px
+        row ? "items-center py-px" : "items-start py-1.5",
         TONE[t.tone],
         t.leaving ? "hud-toast-out" : "hud-toast-in",
       )}
@@ -723,6 +725,15 @@ function BannerView({ b, onDone }: { b: Banner; onDone: () => void }) {
   useEffect(() => {
     doneRef.current = onDone;
   });
+  // a medal banner on screen (a medal joining it remounts it: one more burst for the newcomer)
+  const medals = b.k === "medal" ? b.medals.length : 0;
+  const sentRef = useRef(0);
+  useEffect(() => {
+    // once per banner (StrictMode replays effects in dev)
+    if (medals === 0 || sentRef.current === medals) return;
+    sentRef.current = medals;
+    window.dispatchEvent(new CustomEvent(MEDAL_SHOWN_EVENT, { detail: { count: medals } }));
+  }, [medals]);
   useEffect(() => {
     const ms = BANNER_MS[b.k];
     const t1 = window.setTimeout(() => setLeaving(true), ms);

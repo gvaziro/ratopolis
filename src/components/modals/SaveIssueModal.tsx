@@ -23,7 +23,7 @@ function IssueDialog({ issue }: { issue: NonNullable<SaveIssue> }) {
   const titleId = useId();
   return (
     <div
-      className="fixed inset-0 z-[90] flex items-start justify-center overflow-y-auto bg-black/80 p-4 backdrop-blur-[3px] sm:items-center"
+      className="fixed inset-0 z-[90] flex items-start justify-center overflow-y-auto bg-black/80 pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(1rem,env(safe-area-inset-top))] backdrop-blur-[3px] sm:items-center"
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}

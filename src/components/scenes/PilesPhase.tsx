@@ -360,7 +360,7 @@ function PilesPhaseImpl({ scene }: { scene: Scene }) {
       // the countdown to the next pile still standing
       let next = Infinity;
       for (let j = 0; j < views.length; j++) if (!isLocked[j]) next = Math.min(next, lockAt(j));
-      const eta = Number.isFinite(next) && !done ? `Обходчик дойдёт через ${Math.max(0, Math.ceil(next - t))} с` : "Обходчик всё смёл";
+      const eta = Number.isFinite(next) && !done ? `Обходчик дойдёт через ${Math.max(0, Math.ceil(next - t))} с` : "Обходчик всё смёл";
       if (eta !== etaShown && etaRef.current) {
         etaShown = eta;
         etaRef.current.textContent = eta;

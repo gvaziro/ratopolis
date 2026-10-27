@@ -92,7 +92,7 @@ function FrontPage({ r }: { r: OfflineReport }) {
 
   return (
     <div
-      className={cx("fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-4 backdrop-blur-[2px]", calm && "hud-calm")}
+      className={cx("fixed inset-0 z-[80] flex items-center justify-center bg-black/70 pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(1rem,env(safe-area-inset-top))] backdrop-blur-[2px]", calm && "hud-calm")}
       role="dialog"
       aria-modal="true"
       aria-labelledby="offline-title"
@@ -100,7 +100,7 @@ function FrontPage({ r }: { r: OfflineReport }) {
     >
       <HudStyles />
       <article
-        className="hud-paper ui-zoom relative max-h-[calc(100dvh-32px)] w-full max-w-[560px] overflow-y-auto rounded-sm border-2 px-4 pb-4 pt-3 shadow-[0_20px_60px_rgba(0,0,0,.75)] sm:px-6"
+        className="hud-paper ui-zoom relative max-h-[calc((100dvh_-_max(1rem,env(safe-area-inset-top))_-_max(1rem,env(safe-area-inset-bottom)))/var(--ui-zoom,1))] w-full max-w-[560px] overflow-y-auto rounded-sm border-2 px-4 pb-4 pt-3 shadow-[0_20px_60px_rgba(0,0,0,.75)] sm:px-6"
         style={{ borderColor: INK, animation: calm ? undefined : "hud-pop .5s cubic-bezier(.2,1.2,.4,1) both", color: INK }}
       >
         {/* masthead */}
@@ -119,7 +119,7 @@ function FrontPage({ r }: { r: OfflineReport }) {
         </header>
 
         <h3 id="offline-title" className="mt-3 text-center font-display text-[22px] font-bold leading-tight sm:text-[26px]">
-          Пока вас не было ({fmtDuration(r.elapsed)})…
+          Пока вас не было <span className="whitespace-nowrap">({fmtDuration(r.elapsed)})…</span>
         </h3>
         <p className="mt-1 text-center text-[13px] italic leading-snug text-[#4a3826]">{kicker(r)}</p>
 
@@ -159,7 +159,7 @@ function FrontPage({ r }: { r: OfflineReport }) {
               <span aria-hidden>🐀 </span>
               {r.rats > 0 ? (
                 <>
-                  {countForm(r.rats, "Родилась", "Родились", "Родилось")} <b className="font-mono">+{fmtInt(r.rats)}</b>{" "}
+                  {countForm(r.rats, "Родилась", "Родились", "Родилось")} <b className="font-mono">+{fmtInt(r.rats)}</b>&nbsp;
                   {countForm(r.rats, "крыса", "крысы", "крыс")}. Старейшины сбились со счёта.
                 </>
               ) : (
@@ -190,7 +190,7 @@ function FrontPage({ r }: { r: OfflineReport }) {
             </p>
             {capped && (
               <p className="rounded-sm border border-dashed px-2 py-1 text-[12.5px] italic" style={{ borderColor: `${INK}66` }}>
-                Крысы работали только {fmtDuration(r.simulated)} — дальше уснули.{extend ? ` ${extend}.` : ""}
+                Крысы работали только <span className="whitespace-nowrap">{fmtDuration(r.simulated)}</span> — дальше уснули.{extend ? ` ${extend}.` : ""}
               </p>
             )}
           </section>

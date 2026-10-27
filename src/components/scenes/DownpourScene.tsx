@@ -148,7 +148,7 @@ export default function DownpourScene({ scene }: { scene: Scene }) {
           <div className="pointer-events-none absolute inset-x-2 top-[calc(9%_+_6px)] z-20 flex items-start justify-between gap-2">
             <div className="flex items-center gap-2">
               <Countdown endsAt={scene.phaseEnds} total={total} label="Шлюзы!" warnAt={3} />
-              <span className="rounded-full border border-[#4f9d8a] bg-soot/85 px-2.5 py-1 text-xs font-bold text-verdigris-light shadow-[0_4px_14px_rgba(0,0,0,.6)]">
+              <span className="whitespace-nowrap rounded-full border border-[#4f9d8a] bg-soot/85 px-2.5 py-1 text-xs font-bold text-verdigris-light shadow-[0_4px_14px_rgba(0,0,0,.6)]">
                 до затопления <span ref={(el) => void (shared.current.eta = el)} className="font-mono tabular">…</span>
               </span>
             </div>
@@ -509,7 +509,7 @@ function WaterCanvas({ sharedRef, reduced }: { sharedRef: RefObject<Shared>; red
         const left = Math.max(0, sh.endsAt - useGame.getState().game.time);
         const flood = gush > 0.01 ? (LEVEL_MAX - level) / (FLOOD_RATE * gush) : Infinity;
         const n = Math.ceil(Math.max(0, Math.min(left, flood)));
-        const txt = level >= LEVEL_MAX - 1e-3 ? "затопило!" : `${n} с`;
+        const txt = level >= LEVEL_MAX - 1e-3 ? "затопило!" : `${n} с`;
         if (sh.eta.textContent !== txt) sh.eta.textContent = txt;
       }
       const deep = !calm && level > DIM_LEVEL;

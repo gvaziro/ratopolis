@@ -19,6 +19,7 @@ import { derivedOf, useGame, type TabId } from "@/game/store";
 import { BUILDING_IDS, RES_IDS, type GameState, type ResId } from "@/game/types";
 import { useSampled } from "@/game/useSampled";
 import { plural } from "@/lib/format";
+import { isPhoneLayout } from "@/lib/layoutMode";
 import { useBackCloses } from "@/lib/useBackCloses";
 import { camView, onCamera, type CamView } from "./camera";
 import { BUILDING_SLOT, GRATE, SLOT_H, SLOT_W } from "./geometry";
@@ -154,6 +155,8 @@ interface Layout {
 /** The card fades after this long without hover or focus while it covers a built chamber. */
 const FADE_IDLE_MS = 6000;
 const FADE_TO = 0.55;
+/** A first goal that led the card this recently is not «new» when it comes back (it does not wake a faded card). */
+const LEAD_MEMORY_MS = 60_000;
 
 /** The card's rect (container px) overlaps a built chamber's niche at this camera. */
 function coversChamber(g: GameState, v: Readonly<CamView>, r: { x: number; y: number; w: number; h: number }): boolean {
@@ -192,7 +195,8 @@ export const GoalWidget = memo(function GoalWidget() {
         const left = v.cw / 2 + (GRATE.x - (GRATE.w / 2 + 12) * k - v.cx) * v.s;
         const bottom = v.ch / 2 + (GRATE.y + 34 * k - v.cy) * v.s;
         const free = bottom < 0 ? 280 : Math.floor((left - 16) / 10) * 10;
-        const next: Layout = { room: Math.max(56, Math.min(280, free)), under: Math.round(bottom / 4) * 4, cw: Math.round(v.cw), ch: Math.round(v.ch), wide: window.innerWidth >= 768 };
+        // (a phone held sideways is short, not narrow: it gets the pill too — layoutMode is the one phone test)
+        const next: Layout = { room: Math.max(56, Math.min(280, free)), under: Math.round(bottom / 4) * 4, cw: Math.round(v.cw), ch: Math.round(v.ch), wide: !isPhoneLayout() };
         setLay((p) => (p.room === next.room && p.under === next.under && p.cw === next.cw && p.ch === next.ch && p.wide === next.wide ? p : next));
       }),
     [],
@@ -277,10 +281,17 @@ export const GoalWidget = memo(function GoalWidget() {
     };
   }, [compact, shown]);
 
-  // a new first goal (or a new hint) wakes the faded card
+  // a new first goal (or a new hint) wakes the faded card — not one that merely comes back: a build pick that blinks in
+  // and out as the stock crosses its price would otherwise keep the card lit over the chambers for good
   const lead = view ? `${view.hint?.id ?? ""}|${view.goals[0]?.key ?? ""}` : "";
+  const leads = useRef<{ prev: string; left: Map<string, number> }>({ prev: "", left: new Map() });
   useEffect(() => {
-    fadeApi.current?.wake();
+    const now = performance.now();
+    const m = leads.current;
+    if (m.prev) m.left.set(m.prev, now);
+    m.prev = lead;
+    for (const [k, t] of m.left) if (now - t > LEAD_MEMORY_MS) m.left.delete(k);
+    if (!m.left.has(lead)) fadeApi.current?.wake();
   }, [lead]);
 
   if (!view || !shown) return null;

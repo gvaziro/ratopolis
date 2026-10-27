@@ -374,8 +374,8 @@ let elderPoke: ElderListener | null = null;
 const ELDER_Y = floorY("burrow", 0);
 const ELDER_HOME_X = GX + 62;
 const DROP_X = GX + 8;
-/** The first crumbs pile up by the ladder (left of the shaft). */
-const PILE_X = SHAFT_X - 40;
+/** The first crumbs pile up by the ladder (left of the shaft, clear of the burrow's candle in the gap before it). */
+const PILE_X = SHAFT_X - 74;
 /** Pile mound sizes [w, h] by stage 1..5 (≈ 1, 3, 5, 7, 10 🍞). */
 const PILE_SIZES: [number, number][] = [
   [12, 4],
