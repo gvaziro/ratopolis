@@ -177,6 +177,16 @@ describe("save v2 (EN-7 / EN-8)", () => {
     expect(back.meta.seal).toBeNull();
   });
 
+  it("settings.batterySaver: missing in an older save → auto; a bad value → auto; a valid one survives", () => {
+    const raw = JSON.parse(serialize(playedState())) as Record<string, unknown>;
+    delete (raw.settings as Record<string, unknown>).batterySaver;
+    expect(deserialize(JSON.stringify(raw))!.settings.batterySaver).toBe("auto");
+    (raw.settings as Record<string, unknown>).batterySaver = "max";
+    expect(deserialize(JSON.stringify(raw))!.settings.batterySaver).toBe("auto");
+    (raw.settings as Record<string, unknown>).batterySaver = "off";
+    expect(deserialize(JSON.stringify(raw))!.settings.batterySaver).toBe("off");
+  });
+
   it("deserialize with shinies [{id:1}] and news ['x'] loads with both arrays sanitized", () => {
     const raw = JSON.parse(serialize(createInitialState(1, 0))) as Record<string, unknown>;
     raw.shinies = [{ id: 1 }];

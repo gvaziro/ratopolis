@@ -7,6 +7,7 @@
  * the furniture), in two depth lanes, with a CSS walk cycle (feet, tail) the loop switches on and off only when a
  * sprite starts or stops walking in view. COL-4: three settlers climb down the ladder of a newly opened zone.
  */
+import { cancelDecoFrame, decoFrame } from "@/lib/eco";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { stunnedRats } from "@/game/engine/derive";
@@ -417,7 +418,7 @@ export const RatsLayer = memo(function RatsLayer() {
     let raf = 0;
     let last = performance.now();
     const frame = (now: number) => {
-      raf = requestAnimationFrame(frame);
+      raf = decoFrame(frame);
       // under a scene / in a hidden tab the colony is not drawn: the rats wait where they are
       if (colonyPaused()) {
         last = now;
@@ -568,10 +569,10 @@ export const RatsLayer = memo(function RatsLayer() {
         for (const id of [...guestState.current.keys()]) if (!guestEls.current.has(id)) guestState.current.delete(id);
       }
     };
-    raf = requestAnimationFrame(frame);
+    raf = decoFrame(frame);
     const gs = guestState.current;
     return () => {
-      cancelAnimationFrame(raf);
+      cancelDecoFrame(raf);
       gs.clear();
     };
   }, []);

@@ -5,6 +5,7 @@
  * (one per level, up to 12) carrying resource icons. The loop is sampled once into a lookup table;
  * the rAF loop only interpolates it and writes a transform when the rounded string changed.
  */
+import { cancelDecoFrame, decoFrame } from "@/lib/eco";
 import { memo, useEffect, useMemo, useRef } from "react";
 import { RESOURCES, RES_ORDER } from "@/game/data/resources";
 import { useGame } from "@/game/store";
@@ -130,7 +131,7 @@ export const Rail = memo(function Rail() {
     const last: string[] = [];
     const lastY = new Float64Array(count).fill(NaN);
     const frame = (now: number) => {
-      raf = requestAnimationFrame(frame);
+      raf = decoFrame(frame);
       if (colonyPaused()) return;
       const v = camView();
       const hy = v.ch / 2 / v.s + 40;
@@ -150,8 +151,8 @@ export const Rail = memo(function Rail() {
         el.setAttribute("transform", tr);
       }
     };
-    raf = requestAnimationFrame(frame);
-    return () => cancelAnimationFrame(raf);
+    raf = decoFrame(frame);
+    return () => cancelDecoFrame(raf);
   }, [count, table, rm]);
 
   if (level <= 0) return null;

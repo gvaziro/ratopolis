@@ -5,6 +5,7 @@
  * `+amount` (one beat's worth) pop above the niche, rise and fade, and the chamber gives a little squash.
  * A fixed pool of SVG nodes animated imperatively: no React render per beat or per frame.
  */
+import { cancelDecoFrame, decoFrame } from "@/lib/eco";
 import { memo, useEffect, useRef } from "react";
 import { RESOURCES } from "@/game/data/resources";
 import { resMult } from "@/game/engine/derive";
@@ -72,7 +73,7 @@ export const WorkBeats = memo(function WorkBeats() {
         el.setAttribute("transform", `translate(${p.x.toFixed(1)} ${(p.y - rise).toFixed(1)})`);
         el.setAttribute("opacity", op.toFixed(2));
       }
-      raf = any ? requestAnimationFrame(frame) : 0;
+      raf = any ? decoFrame(frame) : 0;
     };
 
     const beat = () => {
@@ -126,13 +127,13 @@ export const WorkBeats = memo(function WorkBeats() {
         el.setAttribute("transform", `translate(${p.x.toFixed(1)} ${y.toFixed(1)})`);
         n++;
       }
-      if (n > 0 && !raf) raf = requestAnimationFrame(frame);
+      if (n > 0 && !raf) raf = decoFrame(frame);
     };
 
     const timer = window.setInterval(beat, BEAT * 1000);
     return () => {
       window.clearInterval(timer);
-      cancelAnimationFrame(raf);
+      cancelDecoFrame(raf);
     };
   }, []);
 

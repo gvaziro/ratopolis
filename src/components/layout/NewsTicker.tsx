@@ -9,6 +9,7 @@
  * the 30-px bar takes taps 6 px above itself (hit-slop). SHL-5: after the first coronation the masthead turns into
  * «Придворный выпуск 👑».
  */
+import { cancelDecoFrame, decoFrame, useEco } from "@/lib/eco";
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { onFx } from "@/game/fx";
@@ -31,7 +32,9 @@ export default function NewsTicker() {
 }
 
 function Ticker() {
-  const calm = useGame((s) => s.game.settings.reducedMotion);
+  // «Экономия батареи» stills the marquee too (a 20 fps crawl would only judder)
+  const eco = useEco();
+  const calm = useGame((s) => s.game.settings.reducedMotion) || eco;
   const frenzy = useGame((s) => derivedOf(s.game).frenzy);
   // newest first; the ticker only needs the latest dozen
   const items = useGame(useShallow((s) => s.game.news.slice(-12).reverse().map((n) => n.text)));
@@ -221,10 +224,10 @@ function Marquee({ items, speed, pausedRef }: { items: string[]; speed: number; 
         if (x <= -w) x += w;
         if (trackRef.current) trackRef.current.style.transform = `translate3d(${x.toFixed(1)}px,0,0)`;
       }
-      raf = requestAnimationFrame(loop);
+      raf = decoFrame(loop);
     };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
+    raf = decoFrame(loop);
+    return () => cancelDecoFrame(raf);
   }, [pausedRef]);
 
   if (items.length === 0) {

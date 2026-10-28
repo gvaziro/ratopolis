@@ -8,9 +8,10 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { sfx } from "@/audio/sfx";
 import { useGame, type BackupInfo } from "@/game/store";
-import type { Settings, TextScale } from "@/game/types";
+import type { BatterySaver, Settings, TextScale } from "@/game/types";
 import { clockAt, datedSaveName, downloadText, ratsLabel } from "@/components/ui/crashKit";
 import { BrassButton, cx } from "@/components/ui/kit";
+import { useEco } from "@/lib/eco";
 import { fmtInt } from "@/lib/format";
 import { SectionTitle, Segmented, Switch, type SegOption } from "./common";
 
@@ -191,7 +192,15 @@ const TEXT_SCALES: SegOption<TextScale>[] = [
   { value: 1.3, label: "130%" },
 ];
 
+const SAVERS: SegOption<BatterySaver>[] = [
+  { value: "auto", label: "Авто" },
+  { value: "on", label: "Вкл" },
+  { value: "off", label: "Выкл" },
+];
+
 function ViewSection() {
+  const [saver, setSaver] = useSetting("batterySaver");
+  const eco = useEco();
   const [reduced, setReduced] = useSetting("reducedMotion");
   const fromOS = useGame((s) => s.game.settings.reducedMotionFromOS);
   const [noShake, setNoShake] = useSetting("noShake");
@@ -230,6 +239,16 @@ function ViewSection() {
             <p className="text-[11px] leading-tight text-parchment-dim">Панель, шапка, ресурсы и лента новостей</p>
           </div>
           <Segmented label="Размер текста" value={scale} options={TEXT_SCALES} onChange={setScale} />
+        </div>
+        <div className="flex items-center justify-between gap-2 px-1 py-1.5">
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-parchment">Экономия батареи</p>
+            <p className="text-[11px] leading-tight text-parchment-dim">
+              {eco ? "Сейчас включена: свечи и шестерёнки замирают, колония рисуется реже, телефон не греется" : "Сейчас выключена: вся анимация в полную силу"}
+              {saver === "auto" && " · «Авто» включает её на телефонах и планшетах"}
+            </p>
+          </div>
+          <Segmented label="Экономия батареи" value={saver} options={SAVERS} onChange={setSaver} />
         </div>
       </Card>
     </>

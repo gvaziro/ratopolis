@@ -5,6 +5,7 @@ import { useEffect, useRef } from "react";
 import { emitUiFx, onUiFx } from "@/game/fx";
 import { isHeld, useGame } from "@/game/store";
 import { useGameLoop } from "@/game/useGameLoop";
+import { resolveEco, setEco } from "@/lib/eco";
 import { setSciNotation } from "@/lib/format";
 import AudioDirector from "./AudioDirector";
 import CrashGuard from "./CrashScreen";
@@ -94,6 +95,21 @@ export default function GameRoot() {
   useEffect(() => {
     document.documentElement.dataset.motion = calm ? "off" : fromOS ? "os" : "on";
   }, [calm, fromOS]);
+  // «Экономия батареи» (src/lib/eco.ts): html[data-eco] pauses the decorative CSS loops, setEco() thins the rAF ones;
+  // "auto" follows the pointer, so a phone or tablet saves its battery and a desktop keeps full motion
+  const saver = useGame((s) => s.game.settings.batterySaver);
+  useEffect(() => {
+    const mq = window.matchMedia("(pointer: coarse)");
+    const apply = () => {
+      const on = resolveEco(saver, mq.matches);
+      setEco(on);
+      if (on) document.documentElement.dataset.eco = "";
+      else delete document.documentElement.dataset.eco;
+    };
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, [saver]);
 
   if (!ready) {
     return (

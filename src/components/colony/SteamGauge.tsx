@@ -6,6 +6,7 @@
  * Hover or tap opens the breakdown: stock, who makes steam, who burns it, the machines' efficiency and the fix.
  * On phones (layoutMode: narrow or held sideways) the dial shrinks to 44 px and the label shows only while starving.
  */
+import { cancelDecoFrame, decoFrame } from "@/lib/eco";
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cx } from "@/components/ui/kit";
 import { BUILDINGS } from "@/game/data/buildings";
@@ -235,7 +236,7 @@ export const SteamGauge = memo(function SteamGauge() {
         written = tr;
         needle.current?.setAttribute("transform", tr);
       }
-      if (!settled) raf = requestAnimationFrame(frame);
+      if (!settled) raf = decoFrame(frame);
     };
     // (a quarter of a degree is below what the dial can show: tiny tick-to-tick wobbles of the stock don't wake it)
     const wake = () => {
@@ -243,13 +244,13 @@ export const SteamGauge = memo(function SteamGauge() {
       const { target, starved } = aim();
       if (!starved && Math.abs(target - ang) < 0.25) return;
       last = performance.now();
-      raf = requestAnimationFrame(frame);
+      raf = decoFrame(frame);
     };
-    raf = requestAnimationFrame(frame);
+    raf = decoFrame(frame);
     const unsub = useGame.subscribe(wake);
     return () => {
       unsub();
-      cancelAnimationFrame(raf);
+      cancelDecoFrame(raf);
     };
   }, [revealed]);
 

@@ -12,6 +12,7 @@
  * Moving parts are rAF tweens (attribute writes, no React state per frame) and WAAPI on whole layers; the loops
  * carry data-decor (the shell's one motion switch) and nothing schedules while the tab is hidden.
  */
+import { cancelDecoFrame, decoFrame } from "@/lib/eco";
 import { memo, useEffect, useRef, useState, type RefObject } from "react";
 import { isHeld, useGame } from "@/game/store";
 import { MARGIN, PAVE_FRONT, ROAD_TOP, type SkyLayout } from "./skyGeo";
@@ -124,11 +125,11 @@ function MiniExpress({ L }: { L: SkyLayout }) {
     const step = (now: number) => {
       const k = Math.min(1, (now - t0) / EXPRESS_RUN_MS);
       el.setAttribute("transform", `translate(${(from + (to - from) * k).toFixed(1)} 0)`);
-      if (k < 1) raf = requestAnimationFrame(step);
+      if (k < 1) raf = decoFrame(step);
       else el.setAttribute("opacity", "0");
     };
-    raf = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(raf);
+    raf = decoFrame(step);
+    return () => cancelDecoFrame(raf);
   }, [from, to]);
   const car = (x: number, i: number) => (
     <g key={i}>

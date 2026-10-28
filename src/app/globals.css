@@ -164,6 +164,20 @@ html[data-motion="off"] :is([data-decor], [data-decor] *) {
   animation-play-state: paused !important;
 }
 
+/*
+ * «Экономия батареи» (src/lib/eco.ts): html[data-eco] stills the same decorative loops and the HUD's, so a phone stops
+ * repainting for candles and gears; alarms (.hud-alarm, .sk-shake) keep running.
+ */
+/* bars and readiness rings re-target faster than they ease (5–10 updates a second): under eco they jump */
+html[data-eco] [class*="transition-[width]"],
+html[data-eco] svg circle[style*="stroke-dashoffset"] {
+  transition: none !important;
+}
+html[data-eco] :is([data-decor], [data-decor] *),
+html[data-eco] :is(.hud-blink2, .hud-over, .hud-twinkle, .hud-throb, .hud-shiver, .hud-shine, .hud-rays, .sk-leg, .sk-spin, .sk-smoke, .sk-bigsmoke, .sk-rain, .sk-flicker, .sk-tail, .sk-eyes, .sk-note, .sk-bob, .sk-capsule, .sk-puff, .sk-glow, .sk-ripple, .sk-board-blink) {
+  animation-play-state: paused !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   html:not([data-motion="on"]) :is([data-decor], [data-decor] *) {
     animation-play-state: paused !important;

@@ -25,6 +25,7 @@ Grow from one grate to the Sewers, the Cellars, the Underground and the Grand Te
 - **Crown the Rat King.** Assemble the Rat Express from scrap, then lead the Great Migration to a new district of London: crowns and royal edicts make the next run faster.
 
 The game is in Russian. It saves in your browser (with backups) and keeps earning for up to 8 hours while you are away.
+On phones and tablets a battery saver (⚙ «Экономия батареи», «Авто» by default) stills the decorative animation and draws the colony at 20 fps, so the phone stays cool.
 
 | Колония / The colony | Поезд метро / A metro train | Телефон / Phone, 375 px |
 |---|---|---|

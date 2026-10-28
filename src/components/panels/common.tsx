@@ -664,6 +664,8 @@ const CSS = `
 .rr-calm .rr-breathe, .rr-calm .rr-sheen::after, .rr-calm .rr-blink, .rr-calm .rr-glow, .rr-calm .rr-ping, .rr-calm .rr-dig,
 .rr-calm .rr-spin, .rr-calm .rr-puff, .rr-calm .rr-sway, .rr-calm .rr-tick, .rr-calm .rr-focus, .rr-calm .rr-map-ping { animation: none !important; }
 .rr-calm .rr-focus { box-shadow: 0 0 0 2px var(--gaslight); }
+html[data-eco] :is(.rr-breathe, .rr-blink, .rr-glow, .rr-ping, .rr-dig, .rr-spin, .rr-puff, .rr-sway, .rr-tick, .rr-map-ping),
+html[data-eco] .rr-sheen::after { animation-play-state: paused !important; }
 @media (prefers-reduced-motion: reduce) {
   html:not([data-motion="on"]) :is(.rr-breathe, .rr-blink, .rr-glow, .rr-ping, .rr-dig, .rr-spin, .rr-puff, .rr-sway, .rr-tick, .rr-focus, .rr-map-ping),
   html:not([data-motion="on"]) .rr-sheen::after { animation: none !important; }

@@ -8,6 +8,7 @@
  * dining car is painted yellow; after the Metro a carriage that only passes over the grate (s.carriagePass, ENG-9)
  * trots by up here while its loot rains into the colony.
  */
+import { cancelDecoFrame, decoFrame } from "@/lib/eco";
 import { memo, useEffect, useRef, type CSSProperties, type RefObject } from "react";
 import { TRAIN_VARIANTS } from "@/game/data/events";
 import type { SceneEventId, ScenePhase, TrainVariantId } from "@/game/types";
@@ -42,10 +43,10 @@ function useTweenX(ref: RefObject<SVGGElement | null>, from: number, to: number,
         const d = Math.min(Math.abs(x - from), Math.abs(to - x));
         el.setAttribute("opacity", Math.min(1, d / fade).toFixed(2));
       }
-      if (k < 1) raf = requestAnimationFrame(step);
+      if (k < 1) raf = decoFrame(step);
     };
-    raf = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(raf);
+    raf = decoFrame(step);
+    return () => cancelDecoFrame(raf);
   }, [ref, from, to, ms, fade, y]);
 }
 

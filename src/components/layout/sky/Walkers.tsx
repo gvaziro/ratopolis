@@ -5,6 +5,7 @@
  * `transform` attributes directly (no React state per frame); a walker who leaves the street
  * is re-dressed (React state) and comes back after a pause. Legs swing with CSS.
  */
+import { cancelDecoFrame, decoFrame } from "@/lib/eco";
 import { memo, useEffect, useRef, useState } from "react";
 import type { SkyLayout } from "./skyGeo";
 
@@ -124,7 +125,7 @@ export const Walkers = memo(function Walkers({ L, count, rain, topHats }: Props)
         el.setAttribute("opacity", op.toFixed(2));
         el.setAttribute("transform", `translate(${w.x.toFixed(1)} 0) scale(${w.dir} 1)`);
       }
-      raf = requestAnimationFrame(loop);
+      raf = decoFrame(loop);
     };
     const respawn = (i: number) => {
       const { L: l, rain: r, topHats: th } = live.current;
@@ -136,8 +137,8 @@ export const Walkers = memo(function Walkers({ L, count, rain, topHats }: Props)
       w.wait = 0.8 + Math.random() * 5;
       setSpecs((list) => list.map((s, k) => (k === i ? spec : s)));
     };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
+    raf = decoFrame(loop);
+    return () => cancelDecoFrame(raf);
   }, []);
 
   return (

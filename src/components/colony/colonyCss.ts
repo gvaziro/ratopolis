@@ -116,6 +116,8 @@ export const COLONY_CSS = `
 [data-off],[data-off] *,.cv-covered *{animation-play-state:paused!important}
 .cv-rm :is(${DECOR}){animation-play-state:paused}
 @media (prefers-reduced-motion:reduce){.cv-root:not(.cv-motion) :is(${DECOR}){animation-play-state:paused}}
+html[data-eco] .cv-root :is(${DECOR}),html[data-eco] .cv-rat,html[data-eco] .cv-rat *{animation-play-state:paused}
+html[data-eco] :is(.cv-blink,.cv-blink-late,.cv-ping,.cv-vibrate,.cv-frenzy,.cv-avral,.cv-sniff,.cv-glove){animation-play-state:paused}
 .cv-plate{transform:scale(var(--plate-k,1));transform-box:fill-box;transform-origin:100% 100%}
 .cv-plate-l{transform:scale(var(--plate-k,1));transform-box:fill-box;transform-origin:0 100%}
 .cv-tag{transform:scale(var(--plate-k,1));transform-origin:0 0}

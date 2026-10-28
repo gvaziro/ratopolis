@@ -10,6 +10,7 @@
  * Every 9–22 s, ×0.4 as often at night, ×1.5 once the Metro is open; never under a scene or with the street off-screen.
  * Reduced motion: actors fade in and out in place, no stomp or shake.
  */
+import { cancelDecoFrame, decoFrame } from "@/lib/eco";
 import { memo, useEffect, useRef } from "react";
 import { humanClock } from "@/game/engine/formulas";
 import { emitUiFx } from "@/game/fx";
@@ -82,7 +83,7 @@ export const Traffic = memo(function Traffic() {
       window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         timer = 0;
-        if (!raf) raf = requestAnimationFrame(frame);
+        if (!raf) raf = decoFrame(frame);
       }, Math.max(0, ms));
     };
 
@@ -90,7 +91,7 @@ export const Traffic = memo(function Traffic() {
       raf = 0;
       if (colonyPaused()) {
         // under a scene or in a hidden tab an actor keeps its clock (and ends unseen); an empty street naps
-        if (act) raf = requestAnimationFrame(frame);
+        if (act) raf = decoFrame(frame);
         else sleep(1000);
         return;
       }
@@ -126,7 +127,7 @@ export const Traffic = memo(function Traffic() {
             dimmed: false,
           };
       }
-      raf = requestAnimationFrame(frame);
+      raf = decoFrame(frame);
       const t = now - act.t0;
       if (act.kind === "boot") {
         const down = 220;
@@ -209,7 +210,7 @@ export const Traffic = memo(function Traffic() {
     };
     sleep(nextAt - performance.now());
     return () => {
-      cancelAnimationFrame(raf);
+      cancelDecoFrame(raf);
       window.clearTimeout(timer);
       if (raysRef.current) raysRef.current.style.opacity = "";
     };

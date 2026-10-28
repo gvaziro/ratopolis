@@ -81,6 +81,7 @@ export function defaultSettings(): Settings {
     reducedMotionFromOS: false,
     sfxVolume: 1,
     music: 0.35,
+    batterySaver: "auto",
   };
 }
 

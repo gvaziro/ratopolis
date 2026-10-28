@@ -6,6 +6,7 @@
  * COL-1: litter lies on the bars and drops through on every press, the Elder waits in the grate's light and carries
  * the first crumbs to a pile by the ladder, a dashed gaslight ring shows keyboard focus, the rays crossfade.
  */
+import { cancelDecoFrame, decoFrame } from "@/lib/eco";
 import { memo, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { humanClock } from "@/game/engine/formulas";
 import { useGame } from "@/game/store";
@@ -443,7 +444,7 @@ export const Elder = memo(function Elder() {
       raf = 0;
       if (colonyPaused()) {
         last = now;
-        raf = requestAnimationFrame(frame);
+        raf = decoFrame(frame);
         return;
       }
       // (a frame's timestamp can precede the performance.now() taken when he was poked)
@@ -457,7 +458,7 @@ export const Elder = memo(function Elder() {
         face(dx > 0 ? 1 : -1);
         x += Math.sign(dx) * step;
         write(Math.abs(Math.sin(now / 55)) * 1.8);
-        raf = requestAnimationFrame(frame);
+        raf = decoFrame(frame);
         return;
       }
       x = target;
@@ -478,7 +479,7 @@ export const Elder = memo(function Elder() {
         sniff(true);
         return;
       }
-      raf = requestAnimationFrame(frame);
+      raf = decoFrame(frame);
     };
     elderPoke = () => {
       if (mode === "idle" || mode === "home") {
@@ -493,13 +494,13 @@ export const Elder = memo(function Elder() {
         }
         if (!raf) {
           last = performance.now();
-          raf = requestAnimationFrame(frame);
+          raf = decoFrame(frame);
         }
       } else pending = Math.min(3, pending + 1);
     };
     return () => {
       elderPoke = null;
-      cancelAnimationFrame(raf);
+      cancelDecoFrame(raf);
     };
   }, [show]);
 

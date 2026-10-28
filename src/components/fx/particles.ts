@@ -1,3 +1,4 @@
+import { cancelDecoFrame, decoFrame } from "@/lib/eco";
 import type { BurstKind, FloatSpec, FxImpl } from "./fxBus";
 
 /**
@@ -105,7 +106,7 @@ export class FxSystem implements FxImpl {
   }
 
   destroy(): void {
-    cancelAnimationFrame(this.raf);
+    cancelDecoFrame(this.raf);
     this.raf = 0;
     this.parts = [];
     this.texts = [];
@@ -306,7 +307,7 @@ export class FxSystem implements FxImpl {
   private wake(): void {
     if (this.raf) return;
     this.last = performance.now();
-    this.raf = requestAnimationFrame(this.frame);
+    this.raf = decoFrame(this.frame);
   }
 
   private frame = (now: number): void => {
@@ -316,7 +317,7 @@ export class FxSystem implements FxImpl {
     this.step(dt);
     this.draw(now);
     const alive = this.parts.length > 0 || this.texts.length > 0 || this.emitters.length > 0;
-    this.raf = alive ? requestAnimationFrame(this.frame) : 0;
+    this.raf = alive ? decoFrame(this.frame) : 0;
     if (!alive) this.clearDirty();
   };
 

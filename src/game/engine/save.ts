@@ -256,6 +256,7 @@ function sanitize(s: GameState): void {
   st.ambience = clamp01(st.ambience);
   st.sfxVolume = clamp01(st.sfxVolume);
   st.music = clamp01(st.music);
+  if (st.batterySaver !== "auto" && st.batterySaver !== "on" && st.batterySaver !== "off") st.batterySaver = "auto";
 }
 
 function clamp01(v: number): number {

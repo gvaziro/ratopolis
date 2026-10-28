@@ -848,6 +848,8 @@ export interface Timers {
 }
 
 export type TextScale = 1 | 1.15 | 1.3;
+/** «Экономия батареи» (src/lib/eco.ts): "auto" is on for touch phones. */
+export type BatterySaver = "auto" | "on" | "off";
 
 export interface Settings {
   sound: boolean;
@@ -870,6 +872,8 @@ export interface Settings {
   sfxVolume: number;
   /** Generative district music 0..1 (default 0.35, AUD-3). */
   music: number;
+  /** «Экономия батареи»: paused decorative CSS loops, ~20 fps decorative rAF loops, the UI at 5 Hz (src/lib/eco.ts). */
+  batterySaver: BatterySaver;
 }
 
 export type HaulRating = HaulSummary["rating"];

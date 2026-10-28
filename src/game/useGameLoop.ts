@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { ecoActive, ecoLoopDelay } from "@/lib/eco";
 import { creditHold } from "./engine/hold";
 import { TICK } from "./engine/step";
 import { isActive, noteHidden, noteVisible, useGame } from "./store";
@@ -123,6 +124,8 @@ export function useGameLoop(): void {
       const dt = Math.min(5, (now - last) / 1000);
       last = now;
       acc += dt;
+      // «Экономия батареи»: the 10 Hz steps are published two at a time (5 renders a second) unless a scene is up
+      if (ecoActive() && acc < 2 * TICK && !useGame.getState().game.scene) return;
       let steps = 0;
       while (acc >= TICK && steps < 10) {
         acc -= TICK;
@@ -135,11 +138,16 @@ export function useGameLoop(): void {
       }
     };
 
+    let nap = 0;
     const frame = (now: number) => {
       try {
         tick(now);
       } finally {
-        if (!stopped) raf = requestAnimationFrame(frame);
+        // «Экономия батареи»: nothing here needs every vsync; sleeping between steps lets an idle page produce no frames
+        if (!stopped) {
+          if (ecoActive()) nap = window.setTimeout(() => (raf = requestAnimationFrame(frame)), ecoLoopDelay(performance.now()));
+          else raf = requestAnimationFrame(frame);
+        }
       }
     };
     raf = requestAnimationFrame(frame);
@@ -167,6 +175,7 @@ export function useGameLoop(): void {
     return () => {
       stopped = true;
       cancelAnimationFrame(raf);
+      window.clearTimeout(nap);
       offCeremony();
       window.clearInterval(saver);
       document.removeEventListener("visibilitychange", onVis);

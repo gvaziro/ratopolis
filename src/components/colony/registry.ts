@@ -1,4 +1,5 @@
 import type { BuildingId } from "@/game/types";
+import { ecoActive } from "@/lib/eco";
 
 /** Chambers register a "poke" (spring squash) so flying loot and rats can nudge them imperatively. */
 const pokes = new Map<BuildingId, (strength: number) => void>();
@@ -11,6 +12,9 @@ export function registerPoke(id: BuildingId, fn: (strength: number) => void): ()
 }
 
 export function pokeChamber(id: BuildingId, strength = 1): void {
+  // «Экономия батареи»: the ambient nudges (a rat home, a work beat) would keep hundreds of chambers bouncing;
+  // the ones the player caused (a delivery, a buy) stay
+  if (strength < 0.3 && ecoActive()) return;
   pokes.get(id)?.(strength);
 }
 

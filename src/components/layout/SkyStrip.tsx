@@ -11,6 +11,7 @@
  * colours, a carriage passing over the grate after the Metro (s.carriagePass) trots by, and after the first coronation
  * the street turns royal (sky/Royal: the [data-royal] layer, and once per crowned run the «Город Наверху» flip).
  */
+import { cancelDecoFrame, decoFrame } from "@/lib/eco";
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { EVENT_LINES } from "@/game/data/events";
@@ -280,20 +281,20 @@ function usePanLoop(wrapRef: RefObject<HTMLDivElement | null>, W: number, pxPerU
           put(el, "transform", `translate(${(Math.round(x * 4) / 4).toFixed(2)} 0)`);
         }
       }
-      raf = requestAnimationFrame(loop);
+      raf = decoFrame(loop);
     };
     // the clouds carry on from where they were: the sleep does not count as drift time
     const wake = () => {
       if (raf || asleep()) return;
       last = performance.now();
       frame = 0;
-      raf = requestAnimationFrame(loop);
+      raf = decoFrame(loop);
     };
     wakeRef.current = wake;
     document.addEventListener("visibilitychange", wake);
     wake();
     return () => {
-      cancelAnimationFrame(raf);
+      cancelDecoFrame(raf);
       document.removeEventListener("visibilitychange", wake);
       wakeRef.current = () => {};
     };
